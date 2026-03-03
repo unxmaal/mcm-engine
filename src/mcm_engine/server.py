@@ -118,7 +118,8 @@ class MCMServer:
         # Register core tools
         # Search first (returns the internal search_all function)
         search_all_fn = register_search_tools(
-            self.mcp, self.db, self.tracker, self._search_scopes
+            self.mcp, self.db, self.tracker, self._search_scopes,
+            project_name=config.project_name,
         )
 
         # Knowledge tools (needs search_all for report_error)

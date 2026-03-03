@@ -55,6 +55,7 @@ def register_knowledge_tools(
         tags: str = "",
         rationale: str = "",
         alternatives: str = "",
+        project: str = "",
     ) -> str:
         """Store a learning — finding, decision, or insight.
 
@@ -69,6 +70,7 @@ def register_knowledge_tools(
             tags: Comma-separated tags for search
             rationale: For decisions — why this choice
             alternatives: For decisions — what was rejected
+            project: Project name (defaults to server's project_name)
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
@@ -109,7 +111,7 @@ def register_knowledge_tools(
         db.execute_write(
             "INSERT INTO knowledge (topic, kind, summary, detail, tags, project, rationale, alternatives) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (topic, kind, summary, detail, tags, project_name, rationale, alternatives),
+            (topic, kind, summary, detail, tags, project or project_name, rationale, alternatives),
         )
         db.commit()
         msg = f"Stored {kind}: {topic} — {summary}"
@@ -124,6 +126,7 @@ def register_knowledge_tools(
         why_failed: str = "",
         correct_approach: str = "",
         severity: str = "normal",
+        project: str = "",
     ) -> str:
         """Store what doesn't work — mistakes, anti-patterns, dead ends.
 
@@ -133,6 +136,7 @@ def register_knowledge_tools(
             why_failed: Why it didn't work
             correct_approach: What to do instead
             severity: 'normal' or 'critical'
+            project: Project name (defaults to server's project_name)
         """
         tracker.record_call("add_negative", topic=category)
         tracker.record_store()
@@ -140,7 +144,7 @@ def register_knowledge_tools(
             "INSERT INTO negative_knowledge "
             "(category, what_failed, why_failed, correct_approach, severity, project) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (category, what_failed, why_failed, correct_approach, severity, project_name),
+            (category, what_failed, why_failed, correct_approach, severity, project or project_name),
         )
         db.commit()
         return _with_nudge(
@@ -152,6 +156,7 @@ def register_knowledge_tools(
         error_text: str,
         context: str = "",
         tags: str = "",
+        project: str = "",
     ) -> str:
         """Report an error AND automatically search for matching fixes.
 
@@ -163,6 +168,7 @@ def register_knowledge_tools(
             error_text: The error message or text
             context: Additional context (build phase, file, etc.)
             tags: Comma-separated tags
+            project: Project name (defaults to server's project_name)
         """
         tracker.record_call("report_error", topic=error_text[:50])
         tracker.record_store()
@@ -170,7 +176,7 @@ def register_knowledge_tools(
         # Insert error
         db.execute_write(
             "INSERT INTO errors (pattern, context, tags, project) VALUES (?, ?, ?, ?)",
-            (error_text, context, tags, project_name),
+            (error_text, context, tags, project or project_name),
         )
         db.commit()
 
@@ -190,3 +196,85 @@ def register_knowledge_tools(
             parts.append("Could not extract search keywords from error text.")
 
         return _with_nudge("\n".join(parts), tracker, error_text[:50])
+
+    @mcp.tool()
+    def reinforce_knowledge(entry_id: int) -> str:
+        """Deliberately reinforce a knowledge entry — signals "still correct".
+
+        Stronger than a passive search hit (3x weight in ranking).
+
+        Args:
+            entry_id: ID of the knowledge entry to reinforce
+        """
+        tracker.record_call("reinforce_knowledge")
+        row = db.execute("SELECT id, topic FROM knowledge WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            return _with_nudge(f"Knowledge entry {entry_id} not found.", tracker)
+
+        db.execute_write(
+            "UPDATE knowledge SET reinforcement_count = reinforcement_count + 1, "
+            "last_hit_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            (entry_id,),
+        )
+        db.commit()
+        count = db.execute(
+            "SELECT reinforcement_count FROM knowledge WHERE id = ?", (entry_id,)
+        ).fetchone()["reinforcement_count"]
+        return _with_nudge(
+            f"Reinforced: {row['topic']} (reinforcement_count={count})", tracker
+        )
+
+    _PINNABLE_TABLES = {
+        "knowledge": "knowledge",
+        "negative": "negative_knowledge",
+        "error": "errors",
+        "rule": "rules",
+    }
+
+    @mcp.tool()
+    def pin_item(entry_type: str, entry_id: int) -> str:
+        """Pin an item so it's always loaded and never goes stale.
+
+        Pinned items get a fixed 2.0 boost in search ranking (~20 passive hits).
+
+        Args:
+            entry_type: 'knowledge', 'negative', 'error', or 'rule'
+            entry_id: ID of the entry to pin
+        """
+        tracker.record_call("pin_item")
+        table = _PINNABLE_TABLES.get(entry_type)
+        if not table:
+            return _with_nudge(
+                f"Invalid entry_type '{entry_type}'. Use: {', '.join(_PINNABLE_TABLES.keys())}",
+                tracker,
+            )
+        row = db.execute(f"SELECT id FROM {table} WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            return _with_nudge(f"{entry_type} entry {entry_id} not found.", tracker)
+
+        db.execute_write(f"UPDATE {table} SET pinned = 1 WHERE id = ?", (entry_id,))
+        db.commit()
+        return _with_nudge(f"Pinned {entry_type} #{entry_id}.", tracker)
+
+    @mcp.tool()
+    def unpin_item(entry_type: str, entry_id: int) -> str:
+        """Unpin an item, restoring normal staleness behavior.
+
+        Args:
+            entry_type: 'knowledge', 'negative', 'error', or 'rule'
+            entry_id: ID of the entry to unpin
+        """
+        tracker.record_call("unpin_item")
+        table = _PINNABLE_TABLES.get(entry_type)
+        if not table:
+            return _with_nudge(
+                f"Invalid entry_type '{entry_type}'. Use: {', '.join(_PINNABLE_TABLES.keys())}",
+                tracker,
+            )
+        row = db.execute(f"SELECT id FROM {table} WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            return _with_nudge(f"{entry_type} entry {entry_id} not found.", tracker)
+
+        db.execute_write(f"UPDATE {table} SET pinned = 0 WHERE id = ?", (entry_id,))
+        db.commit()
+        return _with_nudge(f"Unpinned {entry_type} #{entry_id}.", tracker)

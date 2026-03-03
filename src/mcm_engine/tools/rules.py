@@ -395,3 +395,30 @@ def register_rules_tools(
             f"Sync complete: {indexed} new, {updated} updated, {removed} orphans removed.",
             tracker,
         )
+
+    @mcp.tool()
+    def reinforce_rule(rule_id: int) -> str:
+        """Deliberately reinforce a rule — signals "still correct".
+
+        Stronger than a passive search hit (3x weight in ranking).
+
+        Args:
+            rule_id: ID of the rule to reinforce
+        """
+        tracker.record_call("reinforce_rule")
+        row = db.execute("SELECT id, title FROM rules WHERE id = ?", (rule_id,)).fetchone()
+        if not row:
+            return _with_nudge(f"Rule {rule_id} not found.", tracker)
+
+        db.execute_write(
+            "UPDATE rules SET reinforcement_count = reinforcement_count + 1, "
+            "last_hit_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            (rule_id,),
+        )
+        db.commit()
+        count = db.execute(
+            "SELECT reinforcement_count FROM rules WHERE id = ?", (rule_id,)
+        ).fetchone()["reinforcement_count"]
+        return _with_nudge(
+            f"Reinforced: {row['title']} (reinforcement_count={count})", tracker
+        )

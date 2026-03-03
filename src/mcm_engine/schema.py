@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 4
+CORE_VERSION = 5
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS knowledge (
     alternatives TEXT,
     hit_count INTEGER DEFAULT 0,
     last_hit_at TEXT,
+    reinforcement_count INTEGER DEFAULT 0,
+    pinned INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -33,6 +35,7 @@ CREATE TABLE IF NOT EXISTS negative_knowledge (
     correct_approach TEXT,
     severity TEXT DEFAULT 'normal',
     project TEXT,
+    pinned INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -45,6 +48,7 @@ CREATE TABLE IF NOT EXISTS errors (
     fix TEXT,
     tags TEXT,
     project TEXT,
+    pinned INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -150,6 +154,8 @@ CREATE TABLE IF NOT EXISTS rules (
     category TEXT,
     hit_count INTEGER DEFAULT 0,
     last_hit_at TEXT,
+    reinforcement_count INTEGER DEFAULT 0,
+    pinned INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -195,6 +201,23 @@ CREATE INDEX IF NOT EXISTS idx_relations_source
     ON relations(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_relations_target
     ON relations(target_type, target_id);
+
+-- Numbered mid-session checkpoints
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER,
+    sequence_num INTEGER NOT NULL,
+    goal TEXT,
+    progress TEXT,
+    open_questions TEXT,
+    blockers TEXT,
+    next_steps TEXT,
+    active_files TEXT,
+    key_decisions TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots(session_id, sequence_num);
 """
 
 
@@ -236,11 +259,46 @@ def _migrate_v3_to_v4(db: KnowledgeDB) -> None:
     log("Migration v3->v4: relations table (applied via CORE_SCHEMA)")
 
 
+def _migrate_v4_to_v5(db: KnowledgeDB) -> None:
+    """v4 -> v5: Add reinforcement, pinning, snapshots, project scoping."""
+    # knowledge: reinforcement_count, pinned
+    if not _has_column(db, "knowledge", "reinforcement_count"):
+        db.execute_write("ALTER TABLE knowledge ADD COLUMN reinforcement_count INTEGER DEFAULT 0")
+        log("Migration v4->v5: added knowledge.reinforcement_count")
+    if not _has_column(db, "knowledge", "pinned"):
+        db.execute_write("ALTER TABLE knowledge ADD COLUMN pinned INTEGER DEFAULT 0")
+        log("Migration v4->v5: added knowledge.pinned")
+
+    # negative_knowledge: pinned
+    if not _has_column(db, "negative_knowledge", "pinned"):
+        db.execute_write("ALTER TABLE negative_knowledge ADD COLUMN pinned INTEGER DEFAULT 0")
+        log("Migration v4->v5: added negative_knowledge.pinned")
+
+    # errors: pinned
+    if not _has_column(db, "errors", "pinned"):
+        db.execute_write("ALTER TABLE errors ADD COLUMN pinned INTEGER DEFAULT 0")
+        log("Migration v4->v5: added errors.pinned")
+
+    # rules: reinforcement_count, pinned
+    if not _has_column(db, "rules", "reinforcement_count"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN reinforcement_count INTEGER DEFAULT 0")
+        log("Migration v4->v5: added rules.reinforcement_count")
+    if not _has_column(db, "rules", "pinned"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN pinned INTEGER DEFAULT 0")
+        log("Migration v4->v5: added rules.pinned")
+
+    # snapshots table — CREATE IF NOT EXISTS handles idempotency via CORE_SCHEMA
+    log("Migration v4->v5: snapshots table (applied via CORE_SCHEMA)")
+
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
     (2, 3, _migrate_v2_to_v3),
     (3, 4, _migrate_v3_to_v4),
+    (4, 5, _migrate_v4_to_v5),
 ]
 
 
