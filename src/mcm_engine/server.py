@@ -13,6 +13,7 @@ from .plugin import MCMPlugin, SearchScope
 from .schema import migrate_core, migrate_plugin
 from .tracker import SessionTracker
 from .tools.knowledge import register_knowledge_tools
+from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
 from .tools.search import register_search_tools
 from .tools.session import register_session_tools
@@ -135,6 +136,9 @@ class MCMServer:
         register_rules_tools(
             self.mcp, self.db, self.tracker, config.project_name, rules_path, project_root
         )
+
+        # Relations tools
+        register_relations_tools(self.mcp, self.db, self.tracker)
 
         # Register plugin tools
         for plugin in self._plugins:

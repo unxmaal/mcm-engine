@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 3
+CORE_VERSION = 4
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -177,6 +177,24 @@ CREATE TRIGGER IF NOT EXISTS rules_au AFTER UPDATE ON rules BEGIN
     INSERT INTO rules_fts(rowid, title, keywords, description, category)
     VALUES (new.id, new.title, new.keywords, new.description, new.category);
 END;
+
+-- Typed relationships between knowledge entries
+CREATE TABLE IF NOT EXISTS relations (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,  -- 'knowledge', 'error', 'rule', 'negative'
+    source_id INTEGER NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    relation TEXT NOT NULL,     -- 'fixes', 'causes', 'supersedes', 'contradicts', 'related'
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(source_type, source_id, target_type, target_id, relation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relations_source
+    ON relations(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_relations_target
+    ON relations(target_type, target_id);
 """
 
 
@@ -210,10 +228,19 @@ def _migrate_v2_to_v3(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v3_to_v4(db: KnowledgeDB) -> None:
+    """v3 -> v4: Add relations table for typed edges between knowledge entries.
+
+    CREATE IF NOT EXISTS handles this idempotently — already applied by CORE_SCHEMA.
+    """
+    log("Migration v3->v4: relations table (applied via CORE_SCHEMA)")
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
     (2, 3, _migrate_v2_to_v3),
+    (3, 4, _migrate_v3_to_v4),
 ]
 
 

@@ -57,6 +57,25 @@ def register_session_tools(
         except Exception:
             pass  # rules table may not exist in older DBs
 
+        # Relationships count
+        try:
+            row = db.execute("SELECT COUNT(*) as cnt FROM relations").fetchone()
+            parts.append(f"Relationships: {row['cnt']}")
+        except Exception:
+            pass
+
+        # Stale knowledge (>90 days old, no recent hit)
+        try:
+            row = db.execute(
+                "SELECT COUNT(*) as cnt FROM knowledge "
+                "WHERE julianday('now') - julianday(created_at) > 90 "
+                "AND (last_hit_at IS NULL OR julianday('now') - julianday(last_hit_at) > 90)"
+            ).fetchone()
+            if row["cnt"] > 0:
+                parts.append(f"Stale knowledge (>90d unreinforced): {row['cnt']}")
+        except Exception:
+            pass
+
         # Last handoff
         handoff = db.execute(
             "SELECT status, current_task, next_steps, blockers, created_at "
