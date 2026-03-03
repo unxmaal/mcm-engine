@@ -43,7 +43,7 @@ def rules_env(db, project_root):
     search_all_fn = register_search_tools(mcp, db, tracker, [])
     register_knowledge_tools(mcp, db, tracker, "test-project", search_all_fn)
     register_session_tools(mcp, db, tracker, "test-project", [])
-    register_rules_tools(mcp, db, tracker, "test-project", rules_path, project_root)
+    register_rules_tools(mcp, db, tracker, "test-project", [rules_path], project_root)
 
     return mcp, db, tracker, rules_path, project_root
 
@@ -381,7 +381,7 @@ class TestSyncRules:
         import shutil
         shutil.rmtree(rules_path)
         result = mcp["sync_rules"]()
-        assert "not found" in result
+        assert "No rules directories found" in result
 
     def test_subdirectory_indexing(self, rules_env):
         mcp, db, tracker, rules_path, project_root = rules_env
@@ -440,3 +440,121 @@ class TestRulesIntegration:
 
         result = mcp["session_start"]()
         assert "Rules indexed: 2" in result
+
+
+# --- Multi-path tests ---
+
+class TestMultiPathRules:
+    @pytest.fixture
+    def multi_env(self, db, project_root):
+        """Environment with two rules paths: project-local + shared external."""
+        mcp = FakeMCP()
+        tracker = SessionTracker(NudgeConfig(
+            store_reminder_turns=100,
+            checkpoint_turns=100,
+            mandatory_stop_turns=200,
+        ))
+        local_rules = project_root / "rules"
+        # Create an external shared rules directory (outside project root)
+        shared_rules = project_root.parent / "shared-rules"
+        shared_rules.mkdir(exist_ok=True)
+
+        search_all_fn = register_search_tools(mcp, db, tracker, [])
+        register_knowledge_tools(mcp, db, tracker, "test-project", search_all_fn)
+        register_session_tools(mcp, db, tracker, "test-project", [])
+        register_rules_tools(
+            mcp, db, tracker, "test-project",
+            [local_rules, shared_rules], project_root,
+        )
+
+        return mcp, db, tracker, local_rules, shared_rules, project_root
+
+    def test_new_files_created_in_primary_path(self, multi_env):
+        mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
+        result = mcp["add_rule"](
+            title="Local Rule",
+            keywords="local",
+            content="Created in primary path.",
+            category="testing",
+        )
+        assert "Rule added" in result
+        assert (local_rules / "testing" / "local-rule.md").exists()
+        assert not list(shared_rules.rglob("local-rule.md"))
+
+    def test_sync_indexes_both_paths(self, multi_env):
+        mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
+        # Create a rule in local path
+        f1 = local_rules / "local.md"
+        f1.write_text("# Local Rule\n\n**Keywords:** local\n\nLocal content.\n")
+        # Create a rule in shared path
+        f2 = shared_rules / "shared.md"
+        f2.write_text("# Shared Rule\n\n**Keywords:** shared, bigcorp\n\nShared content.\n")
+
+        result = mcp["sync_rules"]()
+        assert "2 new" in result
+
+        local_row = db.execute("SELECT * FROM rules WHERE title = 'Local Rule'").fetchone()
+        shared_row = db.execute("SELECT * FROM rules WHERE title = 'Shared Rule'").fetchone()
+        assert local_row is not None
+        assert shared_row is not None
+        # Local path is relative; shared path is absolute (outside project root)
+        assert local_row["file_path"] == "rules/local.md"
+        assert shared_row["file_path"] == str(f2)
+
+    def test_search_finds_shared_rules(self, multi_env):
+        mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
+        f = shared_rules / "bigcorp-auth.md"
+        f.write_text(
+            "# BigCorp SSO Integration\n\n"
+            "**Keywords:** sso, auth, oauth, bigcorp\n"
+            "**Category:** auth\n\n"
+            "Always use the internal SSO gateway at sso.bigcorp.internal.\n"
+        )
+        mcp["sync_rules"]()
+
+        result = mcp["search"](query="bigcorp sso auth")
+        assert "RULE" in result
+        assert "SSO" in result
+
+    def test_read_rule_works_with_absolute_path(self, multi_env):
+        mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
+        f = shared_rules / "readable-shared.md"
+        f.write_text("# Readable Shared\n\n**Keywords:** shared\n\nShared content.\n")
+        mcp["sync_rules"]()
+
+        result = mcp["read_rule"](file_path=str(f))
+        assert "# Readable Shared" in result
+        assert "Shared content." in result
+
+    def test_orphan_removal_for_external_path(self, multi_env):
+        mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
+        f = shared_rules / "doomed-shared.md"
+        f.write_text("# Doomed Shared\n\n**Keywords:** doomed\n\nGoing away.\n")
+        mcp["sync_rules"]()
+
+        # Verify it was indexed
+        row = db.execute("SELECT * FROM rules WHERE title = 'Doomed Shared'").fetchone()
+        assert row is not None
+
+        # Delete the file and re-sync
+        f.unlink()
+        result = mcp["sync_rules"]()
+        assert "1 orphans removed" in result
+
+        row = db.execute("SELECT * FROM rules WHERE title = 'Doomed Shared'").fetchone()
+        assert row is None
+
+    def test_missing_shared_path_still_syncs_local(self, multi_env):
+        mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
+        # Create a local rule
+        f = local_rules / "survives.md"
+        f.write_text("# Survivor\n\n**Keywords:** local\n\nStill here.\n")
+
+        # Remove shared path
+        import shutil
+        shutil.rmtree(shared_rules)
+
+        result = mcp["sync_rules"]()
+        assert "1 new" in result
+        row = db.execute("SELECT * FROM rules WHERE title = 'Survivor'").fetchone()
+        assert row is not None

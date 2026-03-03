@@ -38,7 +38,7 @@ def rel_env(db, project_root):
     search_all_fn = register_search_tools(mcp, db, tracker, [])
     register_knowledge_tools(mcp, db, tracker, "test-project", search_all_fn)
     register_session_tools(mcp, db, tracker, "test-project", [])
-    register_rules_tools(mcp, db, tracker, "test-project", rules_path, project_root)
+    register_rules_tools(mcp, db, tracker, "test-project", [rules_path], project_root)
     register_relations_tools(mcp, db, tracker)
 
     return mcp, db, tracker

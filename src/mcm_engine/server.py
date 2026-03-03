@@ -132,9 +132,9 @@ class MCMServer:
         )
 
         # Rules tools
-        rules_path = config.resolve_rules_path(project_root)
+        rules_paths = config.resolve_rules_paths(project_root)
         register_rules_tools(
-            self.mcp, self.db, self.tracker, config.project_name, rules_path, project_root
+            self.mcp, self.db, self.tracker, config.project_name, rules_paths, project_root
         )
 
         # Relations tools

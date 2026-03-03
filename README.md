@@ -47,6 +47,28 @@ nudges:
   mandatory_stop_turns: 50
 ```
 
+### Shared Rules Across Projects
+
+`rules_path` accepts a list. The first entry is the primary directory where
+new rule files are created. All entries are scanned by `sync_rules` and
+indexed for search.
+
+```yaml
+rules_path:
+  - rules/                                # project-specific (primary)
+  - /home/you/shared-rules/bigcorp/       # shared business logic
+  - /home/you/shared-rules/infra/         # shared infra patterns
+```
+
+Or via environment variable (colon-separated):
+
+```bash
+export MCM_RULES_PATH="rules/:/home/you/shared-rules/bigcorp"
+```
+
+External rules outside the project root are stored with absolute paths in the
+DB index. Run `sync_rules` after adding or modifying shared rule files.
+
 ## MCP Integration
 
 Add to your project's `.mcp.json`:

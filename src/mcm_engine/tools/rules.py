@@ -108,10 +108,18 @@ def register_rules_tools(
     db: KnowledgeDB,
     tracker: SessionTracker,
     project_name: str,
-    rules_path: Path,
+    rules_paths: list[Path],
     project_root: Path,
 ) -> None:
-    """Register add_rule, read_rule, promote_to_rule, sync_rules tools."""
+    """Register add_rule, read_rule, promote_to_rule, sync_rules tools.
+
+    Args:
+        rules_paths: List of rules directories. The first is the primary
+            directory where new rule files are created. All are scanned
+            by sync_rules.
+    """
+    # Primary path for creating new files; all paths for scanning
+    primary_rules_path = rules_paths[0] if rules_paths else project_root / "rules"
 
     @mcp.tool()
     def add_rule(
@@ -167,7 +175,7 @@ def register_rules_tools(
                 warning = f"\nWarning: file '{file_path}' does not exist. Rule indexed without file backing."
         else:
             # Create a new rule file
-            cat_dir = rules_path / category if category else rules_path
+            cat_dir = primary_rules_path / category if category else primary_rules_path
             cat_dir.mkdir(parents=True, exist_ok=True)
             slug = _slugify(title)
             new_file = cat_dir / f"{slug}.md"
@@ -208,7 +216,8 @@ def register_rules_tools(
         """
         tracker.record_call("read_rule", topic=file_path)
 
-        full = project_root / file_path
+        fp = Path(file_path)
+        full = fp if fp.is_absolute() else project_root / file_path
         if not full.exists():
             return _with_nudge(f"Rule file not found: {file_path}", tracker)
 
@@ -312,23 +321,35 @@ def register_rules_tools(
 
     @mcp.tool()
     def sync_rules() -> str:
-        """Re-index all .md files in the rules directory. Upserts DB entries
-        and removes orphans for files that no longer exist.
+        """Re-index all .md files across all configured rules directories.
+        Upserts DB entries and removes orphans for files that no longer exist.
         """
         tracker.record_call("sync_rules")
 
-        if not rules_path.exists():
-            return _with_nudge(f"Rules directory not found: {rules_path}", tracker)
+        # Collect .md files from all rules paths
+        md_files: list[Path] = []
+        missing_paths: list[str] = []
+        for rp in rules_paths:
+            if rp.exists():
+                md_files.extend(sorted(rp.rglob("*.md")))
+            else:
+                missing_paths.append(str(rp))
 
-        # Collect all .md files
-        md_files: list[Path] = sorted(rules_path.rglob("*.md"))
+        if not md_files and missing_paths:
+            return _with_nudge(
+                f"No rules directories found: {', '.join(missing_paths)}", tracker
+            )
 
         indexed = 0
         updated = 0
         removed = 0
 
         for md_file in md_files:
-            rel_path = str(md_file.relative_to(project_root))
+            try:
+                rel_path = str(md_file.relative_to(project_root))
+            except ValueError:
+                # External path (not under project_root) — store absolute
+                rel_path = str(md_file)
             parsed = _parse_rule_file(md_file)
             if not parsed.get("title"):
                 continue  # Skip files without a title heading
@@ -360,8 +381,10 @@ def register_rules_tools(
         # Remove orphans: DB entries whose files no longer exist
         all_rules = db.execute("SELECT id, file_path FROM rules WHERE file_path IS NOT NULL").fetchall()
         for rule in all_rules:
-            if rule["file_path"]:
-                full = project_root / rule["file_path"]
+            fp = rule["file_path"]
+            if fp:
+                # Absolute paths stored as-is; relative paths resolved against project_root
+                full = Path(fp) if Path(fp).is_absolute() else project_root / fp
                 if not full.exists():
                     db.execute_write("DELETE FROM rules WHERE id = ?", (rule["id"],))
                     removed += 1

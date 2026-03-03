@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import yaml
 
@@ -29,7 +29,7 @@ class MCMConfig:
     log_path: str = ""
     plugins: list[str] = field(default_factory=list)
     nudges: NudgeConfig = field(default_factory=NudgeConfig)
-    rules_path: str = "rules/"
+    rules_path: Union[str, list[str]] = "rules/"
     server_name: str = ""
     server_instructions: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
@@ -47,12 +47,19 @@ class MCMConfig:
             return p
         return project_root / p
 
-    def resolve_rules_path(self, project_root: Path) -> Path:
-        """Resolve rules_path relative to project root."""
-        p = Path(self.rules_path)
-        if p.is_absolute():
-            return p
-        return project_root / p
+    def resolve_rules_paths(self, project_root: Path) -> list[Path]:
+        """Resolve rules_path(s) relative to project root.
+
+        Accepts a single string or a list of strings. Returns a list of
+        resolved Path objects. The first path is the "primary" rules
+        directory where new rule files are created.
+        """
+        raw = self.rules_path if isinstance(self.rules_path, list) else [self.rules_path]
+        result: list[Path] = []
+        for entry in raw:
+            p = Path(entry)
+            result.append(p if p.is_absolute() else project_root / p)
+        return result
 
 
 def load_config(config_path: Path | None = None, project_root: Path | None = None) -> MCMConfig:
@@ -99,7 +106,10 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     for env_key, config_key in env_map.items():
         val = os.environ.get(env_key)
         if val is not None:
-            raw[config_key] = val
+            if config_key == "rules_path" and ":" in val:
+                raw[config_key] = val.split(":")
+            else:
+                raw[config_key] = val
 
     # Validate required fields
     if "project_name" not in raw:
