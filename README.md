@@ -4,21 +4,42 @@ Memory Context Management engine for AI coding sessions.
 
 Persistent knowledge management + session handoff + behavioral nudges, delivered as an MCP server.
 
+## Install
+
+mcm-engine is not yet published to PyPI. Install from a local clone:
+
+```bash
+# Standard install
+pip install /path/to/mcm-engine
+
+# Editable install (changes take effect immediately)
+pip install -e /path/to/mcm-engine
+
+# Or install globally with uv/pipx (no venv needed)
+uv tool install /path/to/mcm-engine
+```
+
 ## Quick Start
 
 ```bash
-pip install mcm-engine
+cd /path/to/your-project
 mcm-engine init --project myproject
 mcm-engine run
 ```
 
+`init` creates:
+- `mcm-engine.yaml` — project configuration
+- `.claude/knowledge.db` — knowledge database
+- `rules/` — directory for persistent rule files
+
 ## Configuration
 
-Create `mcm-engine.yaml` in your project root:
+`mcm-engine.yaml` in your project root:
 
 ```yaml
 project_name: myproject
 db_path: .claude/knowledge.db
+rules_path: rules/
 plugins: []
 nudges:
   store_reminder_turns: 10
@@ -28,7 +49,7 @@ nudges:
 
 ## MCP Integration
 
-Add to `.mcp.json`:
+Add to your project's `.mcp.json`:
 
 ```json
 {
@@ -43,15 +64,55 @@ Add to `.mcp.json`:
 
 ## Tools
 
+### Knowledge Management
+
 | Tool | Purpose |
 |------|---------|
-| `search` | Unified FTS5 search across all knowledge |
-| `add_knowledge` | Store findings, decisions, insights |
+| `search` | Unified FTS5 search across all knowledge, rules, errors |
+| `add_knowledge` | Store findings, decisions, insights (deduplicates by topic) |
 | `add_negative` | Store anti-patterns and dead ends |
-| `report_error` | Log error + auto-search for fixes |
-| `session_start` | Initialize session with context |
+| `report_error` | Log error + auto-search for fixes (with quality gate) |
+
+### Rules (Persistent Knowledge)
+
+| Tool | Purpose |
+|------|---------|
+| `add_rule` | Create/index a rule file in `rules/` |
+| `read_rule` | Read a rule file's contents |
+| `promote_to_rule` | Promote a DB entry to a persistent rule file |
+| `sync_rules` | Re-index all rule files after manual edits |
+
+### Relationships
+
+| Tool | Purpose |
+|------|---------|
+| `link_knowledge` | Create typed edges (fixes, causes, supersedes, contradicts, related) |
+| `get_related` | Show all relationships for an entry |
+
+### Session Management
+
+| Tool | Purpose |
+|------|---------|
+| `session_start` | Initialize session with context + stale knowledge report |
 | `session_handoff` | Snapshot state for next session |
 | `session_summary` | Current session statistics |
+
+## Architecture
+
+Two-layer knowledge system:
+
+- **Rule files** (`rules/*.md`) — authoritative, human-readable, version-controlled
+- **Knowledge DB** (`.claude/knowledge.db`) — fast FTS5 lookup cache + agent memory
+
+The DB indexes rule files for search. If DB and files disagree, files win.
+
+### Search Features
+
+- **FTS5 full-text search** with LIKE fallback across all scopes (knowledge, rules, errors, negative knowledge)
+- **Composite ranking** combining text relevance, hit frequency, and recency
+- **Quality gate** on auto-search (report_error) to filter weak matches
+- **Staleness detection** — entries >90 days old without recent hits tagged `[STALE]`
+- **Deduplication** — add_knowledge updates existing entries with matching topic+kind
 
 ## Plugins
 
