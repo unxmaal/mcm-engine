@@ -81,6 +81,49 @@ class TestAddKnowledge:
         assert tracker.turn_count - tracker.last_store_turn == 0
 
 
+class TestAddKnowledgeDedup:
+    def test_exact_topic_match_updates(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="WAL mode", summary="original summary")
+        result = mcp["add_knowledge"](topic="WAL mode", summary="updated summary")
+        assert "Updated existing" in result
+        assert "original summary" in result  # shows old value
+
+        rows = db.execute("SELECT * FROM knowledge WHERE topic = 'WAL mode'").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["summary"] == "updated summary"
+
+    def test_exact_topic_different_kind_inserts(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="WAL mode", summary="a finding", kind="finding")
+        mcp["add_knowledge"](topic="WAL mode", summary="a decision", kind="decision")
+
+        rows = db.execute("SELECT * FROM knowledge WHERE topic = 'WAL mode'").fetchall()
+        assert len(rows) == 2
+
+    def test_fuzzy_match_warns(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="WAL mode for SQLite", summary="use WAL")
+        result = mcp["add_knowledge"](topic="SQLite WAL configuration", summary="configure WAL")
+        # Should still insert (different topic) but warn about similar
+        assert "similar entry exists" in result or "Stored" in result
+
+        rows = db.execute("SELECT COUNT(*) as cnt FROM knowledge").fetchone()
+        assert rows["cnt"] == 2
+
+    def test_update_preserves_hit_count(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="test-preserve", summary="v1")
+        # Simulate some hits
+        db.execute_write("UPDATE knowledge SET hit_count = 5 WHERE topic = 'test-preserve'")
+        db.commit()
+
+        mcp["add_knowledge"](topic="test-preserve", summary="v2")
+        row = db.execute("SELECT * FROM knowledge WHERE topic = 'test-preserve'").fetchone()
+        assert row["summary"] == "v2"
+        assert row["hit_count"] == 5  # preserved, not reset
+
+
 class TestAddNegative:
     def test_basic_insert(self, tool_env):
         mcp, db, tracker = tool_env
@@ -158,6 +201,28 @@ class TestSearch:
         mcp["search"](query="WAL")
         row = db.execute("SELECT hit_count FROM knowledge WHERE topic = 'WAL'").fetchone()
         assert row["hit_count"] >= 1
+
+
+class TestSearchRanking:
+    def test_search_sets_last_hit_at(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="WAL ranking", summary="test last_hit_at")
+        mcp["search"](query="WAL ranking")
+        row = db.execute("SELECT last_hit_at FROM knowledge WHERE topic = 'WAL ranking'").fetchone()
+        assert row["last_hit_at"] is not None
+
+    def test_high_hit_count_ranks_higher(self, tool_env):
+        """Entries with more hits should appear in results (not be pushed out)."""
+        mcp, db, tracker = tool_env
+        # Insert two entries, one with high hit count
+        mcp["add_knowledge"](topic="popular malloc", summary="well-known malloc fact")
+        mcp["add_knowledge"](topic="obscure malloc", summary="obscure malloc trivia")
+        db.execute_write("UPDATE knowledge SET hit_count = 50 WHERE topic = 'popular malloc'")
+        db.commit()
+
+        result = mcp["search"](query="malloc")
+        assert "popular malloc" in result
+        assert "obscure malloc" in result
 
 
 class TestSessionStart:

@@ -212,9 +212,10 @@ def register_rules_tools(
         if not full.exists():
             return _with_nudge(f"Rule file not found: {file_path}", tracker)
 
-        # Increment hit count
+        # Increment hit count and record last_hit_at
         db.execute_write(
-            "UPDATE rules SET hit_count = hit_count + 1, updated_at = datetime('now') "
+            "UPDATE rules SET hit_count = hit_count + 1, "
+            "last_hit_at = datetime('now'), updated_at = datetime('now') "
             "WHERE file_path = ?",
             (file_path,),
         )

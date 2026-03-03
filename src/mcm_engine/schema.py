@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 2
+CORE_VERSION = 3
 
+# Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
 -- Core knowledge table
 CREATE TABLE IF NOT EXISTS knowledge (
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS knowledge (
     rationale TEXT,
     alternatives TEXT,
     hit_count INTEGER DEFAULT 0,
+    last_hit_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -147,6 +149,7 @@ CREATE TABLE IF NOT EXISTS rules (
     description TEXT,
     category TEXT,
     hit_count INTEGER DEFAULT 0,
+    last_hit_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -177,29 +180,82 @@ END;
 """
 
 
+def _has_column(db: KnowledgeDB, table: str, column: str) -> bool:
+    """Check if a column exists in a table."""
+    cols = db.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in cols)
+
+
+# Incremental migrations: (from_version) -> callable
+# Each function upgrades from version N to N+1.
+def _migrate_v1_to_v2(db: KnowledgeDB) -> None:
+    """v1 -> v2: Add rules table, FTS5, and triggers.
+
+    CREATE IF NOT EXISTS handles this idempotently — the tables/triggers
+    were already applied by CORE_SCHEMA executescript.
+    """
+    log("Migration v1->v2: rules table (applied via CORE_SCHEMA)")
+
+
+def _migrate_v2_to_v3(db: KnowledgeDB) -> None:
+    """v2 -> v3: Add last_hit_at columns to knowledge and rules."""
+    if not _has_column(db, "knowledge", "last_hit_at"):
+        db.execute_write("ALTER TABLE knowledge ADD COLUMN last_hit_at TEXT")
+        log("Migration v2->v3: added knowledge.last_hit_at")
+
+    if not _has_column(db, "rules", "last_hit_at"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN last_hit_at TEXT")
+        log("Migration v2->v3: added rules.last_hit_at")
+
+    db.commit()
+
+
+_MIGRATIONS = [
+    # (from_version, to_version, function)
+    (1, 2, _migrate_v1_to_v2),
+    (2, 3, _migrate_v2_to_v3),
+]
+
+
 def migrate_core(db: KnowledgeDB) -> None:
-    """Apply core schema. Idempotent — uses CREATE IF NOT EXISTS."""
+    """Apply core schema and run any pending migrations.
+
+    Fresh databases get the full CORE_SCHEMA (latest version).
+    Existing databases run incremental migrations from their current version.
+    """
+    # Apply full schema — CREATE IF NOT EXISTS makes this safe for existing DBs
     db.executescript(CORE_SCHEMA)
 
-    # Track version
+    # Check current version
     existing = db.execute(
         "SELECT version FROM _mcm_versions WHERE component = 'core'"
     ).fetchone()
+
     if existing is None:
+        # Fresh install — already at latest
         db.execute_write(
             "INSERT INTO _mcm_versions (component, version) VALUES ('core', ?)",
             (CORE_VERSION,),
         )
         db.commit()
+        log(f"Core schema initialized at version {CORE_VERSION}")
     elif existing["version"] < CORE_VERSION:
-        # v1 → v2: rules table added via CREATE IF NOT EXISTS in CORE_SCHEMA
-        # (already applied by executescript above — just bump version)
+        current = existing["version"]
+        # Run each pending migration in order
+        for from_v, to_v, migrate_fn in _MIGRATIONS:
+            if from_v >= current and to_v <= CORE_VERSION:
+                log(f"Running migration v{from_v}->v{to_v}")
+                migrate_fn(db)
+                current = to_v
+
         db.execute_write(
             "UPDATE _mcm_versions SET version = ?, updated_at = datetime('now') WHERE component = 'core'",
             (CORE_VERSION,),
         )
         db.commit()
-    log(f"Core schema at version {CORE_VERSION}")
+        log(f"Core schema migrated to version {CORE_VERSION}")
+    else:
+        log(f"Core schema at version {CORE_VERSION}")
 
 
 def migrate_plugin(db: KnowledgeDB, plugin_name: str, schema_sql: str, version: int) -> None:

@@ -25,17 +25,26 @@ def _search_all_scopes(
     fts_query = sanitize_fts(query)
     like_pattern = f"%{query}%"
 
-    # Knowledge FTS
+    # Knowledge FTS — composite ranking: FTS5 relevance + hit_count boost + recency boost
+    # rank is negative (more negative = better FTS match)
+    # Composite: rank (FTS relevance) - 0.1*hit_count - recency_days_bonus
+    #   where recency_days_bonus = max(0, 30 - days_since_creation) / 30
+    # This promotes frequently-hit and recent entries.
     try:
         rows = db.execute(
-            "SELECT k.id, k.topic, k.kind, k.summary, k.detail, k.tags "
+            "SELECT k.id, k.topic, k.kind, k.summary, k.detail, k.tags, k.hit_count, "
+            "  rank AS fts_rank, "
+            "  COALESCE((julianday('now') - julianday(k.created_at)), 999) AS age_days "
             "FROM knowledge_fts f JOIN knowledge k ON f.rowid = k.id "
-            "WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT ?",
+            "WHERE knowledge_fts MATCH ? "
+            "ORDER BY (rank - 0.1 * k.hit_count - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(k.created_at), 999)) / 30.0) "
+            "LIMIT ?",
             (fts_query, limit),
         ).fetchall()
         for r in rows:
             db.execute_write(
-                "UPDATE knowledge SET hit_count = hit_count + 1 WHERE id = ?",
+                "UPDATE knowledge SET hit_count = hit_count + 1, "
+                "last_hit_at = datetime('now') WHERE id = ?",
                 (r["id"],),
             )
             entry = f"[KNOWLEDGE/{r['kind'].upper()}] {r['topic']}: {r['summary']}"
@@ -47,11 +56,12 @@ def _search_all_scopes(
         if rows:
             db.commit()
     except Exception:
-        # FTS5 failed, try LIKE fallback
+        # FTS5 failed, try LIKE fallback — rank by hit_count + recency
         rows = db.execute(
             "SELECT id, topic, kind, summary, detail, tags FROM knowledge "
             "WHERE topic LIKE ? OR summary LIKE ? OR detail LIKE ? OR tags LIKE ? "
-            "ORDER BY hit_count DESC LIMIT ?",
+            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
+            "LIMIT ?",
             (like_pattern, like_pattern, like_pattern, like_pattern, limit),
         ).fetchall()
         for r in rows:
@@ -114,17 +124,20 @@ def _search_all_scopes(
                 entry += f"\n  Root cause: {r['root_cause']}"
             results.append(entry)
 
-    # Rules FTS
+    # Rules FTS — composite ranking same as knowledge
     try:
         rows = db.execute(
-            "SELECT r.id, r.title, r.keywords, r.description, r.category, r.file_path "
+            "SELECT r.id, r.title, r.keywords, r.description, r.category, r.file_path, r.hit_count "
             "FROM rules_fts f JOIN rules r ON f.rowid = r.id "
-            "WHERE rules_fts MATCH ? ORDER BY rank LIMIT ?",
+            "WHERE rules_fts MATCH ? "
+            "ORDER BY (rank - 0.1 * r.hit_count - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(r.created_at), 999)) / 30.0) "
+            "LIMIT ?",
             (fts_query, limit),
         ).fetchall()
         for r in rows:
             db.execute_write(
-                "UPDATE rules SET hit_count = hit_count + 1 WHERE id = ?",
+                "UPDATE rules SET hit_count = hit_count + 1, "
+                "last_hit_at = datetime('now') WHERE id = ?",
                 (r["id"],),
             )
             entry = f"[RULE] {r['title']}"
@@ -141,7 +154,8 @@ def _search_all_scopes(
         rows = db.execute(
             "SELECT id, title, keywords, description, category, file_path FROM rules "
             "WHERE title LIKE ? OR keywords LIKE ? OR description LIKE ? OR category LIKE ? "
-            "ORDER BY hit_count DESC LIMIT ?",
+            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
+            "LIMIT ?",
             (like_pattern, like_pattern, like_pattern, like_pattern, limit),
         ).fetchall()
         for r in rows:

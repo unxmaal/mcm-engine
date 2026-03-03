@@ -58,6 +58,9 @@ def register_knowledge_tools(
     ) -> str:
         """Store a learning — finding, decision, or insight.
 
+        Automatically detects duplicates: exact topic match updates the existing
+        entry; fuzzy match warns but still inserts.
+
         Args:
             topic: What this knowledge is about
             summary: One-line summary
@@ -69,13 +72,50 @@ def register_knowledge_tools(
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
+
+        # Exact topic match — update instead of insert
+        existing = db.execute(
+            "SELECT id, summary FROM knowledge WHERE topic = ? AND kind = ?",
+            (topic, kind),
+        ).fetchone()
+        if existing:
+            db.execute_write(
+                "UPDATE knowledge SET summary = ?, detail = ?, tags = ?, "
+                "rationale = ?, alternatives = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (summary, detail, tags, rationale, alternatives, existing["id"]),
+            )
+            db.commit()
+            return _with_nudge(
+                f"Updated existing {kind}: {topic} (was: {existing['summary'][:80]})",
+                tracker, topic,
+            )
+
+        # Fuzzy match — warn but still insert
+        warning = ""
+        try:
+            fts_query = sanitize_fts(topic)
+            similar = db.execute(
+                "SELECT k.id, k.topic, k.summary "
+                "FROM knowledge_fts f JOIN knowledge k ON f.rowid = k.id "
+                "WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT 1",
+                (fts_query,),
+            ).fetchone()
+            if similar:
+                warning = f"\n  Note: similar entry exists — [{similar['topic']}]: {similar['summary'][:80]}"
+        except Exception:
+            pass
+
         db.execute_write(
             "INSERT INTO knowledge (topic, kind, summary, detail, tags, project, rationale, alternatives) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (topic, kind, summary, detail, tags, project_name, rationale, alternatives),
         )
         db.commit()
-        return _with_nudge(f"Stored {kind}: {topic} — {summary}", tracker, topic)
+        msg = f"Stored {kind}: {topic} — {summary}"
+        if warning:
+            msg += warning
+        return _with_nudge(msg, tracker, topic)
 
     @mcp.tool()
     def add_negative(
