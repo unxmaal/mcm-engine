@@ -12,6 +12,7 @@ from .config import MCMConfig, NudgeConfig, load_config
 from .db import KnowledgeDB
 from .plugin import MCMPlugin, SearchScope
 from .server import MCMServer
+from .tracker import MandatoryStopError
 
 __all__ = [
     "MCMServer",
@@ -20,6 +21,7 @@ __all__ = [
     "MCMPlugin",
     "SearchScope",
     "KnowledgeDB",
+    "MandatoryStopError",
     "load_config",
 ]
 

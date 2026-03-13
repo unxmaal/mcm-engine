@@ -269,6 +269,7 @@ def register_session_tools(
             key_decisions: Important decisions made
         """
         tracker.record_call("save_snapshot")
+        tracker.last_checkpoint_turn = tracker.turn_count
 
         # Find the current session (most recent)
         session_row = db.execute(
