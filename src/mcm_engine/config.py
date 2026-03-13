@@ -18,6 +18,14 @@ class NudgeConfig:
     mandatory_stop_turns: int = 50
     hyper_focus_threshold: int = 3
     rules_check_interval: int = 15
+    # When True, tools are blocked (return error) after mandatory_stop_turns +
+    # mandatory_stop_grace calls without a session_handoff/save_snapshot.
+    # Set to False to revert to advisory-only nudges.
+    mandatory_stop_blocking: bool = False
+    mandatory_stop_grace: int = 5
+    # Nudge escalation: after this many ignored nudges of the same type,
+    # escalate to MandatoryStopError blocking.
+    nudge_escalation_threshold: int = 3
 
 
 @dataclass

@@ -121,6 +121,7 @@ class MCMServer:
             self.mcp, self.db, self.tracker, self._search_scopes,
             project_name=config.project_name,
         )
+        self._search_all_fn = search_all_fn
 
         # Knowledge tools (needs search_all for report_error)
         register_knowledge_tools(
