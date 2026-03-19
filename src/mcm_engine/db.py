@@ -36,6 +36,65 @@ def sanitize_fts(query: str) -> str:
     return " ".join(f'"{t}"' for t in terms)
 
 
+# Noise words filtered from search queries
+_NOISE_WORDS = frozenset({
+    "the", "a", "an", "in", "on", "at", "to", "for", "of", "with",
+    "is", "are", "was", "were", "be", "been", "being",
+    "and", "or", "but", "not", "no", "this", "that",
+    "how", "what", "when", "where", "why", "which",
+    "it", "its", "my", "our", "your",
+})
+
+
+def build_fts_queries(query: str) -> list[str]:
+    """Build FTS5 queries from most to least strict.
+
+    Returns queries to try in order:
+    1. AND of all significant terms (most precise)
+    2. OR of all significant terms (any term matches)
+    3. Prefix match on terms >= 3 chars (partial words)
+
+    Porter stemming in the FTS5 index handles inflections automatically.
+    """
+    raw_terms = query.split()
+    terms = [t for t in raw_terms if t.lower() not in _NOISE_WORDS and len(t) > 1]
+    if not terms:
+        terms = raw_terms  # fallback: use everything if all filtered
+
+    if not terms:
+        return []
+
+    quoted = [f'"{t}"' for t in terms]
+
+    queries = []
+    if len(terms) > 1:
+        # 1. AND: all terms must appear
+        queries.append(" ".join(quoted))
+        # 2. OR: any term matches
+        queries.append(" OR ".join(quoted))
+    else:
+        queries.append(quoted[0])
+
+    # 3. Prefix match on each term (catches partial words)
+    prefix_terms = [f'"{t}"*' for t in terms if len(t) >= 3]
+    if prefix_terms and len(terms) > 1:
+        queries.append(" OR ".join(prefix_terms))
+
+    return queries
+
+
+def build_like_patterns(query: str) -> list[str]:
+    """Build per-term LIKE patterns for fallback search.
+
+    Returns individual '%term%' patterns for each significant word,
+    instead of searching for the entire query as a substring.
+    """
+    terms = [t for t in query.split() if len(t) > 2]
+    if not terms:
+        terms = query.split()
+    return [f"%{t}%" for t in terms if t]
+
+
 class KnowledgeDB:
     """SQLite wrapper for all knowledge DB operations.
 

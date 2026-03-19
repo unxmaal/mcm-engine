@@ -203,6 +203,44 @@ class TestSearch:
         assert row["hit_count"] >= 1
 
 
+class TestSearchStemming:
+    def test_stemming_matches_inflections(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="SRPM conversion pipeline", summary="converts Fedora SRPMs to IRIX")
+        # "converting" should match "conversion" via porter stemmer
+        result = mcp["search"](query="converting SRPM")
+        assert "conversion pipeline" in result
+
+    def test_stemming_matches_plurals(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="staging packages", summary="how packages are staged")
+        result = mcp["search"](query="package staging")
+        assert "staging packages" in result
+
+    def test_stemming_build_matches_building(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="build system", summary="how the build system works")
+        result = mcp["search"](query="building")
+        assert "build system" in result
+
+
+class TestSearchORFallback:
+    def test_or_fallback_when_and_fails(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="batch build", summary="orchestrates full rebuilds")
+        mcp["add_knowledge"](topic="SRPM conversion", summary="converts specs for IRIX")
+        # "batch conversion" — no single row has both, but OR should find entries
+        result = mcp["search"](query="batch conversion")
+        assert "No results" not in result
+
+    def test_like_fallback_per_term(self, tool_env):
+        mcp, db, tracker = tool_env
+        mcp["add_knowledge"](topic="c++ ABI issues", summary="IRIX c++ name mangling")
+        # FTS might struggle with "c++" but LIKE fallback should work per-term
+        result = mcp["search"](query="ABI mangling")
+        assert "No results" not in result
+
+
 class TestSearchRanking:
     def test_search_sets_last_hit_at(self, tool_env):
         mcp, db, tracker = tool_env

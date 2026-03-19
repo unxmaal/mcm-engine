@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from ..db import KnowledgeDB, sanitize_fts
+from ..db import KnowledgeDB, build_fts_queries, build_like_patterns, sanitize_fts
 from ..tracker import SessionTracker
 
 # Quality gate: FTS5 rank threshold.
@@ -42,6 +42,37 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
     return result
 
 
+def _fts_match(db: KnowledgeDB, sql: str, fts_queries: list[str], extra_params: tuple, limit: int) -> list:
+    """Try each FTS query in order, return results from the first that hits."""
+    for fts_query in fts_queries:
+        try:
+            params = (fts_query,) + extra_params + (limit,)
+            rows = db.execute(sql, params).fetchall()
+            if rows:
+                return rows
+        except Exception:
+            continue
+    return []
+
+
+def _like_search(db: KnowledgeDB, sql: str, like_patterns: list[str], columns: list[str],
+                 extra_params: tuple, limit: int) -> list:
+    """Per-term OR LIKE fallback search."""
+    if not like_patterns:
+        return []
+
+    clauses = []
+    params: list = []
+    for pat in like_patterns:
+        col_clauses = [f"{col} LIKE ?" for col in columns]
+        clauses.append(f"({' OR '.join(col_clauses)})")
+        params.extend([pat] * len(columns))
+
+    where = " OR ".join(clauses)
+    full_sql = sql.replace("{LIKE_WHERE}", where)
+    return db.execute(full_sql, tuple(params) + extra_params + (limit,)).fetchall()
+
+
 def _search_all_scopes(
     db: KnowledgeDB,
     query: str,
@@ -58,8 +89,8 @@ def _search_all_scopes(
         project: If non-empty, filter to entries matching this project + global (NULL project).
     """
     results: list[str] = []
-    fts_query = sanitize_fts(query)
-    like_pattern = f"%{query}%"
+    fts_queries = build_fts_queries(query)
+    like_patterns = build_like_patterns(query)
 
     # Build project filter clause
     project_filter = ""
@@ -69,27 +100,56 @@ def _search_all_scopes(
         project_params = (project,)
 
     # Knowledge FTS — composite ranking with quality gate
-    try:
-        rank_filter = "AND rank <= ?" if min_rank < 0 else ""
-        params: tuple
-        if min_rank < 0:
-            params = (fts_query, min_rank) + project_params + (limit,)
-        else:
-            params = (fts_query,) + project_params + (limit,)
+    rank_filter = "AND rank <= ?" if min_rank < 0 else ""
+    rank_params: tuple = (min_rank,) if min_rank < 0 else ()
 
-        rows = db.execute(
-            "SELECT k.id, k.topic, k.kind, k.summary, k.detail, k.tags, k.hit_count, "
-            "  k.reinforcement_count, k.pinned, rank AS fts_rank, "
-            "  COALESCE((julianday('now') - julianday(k.created_at)), 0) AS age_days, "
-            "  CASE WHEN k.last_hit_at IS NOT NULL "
-            "    THEN (julianday('now') - julianday(k.last_hit_at)) ELSE NULL END AS last_hit_age "
-            "FROM knowledge_fts f JOIN knowledge k ON f.rowid = k.id "
-            f"WHERE knowledge_fts MATCH ? {rank_filter} {project_filter} "
-            "ORDER BY (rank - 0.1 * k.hit_count - 0.3 * k.reinforcement_count - 2.0 * k.pinned "
-            "  - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(k.created_at), 999)) / 30.0) "
+    rows = _fts_match(
+        db,
+        "SELECT k.id, k.topic, k.kind, k.summary, k.detail, k.tags, k.hit_count, "
+        "  k.reinforcement_count, k.pinned, rank AS fts_rank, "
+        "  COALESCE((julianday('now') - julianday(k.created_at)), 0) AS age_days, "
+        "  CASE WHEN k.last_hit_at IS NOT NULL "
+        "    THEN (julianday('now') - julianday(k.last_hit_at)) ELSE NULL END AS last_hit_age "
+        "FROM knowledge_fts f JOIN knowledge k ON f.rowid = k.id "
+        f"WHERE knowledge_fts MATCH ? {rank_filter} {project_filter} "
+        "ORDER BY (rank - 0.1 * k.hit_count - 0.3 * k.reinforcement_count - 2.0 * k.pinned "
+        "  - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(k.created_at), 999)) / 30.0) "
+        "LIMIT ?",
+        fts_queries,
+        rank_params + project_params,
+        limit,
+    )
+
+    if not rows:
+        # LIKE fallback — per-term OR
+        like_project_filter = ""
+        like_project_params: tuple = ()
+        if project:
+            like_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
+            like_project_params = (project,)
+
+        rows = _like_search(
+            db,
+            "SELECT id, topic, kind, summary, detail, tags, pinned, "
+            "  COALESCE((julianday('now') - julianday(created_at)), 0) AS age_days, "
+            "  CASE WHEN last_hit_at IS NOT NULL "
+            "    THEN (julianday('now') - julianday(last_hit_at)) ELSE NULL END AS last_hit_age "
+            f"FROM knowledge WHERE ({{LIKE_WHERE}}) {like_project_filter} "
+            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
             "LIMIT ?",
-            params,
-        ).fetchall()
+            like_patterns,
+            ["topic", "summary", "detail", "tags"],
+            like_project_params,
+            limit,
+        )
+        for r in rows:
+            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
+            pinned = _pinned_tag(r["pinned"])
+            entry = f"[KNOWLEDGE/{r['kind'].upper()}]{stale}{pinned} {r['topic']}: {r['summary']}"
+            if r["detail"]:
+                entry += f"\n  Detail: {r['detail']}"
+            results.append(entry)
+    else:
         for r in rows:
             db.execute_write(
                 "UPDATE knowledge SET hit_count = hit_count + 1, "
@@ -104,157 +164,145 @@ def _search_all_scopes(
             if r["tags"]:
                 entry += f"\n  Tags: {r['tags']}"
             results.append(entry)
-        if rows:
-            db.commit()
-    except Exception:
-        # FTS5 failed, try LIKE fallback
-        like_project_filter = ""
-        like_project_params: tuple = ()
-        if project:
-            like_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
-            like_project_params = (project,)
-
-        rows = db.execute(
-            "SELECT id, topic, kind, summary, detail, tags, pinned, "
-            "  COALESCE((julianday('now') - julianday(created_at)), 0) AS age_days, "
-            "  CASE WHEN last_hit_at IS NOT NULL "
-            "    THEN (julianday('now') - julianday(last_hit_at)) ELSE NULL END AS last_hit_age "
-            "FROM knowledge "
-            f"WHERE (topic LIKE ? OR summary LIKE ? OR detail LIKE ? OR tags LIKE ?) {like_project_filter} "
-            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
-            "LIMIT ?",
-            (like_pattern, like_pattern, like_pattern, like_pattern) + like_project_params + (limit,),
-        ).fetchall()
-        for r in rows:
-            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[KNOWLEDGE/{r['kind'].upper()}]{stale}{pinned} {r['topic']}: {r['summary']}"
-            if r["detail"]:
-                entry += f"\n  Detail: {r['detail']}"
-            results.append(entry)
+        db.commit()
 
     # Negative knowledge FTS
-    try:
-        rank_filter = "AND rank <= ?" if min_rank < 0 else ""
-        neg_project_filter = ""
-        neg_project_params: tuple = ()
-        if project:
-            neg_project_filter = "AND (n.project = ? OR n.project IS NULL OR n.project = '')"
-            neg_project_params = (project,)
+    neg_project_filter = ""
+    neg_project_params: tuple = ()
+    if project:
+        neg_project_filter = "AND (n.project = ? OR n.project IS NULL OR n.project = '')"
+        neg_project_params = (project,)
 
-        if min_rank < 0:
-            params = (fts_query, min_rank) + neg_project_params + (limit,)
-        else:
-            params = (fts_query,) + neg_project_params + (limit,)
+    rows = _fts_match(
+        db,
+        "SELECT n.id, n.category, n.what_failed, n.why_failed, n.correct_approach, "
+        "  n.pinned, rank AS fts_rank "
+        "FROM negative_fts f JOIN negative_knowledge n ON f.rowid = n.id "
+        f"WHERE negative_fts MATCH ? {rank_filter} {neg_project_filter} "
+        "ORDER BY (rank - 2.0 * n.pinned) LIMIT ?",
+        fts_queries,
+        rank_params + neg_project_params,
+        limit,
+    )
 
-        rows = db.execute(
-            "SELECT n.id, n.category, n.what_failed, n.why_failed, n.correct_approach, "
-            "  n.pinned, rank AS fts_rank "
-            "FROM negative_fts f JOIN negative_knowledge n ON f.rowid = n.id "
-            f"WHERE negative_fts MATCH ? {rank_filter} {neg_project_filter} "
-            "ORDER BY (rank - 2.0 * n.pinned) LIMIT ?",
-            params,
-        ).fetchall()
-        for r in rows:
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[NEGATIVE]{pinned} {r['category']}: {r['what_failed']}"
-            if r["why_failed"]:
-                entry += f"\n  Why: {r['why_failed']}"
-            if r["correct_approach"]:
-                entry += f"\n  Fix: {r['correct_approach']}"
-            results.append(entry)
-    except Exception:
+    if not rows:
         like_neg_project_filter = ""
         like_neg_project_params: tuple = ()
         if project:
             like_neg_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
             like_neg_project_params = (project,)
 
-        rows = db.execute(
+        rows = _like_search(
+            db,
             "SELECT category, what_failed, why_failed, correct_approach, pinned "
-            "FROM negative_knowledge "
-            f"WHERE (category LIKE ? OR what_failed LIKE ? OR why_failed LIKE ?) {like_neg_project_filter} "
+            f"FROM negative_knowledge WHERE ({{LIKE_WHERE}}) {like_neg_project_filter} "
             "LIMIT ?",
-            (like_pattern, like_pattern, like_pattern) + like_neg_project_params + (limit,),
-        ).fetchall()
-        for r in rows:
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[NEGATIVE]{pinned} {r['category']}: {r['what_failed']}"
-            if r["why_failed"]:
-                entry += f"\n  Why: {r['why_failed']}"
-            results.append(entry)
+            like_patterns,
+            ["category", "what_failed", "why_failed"],
+            like_neg_project_params,
+            limit,
+        )
+
+    for r in rows:
+        pinned = _pinned_tag(r["pinned"])
+        entry = f"[NEGATIVE]{pinned} {r['category']}: {r['what_failed']}"
+        if r["why_failed"]:
+            entry += f"\n  Why: {r['why_failed']}"
+        if r["correct_approach"]:
+            entry += f"\n  Fix: {r['correct_approach']}"
+        results.append(entry)
 
     # Errors FTS
-    try:
-        rank_filter = "AND rank <= ?" if min_rank < 0 else ""
-        err_project_filter = ""
-        err_project_params: tuple = ()
-        if project:
-            err_project_filter = "AND (e.project = ? OR e.project IS NULL OR e.project = '')"
-            err_project_params = (project,)
+    err_project_filter = ""
+    err_project_params: tuple = ()
+    if project:
+        err_project_filter = "AND (e.project = ? OR e.project IS NULL OR e.project = '')"
+        err_project_params = (project,)
 
-        if min_rank < 0:
-            params = (fts_query, min_rank) + err_project_params + (limit,)
-        else:
-            params = (fts_query,) + err_project_params + (limit,)
+    rows = _fts_match(
+        db,
+        "SELECT e.id, e.pattern, e.context, e.root_cause, e.fix, e.pinned, "
+        "  rank AS fts_rank "
+        "FROM errors_fts f JOIN errors e ON f.rowid = e.id "
+        f"WHERE errors_fts MATCH ? {rank_filter} {err_project_filter} "
+        "ORDER BY (rank - 2.0 * e.pinned) LIMIT ?",
+        fts_queries,
+        rank_params + err_project_params,
+        limit,
+    )
 
-        rows = db.execute(
-            "SELECT e.id, e.pattern, e.context, e.root_cause, e.fix, e.pinned, "
-            "  rank AS fts_rank "
-            "FROM errors_fts f JOIN errors e ON f.rowid = e.id "
-            f"WHERE errors_fts MATCH ? {rank_filter} {err_project_filter} "
-            "ORDER BY (rank - 2.0 * e.pinned) LIMIT ?",
-            params,
-        ).fetchall()
-        for r in rows:
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[ERROR]{pinned} {r['pattern']}"
-            if r["root_cause"]:
-                entry += f"\n  Root cause: {r['root_cause']}"
-            if r["fix"]:
-                entry += f"\n  Fix: {r['fix']}"
-            results.append(entry)
-    except Exception:
+    if not rows:
         like_err_project_filter = ""
         like_err_project_params: tuple = ()
         if project:
             like_err_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
             like_err_project_params = (project,)
 
-        rows = db.execute(
+        rows = _like_search(
+            db,
             "SELECT pattern, context, root_cause, fix, pinned FROM errors "
-            f"WHERE (pattern LIKE ? OR context LIKE ? OR root_cause LIKE ?) {like_err_project_filter} "
+            f"WHERE ({{LIKE_WHERE}}) {like_err_project_filter} "
             "LIMIT ?",
-            (like_pattern, like_pattern, like_pattern) + like_err_project_params + (limit,),
-        ).fetchall()
-        for r in rows:
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[ERROR]{pinned} {r['pattern']}"
-            if r["root_cause"]:
-                entry += f"\n  Root cause: {r['root_cause']}"
-            results.append(entry)
+            like_patterns,
+            ["pattern", "context", "root_cause"],
+            like_err_project_params,
+            limit,
+        )
+
+    for r in rows:
+        pinned = _pinned_tag(r["pinned"])
+        entry = f"[ERROR]{pinned} {r['pattern']}"
+        if r["root_cause"]:
+            entry += f"\n  Root cause: {r['root_cause']}"
+        if r["fix"]:
+            entry += f"\n  Fix: {r['fix']}"
+        results.append(entry)
 
     # Rules FTS — composite ranking with quality gate (rules have no project column)
-    try:
-        rank_filter = "AND rank <= ?" if min_rank < 0 else ""
-        if min_rank < 0:
-            params = (fts_query, min_rank, limit)
-        else:
-            params = (fts_query, limit)
+    rows = _fts_match(
+        db,
+        "SELECT r.id, r.title, r.keywords, r.description, r.category, r.file_path, "
+        "  r.hit_count, r.reinforcement_count, r.pinned, rank AS fts_rank, "
+        "  COALESCE((julianday('now') - julianday(r.created_at)), 0) AS age_days, "
+        "  CASE WHEN r.last_hit_at IS NOT NULL "
+        "    THEN (julianday('now') - julianday(r.last_hit_at)) ELSE NULL END AS last_hit_age "
+        "FROM rules_fts f JOIN rules r ON f.rowid = r.id "
+        f"WHERE rules_fts MATCH ? {rank_filter} "
+        "ORDER BY (rank - 0.1 * r.hit_count - 0.3 * r.reinforcement_count - 2.0 * r.pinned "
+        "  - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(r.created_at), 999)) / 30.0) "
+        "LIMIT ?",
+        fts_queries,
+        rank_params,
+        limit,
+    )
 
-        rows = db.execute(
-            "SELECT r.id, r.title, r.keywords, r.description, r.category, r.file_path, "
-            "  r.hit_count, r.reinforcement_count, r.pinned, rank AS fts_rank, "
-            "  COALESCE((julianday('now') - julianday(r.created_at)), 0) AS age_days, "
-            "  CASE WHEN r.last_hit_at IS NOT NULL "
-            "    THEN (julianday('now') - julianday(r.last_hit_at)) ELSE NULL END AS last_hit_age "
-            "FROM rules_fts f JOIN rules r ON f.rowid = r.id "
-            f"WHERE rules_fts MATCH ? {rank_filter} "
-            "ORDER BY (rank - 0.1 * r.hit_count - 0.3 * r.reinforcement_count - 2.0 * r.pinned "
-            "  - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(r.created_at), 999)) / 30.0) "
+    if not rows:
+        rows = _like_search(
+            db,
+            "SELECT id, title, keywords, description, category, file_path, pinned, "
+            "  COALESCE((julianday('now') - julianday(created_at)), 0) AS age_days, "
+            "  CASE WHEN last_hit_at IS NOT NULL "
+            "    THEN (julianday('now') - julianday(last_hit_at)) ELSE NULL END AS last_hit_age "
+            "FROM rules WHERE ({LIKE_WHERE}) "
+            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
             "LIMIT ?",
-            params,
-        ).fetchall()
+            like_patterns,
+            ["title", "keywords", "description", "category"],
+            (),
+            limit,
+        )
+        for r in rows:
+            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
+            pinned = _pinned_tag(r["pinned"])
+            entry = f"[RULE]{stale}{pinned} {r['title']}"
+            if r["category"]:
+                entry += f" ({r['category']})"
+            if r["description"]:
+                entry += f"\n  {r['description']}"
+            if r["file_path"]:
+                entry += f"\n  File: {r['file_path']}"
+            results.append(entry)
+    else:
         for r in rows:
             db.execute_write(
                 "UPDATE rules SET hit_count = hit_count + 1, "
@@ -271,36 +319,13 @@ def _search_all_scopes(
             if r["file_path"]:
                 entry += f"\n  File: {r['file_path']}"
             results.append(entry)
-        if rows:
-            db.commit()
-    except Exception:
-        rows = db.execute(
-            "SELECT id, title, keywords, description, category, file_path, pinned, "
-            "  COALESCE((julianday('now') - julianday(created_at)), 0) AS age_days, "
-            "  CASE WHEN last_hit_at IS NOT NULL "
-            "    THEN (julianday('now') - julianday(last_hit_at)) ELSE NULL END AS last_hit_age "
-            "FROM rules "
-            "WHERE title LIKE ? OR keywords LIKE ? OR description LIKE ? OR category LIKE ? "
-            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
-            "LIMIT ?",
-            (like_pattern, like_pattern, like_pattern, like_pattern, limit),
-        ).fetchall()
-        for r in rows:
-            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[RULE]{stale}{pinned} {r['title']}"
-            if r["category"]:
-                entry += f" ({r['category']})"
-            if r["description"]:
-                entry += f"\n  {r['description']}"
-            if r["file_path"]:
-                entry += f"\n  File: {r['file_path']}"
-            results.append(entry)
+        db.commit()
 
     # Plugin search scopes
     for scope in plugin_search_scopes:
         try:
-            scope_results = scope.search(db, query, fts_query, like_pattern, limit)
+            scope_results = scope.search(db, query, sanitize_fts(query),
+                                         f"%{query}%", limit)
             results.extend(scope_results)
         except Exception:
             pass
@@ -338,8 +363,17 @@ def register_search_tools(
         Entries older than 90 days without recent hits are tagged [STALE].
         Pinned items are tagged [PINNED] and never go stale.
 
+        QUERY TIPS — use short keyword phrases, not natural language:
+          Good: "convert SRPM"     Bad: "how does worker package conversion work"
+          Good: "staging mtime"    Bad: "what causes the staging environment to be stale"
+          Good: "dlmalloc link"    Bad: "why does linking fail with dlmalloc"
+
+        Porter stemming matches inflected forms automatically (e.g., "convert"
+        matches "conversion", "converting"). Multi-word queries try AND first,
+        then OR, then prefix matching.
+
         Args:
-            query: Search terms
+            query: Search keywords (2-4 words ideal, avoid full sentences)
             scope: 'all', 'knowledge', 'negative', 'errors', or a plugin scope name
             limit: Max results per scope (default 10)
             project: Filter to this project (+ global items). Empty = no filter.
