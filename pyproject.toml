@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcm-engine"
-version = "0.3.0"
+version = "0.4.0"
 description = "Memory Context Management engine — persistent knowledge management for AI coding sessions"
 readme = "README.md"
 license = "MIT"
