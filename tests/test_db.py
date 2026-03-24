@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from mcm_engine.db import KnowledgeDB, sanitize_fts
+from mcm_engine.db import KnowledgeDB, build_fts_queries, build_like_patterns, sanitize_fts
 from mcm_engine.schema import migrate_core
 
 
@@ -96,3 +96,50 @@ class TestSanitizeFts:
 
     def test_empty(self):
         assert sanitize_fts("") == ""
+
+
+class TestBuildFtsQueries:
+    def test_single_term(self):
+        queries = build_fts_queries("dlmalloc")
+        assert len(queries) == 1
+        assert queries[0] == '"dlmalloc"'
+
+    def test_multi_term_and_then_or(self):
+        queries = build_fts_queries("slang libm")
+        assert len(queries) >= 2
+        assert queries[0] == '"slang" "libm"'  # AND
+        assert queries[1] == '"slang" OR "libm"'  # OR
+
+    def test_noise_words_filtered(self):
+        queries = build_fts_queries("how to convert the SRPM")
+        # "how", "to", "the" are noise — only "convert" and "SRPM" survive
+        assert queries[0] == '"convert" "SRPM"'
+
+    def test_all_noise_uses_raw(self):
+        queries = build_fts_queries("the a an")
+        # All filtered → falls back to raw terms
+        assert len(queries) >= 1
+
+    def test_empty_returns_empty(self):
+        assert build_fts_queries("") == []
+
+    def test_prefix_queries_for_multi_term(self):
+        queries = build_fts_queries("glib proxy")
+        # Should have AND, OR, and prefix queries
+        assert any("*" in q for q in queries)
+
+
+class TestBuildLikePatterns:
+    def test_basic(self):
+        patterns = build_like_patterns("slang libm convert")
+        assert patterns == ["%slang%", "%libm%", "%convert%"]
+
+    def test_short_words_filtered(self):
+        patterns = build_like_patterns("to be or not")
+        # "to", "be", "or" are ≤2 chars, "not" is 3 chars
+        assert "%not%" in patterns
+
+    def test_all_short_uses_raw(self):
+        patterns = build_like_patterns("ab cd")
+        # All ≤2 chars → fallback uses raw
+        assert len(patterns) == 2

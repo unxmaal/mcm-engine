@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 5
+CORE_VERSION = 6
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -75,19 +75,22 @@ CREATE TABLE IF NOT EXISTS _mcm_versions (
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
     topic, kind, summary, detail, tags,
     content='knowledge',
-    content_rowid='id'
+    content_rowid='id',
+    tokenize='porter unicode61'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS negative_fts USING fts5(
     category, what_failed, why_failed, correct_approach,
     content='negative_knowledge',
-    content_rowid='id'
+    content_rowid='id',
+    tokenize='porter unicode61'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS errors_fts USING fts5(
     pattern, context, root_cause, fix, tags,
     content='errors',
-    content_rowid='id'
+    content_rowid='id',
+    tokenize='porter unicode61'
 );
 
 -- Triggers: knowledge FTS sync
@@ -163,7 +166,8 @@ CREATE TABLE IF NOT EXISTS rules (
 CREATE VIRTUAL TABLE IF NOT EXISTS rules_fts USING fts5(
     title, keywords, description, category,
     content='rules',
-    content_rowid='id'
+    content_rowid='id',
+    tokenize='porter unicode61'
 );
 
 -- Triggers: rules FTS sync
@@ -293,12 +297,120 @@ def _migrate_v4_to_v5(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v5_to_v6(db: KnowledgeDB) -> None:
+    """v5 -> v6: Add porter stemmer to all FTS5 indexes.
+
+    FTS5 virtual tables cannot be ALTERed to change tokenizers.
+    Drop and recreate each FTS table with 'porter unicode61', then rebuild
+    the index from the content tables. Data tables are untouched.
+    """
+    fts_tables = [
+        ("knowledge_fts", "knowledge",
+         "topic, kind, summary, detail, tags", "knowledge"),
+        ("negative_fts", "negative_knowledge",
+         "category, what_failed, why_failed, correct_approach", "negative"),
+        ("errors_fts", "errors",
+         "pattern, context, root_cause, fix, tags", "errors"),
+        ("rules_fts", "rules",
+         "title, keywords, description, category", "rules"),
+    ]
+
+    for fts_table, content_table, columns, trigger_prefix in fts_tables:
+        # Drop old triggers
+        for suffix in ["ai", "ad", "au"]:
+            db.execute_write(f"DROP TRIGGER IF EXISTS {trigger_prefix}_{suffix}")
+
+        # Drop and recreate FTS table with porter stemmer
+        db.execute_write(f"DROP TABLE IF EXISTS {fts_table}")
+        db.execute_write(
+            f"CREATE VIRTUAL TABLE {fts_table} USING fts5("
+            f"  {columns},"
+            f"  content='{content_table}',"
+            f"  content_rowid='id',"
+            f"  tokenize='porter unicode61'"
+            f")"
+        )
+
+        # Rebuild FTS index from content table
+        db.execute_write(f"INSERT INTO {fts_table}({fts_table}) VALUES('rebuild')")
+        log(f"Migration v5->v6: rebuilt {fts_table} with porter stemmer")
+
+    # Recreate triggers (same SQL as CORE_SCHEMA, now against porter-tokenized tables)
+
+    # knowledge triggers
+    db.execute_write("""CREATE TRIGGER knowledge_ai AFTER INSERT ON knowledge BEGIN
+        INSERT INTO knowledge_fts(rowid, topic, kind, summary, detail, tags)
+        VALUES (new.id, new.topic, new.kind, new.summary, new.detail, new.tags);
+    END""")
+    db.execute_write("""CREATE TRIGGER knowledge_ad AFTER DELETE ON knowledge BEGIN
+        INSERT INTO knowledge_fts(knowledge_fts, rowid, topic, kind, summary, detail, tags)
+        VALUES ('delete', old.id, old.topic, old.kind, old.summary, old.detail, old.tags);
+    END""")
+    db.execute_write("""CREATE TRIGGER knowledge_au AFTER UPDATE ON knowledge BEGIN
+        INSERT INTO knowledge_fts(knowledge_fts, rowid, topic, kind, summary, detail, tags)
+        VALUES ('delete', old.id, old.topic, old.kind, old.summary, old.detail, old.tags);
+        INSERT INTO knowledge_fts(rowid, topic, kind, summary, detail, tags)
+        VALUES (new.id, new.topic, new.kind, new.summary, new.detail, new.tags);
+    END""")
+
+    # negative_knowledge triggers
+    db.execute_write("""CREATE TRIGGER negative_ai AFTER INSERT ON negative_knowledge BEGIN
+        INSERT INTO negative_fts(rowid, category, what_failed, why_failed, correct_approach)
+        VALUES (new.id, new.category, new.what_failed, new.why_failed, new.correct_approach);
+    END""")
+    db.execute_write("""CREATE TRIGGER negative_ad AFTER DELETE ON negative_knowledge BEGIN
+        INSERT INTO negative_fts(negative_fts, rowid, category, what_failed, why_failed, correct_approach)
+        VALUES ('delete', old.id, old.category, old.what_failed, old.why_failed, old.correct_approach);
+    END""")
+    db.execute_write("""CREATE TRIGGER negative_au AFTER UPDATE ON negative_knowledge BEGIN
+        INSERT INTO negative_fts(negative_fts, rowid, category, what_failed, why_failed, correct_approach)
+        VALUES ('delete', old.id, old.category, old.what_failed, old.why_failed, old.correct_approach);
+        INSERT INTO negative_fts(rowid, category, what_failed, why_failed, correct_approach)
+        VALUES (new.id, new.category, new.what_failed, new.why_failed, new.correct_approach);
+    END""")
+
+    # errors triggers
+    db.execute_write("""CREATE TRIGGER errors_ai AFTER INSERT ON errors BEGIN
+        INSERT INTO errors_fts(rowid, pattern, context, root_cause, fix, tags)
+        VALUES (new.id, new.pattern, new.context, new.root_cause, new.fix, new.tags);
+    END""")
+    db.execute_write("""CREATE TRIGGER errors_ad AFTER DELETE ON errors BEGIN
+        INSERT INTO errors_fts(errors_fts, rowid, pattern, context, root_cause, fix, tags)
+        VALUES ('delete', old.id, old.pattern, old.context, old.root_cause, old.fix, old.tags);
+    END""")
+    db.execute_write("""CREATE TRIGGER errors_au AFTER UPDATE ON errors BEGIN
+        INSERT INTO errors_fts(errors_fts, rowid, pattern, context, root_cause, fix, tags)
+        VALUES ('delete', old.id, old.pattern, old.context, old.root_cause, old.fix, old.tags);
+        INSERT INTO errors_fts(rowid, pattern, context, root_cause, fix, tags)
+        VALUES (new.id, new.pattern, new.context, new.root_cause, new.fix, new.tags);
+    END""")
+
+    # rules triggers
+    db.execute_write("""CREATE TRIGGER rules_ai AFTER INSERT ON rules BEGIN
+        INSERT INTO rules_fts(rowid, title, keywords, description, category)
+        VALUES (new.id, new.title, new.keywords, new.description, new.category);
+    END""")
+    db.execute_write("""CREATE TRIGGER rules_ad AFTER DELETE ON rules BEGIN
+        INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category)
+        VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category);
+    END""")
+    db.execute_write("""CREATE TRIGGER rules_au AFTER UPDATE ON rules BEGIN
+        INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category)
+        VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category);
+        INSERT INTO rules_fts(rowid, title, keywords, description, category)
+        VALUES (new.id, new.title, new.keywords, new.description, new.category);
+    END""")
+
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
     (2, 3, _migrate_v2_to_v3),
     (3, 4, _migrate_v3_to_v4),
     (4, 5, _migrate_v4_to_v5),
+    (5, 6, _migrate_v5_to_v6),
 ]
 
 
