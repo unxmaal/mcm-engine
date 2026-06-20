@@ -307,7 +307,7 @@ class CounterConformance:
         assert isinstance(counters, CounterStore)
         assert counters.CONTRACT_VERSION == CONTRACT_VERSION
 
-    def test_increment_writes_to_entry_row(self, storage, counters):
+    def test_increment_then_get_returns_value(self, storage, counters):
         k = storage.insert_knowledge(KnowledgeRow(id=0, topic="x", summary="x", kind="finding"))
         counters.increment(EntityType.KNOWLEDGE, k, "hit_count", by=3)
         snapshot = counters.get(EntityType.KNOWLEDGE, k)

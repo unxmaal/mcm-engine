@@ -6,6 +6,7 @@ engine core does NOT import this module — discovery happens through
 ``mcm_engine.adapters.storage = "postgres"`` entry point (or via the
 ``module:Class`` escape hatch in dev).
 """
+from .counters import PostgresCounters
 from .storage import PostgresStorage
 
-__all__ = ["PostgresStorage"]
+__all__ = ["PostgresCounters", "PostgresStorage"]

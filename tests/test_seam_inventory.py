@@ -49,6 +49,8 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # (Postgres folds FTS into the same row via tsvector generated columns).
     # +7 MCM2-11 id-preserving inserts, +4 iter, +1 bump_sequences.
     "adapters/postgres/storage.py": 45,
+    # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
+    "adapters/postgres/counters.py": 5,
 }
 
 
