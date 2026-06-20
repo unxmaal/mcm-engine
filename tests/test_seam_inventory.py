@@ -51,6 +51,9 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "adapters/postgres/storage.py": 45,
     # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
     "adapters/postgres/counters.py": 5,
+    # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
+    # plugin search via ILIKE).
+    "adapters/postgres/search.py": 4,
 }
 
 

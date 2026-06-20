@@ -55,13 +55,24 @@ class Capability(StrEnum):
     flag. The engine probes `Capability.X in adapter.capabilities` before
     calling. Adapters without the capability fall back to the
     always-required methods.
-
-    Empty for v1; populated as the contract evolves.
     """
 
-    # Placeholder so the enum class exists and adapters have a target
-    # to import. Real capabilities arrive with their methods.
-    _RESERVED = "_reserved"
+    #: Adapter supports dense-vector (embedding-based) similarity search.
+    #: MCM2-16 / MCM2-17. Embedding model selection is a separate axis
+    #: (see Capability.EMBEDDING_PROVIDER). Adapters without this flag
+    #: serve lexical search only — callers requesting vector search
+    #: degrade to lexical with a warning rather than failing.
+    VECTOR_SEARCH = "vector_search"
+
+    #: Adapter generates / accepts embedding vectors directly. Without
+    #: this, callers must precompute embeddings and pass them in via
+    #: VECTOR_SEARCH calls. Reserved — no adapter implements yet.
+    EMBEDDING_PROVIDER = "embedding_provider"
+
+    #: Adapter persists in-session tracker state across process restarts.
+    #: Embedded InMemorySession does NOT have this; a Redis-backed
+    #: SessionStore would.
+    DURABLE_SESSION = "durable_session"
 
 
 # ---------------------------------------------------------------------------

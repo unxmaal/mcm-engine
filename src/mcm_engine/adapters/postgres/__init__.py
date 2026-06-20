@@ -7,6 +7,7 @@ engine core does NOT import this module — discovery happens through
 ``module:Class`` escape hatch in dev).
 """
 from .counters import PostgresCounters
+from .search import PostgresSearch
 from .storage import PostgresStorage
 
-__all__ = ["PostgresCounters", "PostgresStorage"]
+__all__ = ["PostgresCounters", "PostgresSearch", "PostgresStorage"]
