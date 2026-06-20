@@ -29,6 +29,29 @@ class NudgeConfig:
 
 
 @dataclass
+class BackendsConfig:
+    """Selects which adapter implements each external concern.
+
+    Names resolve via the AdapterRegistry: bare names hit the entry-point
+    + manual-registration tables; "module:Class" syntax imports directly.
+    All four default to "embedded" — the in-process reference adapter
+    shipped with the engine.
+    """
+
+    storage: str = "embedded"
+    counters: str = "embedded"
+    search: str = "embedded"
+    session: str = "embedded"
+
+    # Per-adapter kwargs passed to __init__ (e.g., DSN for Postgres,
+    # URL for Redis). Each is a free-form dict; the adapter validates.
+    storage_options: dict[str, Any] = field(default_factory=dict)
+    counters_options: dict[str, Any] = field(default_factory=dict)
+    search_options: dict[str, Any] = field(default_factory=dict)
+    session_options: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class MCMConfig:
     """Top-level configuration for an MCM Engine instance."""
 
@@ -37,6 +60,7 @@ class MCMConfig:
     log_path: str = ""
     plugins: list[str] = field(default_factory=list)
     nudges: NudgeConfig = field(default_factory=NudgeConfig)
+    backends: BackendsConfig = field(default_factory=BackendsConfig)
     rules_path: Union[str, list[str]] = "rules/"
     server_name: str = ""
     server_instructions: str = ""
@@ -125,18 +149,43 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
             "project_name is required. Set it in mcm-engine.yaml or MCM_PROJECT_NAME env var."
         )
 
-    # Extract nudges sub-config
+    # Extract nudges sub-config — fail closed on unknown keys (MCM2-06).
     nudge_raw = raw.pop("nudges", {})
-    nudges = NudgeConfig(**{k: v for k, v in nudge_raw.items() if k in NudgeConfig.__dataclass_fields__})
+    nudge_fields = NudgeConfig.__dataclass_fields__
+    unknown_nudges = sorted(set(nudge_raw) - set(nudge_fields))
+    if unknown_nudges:
+        valid = ", ".join(sorted(nudge_fields))
+        raise ValueError(
+            f"unknown nudge key(s): {', '.join(unknown_nudges)}. "
+            f"Valid nudge keys: {valid}"
+        )
+    nudges = NudgeConfig(**nudge_raw)
 
-    # Build config
-    known_fields = set(MCMConfig.__dataclass_fields__.keys()) - {"nudges"}
+    # Extract backends sub-config — same strict-key hygiene (MCM2-04, MCM2-06).
+    backends_raw = raw.pop("backends", {})
+    backends_fields = BackendsConfig.__dataclass_fields__
+    unknown_backends = sorted(set(backends_raw) - set(backends_fields))
+    if unknown_backends:
+        valid = ", ".join(sorted(backends_fields))
+        raise ValueError(
+            f"unknown backends key(s): {', '.join(unknown_backends)}. "
+            f"Valid backends keys: {valid}"
+        )
+    backends = BackendsConfig(**backends_raw)
+
+    # Build top-level config — fail closed on unknown keys, except for the
+    # explicit `extra:` block which is the documented escape hatch.
+    known_fields = set(MCMConfig.__dataclass_fields__.keys()) - {"nudges", "backends"}
+    unknown_top = sorted(set(raw) - known_fields)
+    if unknown_top:
+        valid = ", ".join(sorted(known_fields))
+        raise ValueError(
+            f"unknown top-level config key(s): {', '.join(unknown_top)}. "
+            f"Valid keys: {valid}. "
+            f"For plugin-specific or future-compat settings, nest them under `extra:`."
+        )
     config_kwargs = {k: v for k, v in raw.items() if k in known_fields}
     config_kwargs["nudges"] = nudges
-
-    # Everything else goes into extra
-    extra = {k: v for k, v in raw.items() if k not in known_fields}
-    if extra:
-        config_kwargs.setdefault("extra", {}).update(extra)
+    config_kwargs["backends"] = backends
 
     return MCMConfig(**config_kwargs)
