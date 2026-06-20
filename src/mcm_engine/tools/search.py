@@ -12,13 +12,16 @@ from typing import Iterable
 
 from mcp.server.fastmcp import FastMCP
 
-from ..adapters.sqlite.counters import SqliteCounters
-from ..adapters.sqlite.search import SqliteSearch
-from ..adapters.sqlite.storage import SqliteStorage
-from ..backends import EntityType, SearchHit
-from ..db import KnowledgeDB
+from ..backends import (
+    CounterStore,
+    EntityType,
+    SearchBackend,
+    SearchHit,
+    StorageBackend,
+)
 from ..scoring import compose_rank, compose_rank_pinned_only
 from ..tracker import SessionTracker
+from ..wiring import Context, coerce_context
 
 # Quality gate: minimum normalized score (higher = better) for FTS results.
 # The v1 SQL used `rank <= -1.0` (FTS5 rank is negative-better). After our
@@ -27,6 +30,17 @@ RANK_THRESHOLD = 1.0
 
 # Staleness window: same 90-day threshold as v1.
 STALE_DAYS = 90
+
+# Scope string → entity-type set. Used by the `scope=` parameter on the
+# public search tool. Unknown values fall back to all types (loud-failure
+# on a bad scope would be worse UX than slightly-too-broad results).
+_SCOPE_MAP: dict[str, frozenset[EntityType]] = {
+    "all":       frozenset(EntityType),
+    "knowledge": frozenset({EntityType.KNOWLEDGE}),
+    "negative":  frozenset({EntityType.NEGATIVE}),
+    "errors":    frozenset({EntityType.ERROR}),
+    "rules":     frozenset({EntityType.RULE}),
+}
 
 
 def _staleness_tag(age_days: float | None, last_hit_age_days: float | None, pinned: bool) -> str:
@@ -53,7 +67,12 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
 def _age_days(ts: datetime | None) -> float | None:
     if ts is None:
         return None
-    delta = datetime.now() - ts
+    # Adapter datetimes mix tz-aware (Postgres TIMESTAMPTZ) and tz-naive
+    # (SQLite ISO strings). Use a now() matching ts's awareness so the
+    # subtraction works without depending on which storage adapter
+    # produced the row.
+    now = datetime.now(ts.tzinfo) if ts.tzinfo is not None else datetime.now()
+    delta = now - ts
     return delta.total_seconds() / 86400.0
 
 
@@ -68,8 +87,8 @@ def _project_match(row_project: str | None, requested: str) -> bool:
 
 def _score_and_format_knowledge(
     hit: SearchHit,
-    storage: SqliteStorage,
-    counters: SqliteCounters,
+    storage: StorageBackend,
+    counters: CounterStore,
     project: str,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.KNOWLEDGE, hit.entity_id)
@@ -99,11 +118,16 @@ def _score_and_format_knowledge(
 
 def _score_and_format_rule(
     hit: SearchHit,
-    storage: SqliteStorage,
-    counters: SqliteCounters,
+    storage: StorageBackend,
+    counters: CounterStore,
+    include_archived: bool = False,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.RULE, hit.entity_id)
     if row is None:
+        return None
+    # Archived rules are soft-deleted — invisible to default search.
+    # The watcher cascade (MCM2-23) and `read_rule` still reach them.
+    if row.archived and not include_archived:
         return None
     snap = counters.last_flushed_snapshot(EntityType.RULE, hit.entity_id)
     composite = compose_rank(
@@ -129,7 +153,7 @@ def _score_and_format_rule(
 
 def _score_and_format_negative(
     hit: SearchHit,
-    storage: SqliteStorage,
+    storage: StorageBackend,
     project: str,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.NEGATIVE, hit.entity_id)
@@ -149,7 +173,7 @@ def _score_and_format_negative(
 
 def _score_and_format_error(
     hit: SearchHit,
-    storage: SqliteStorage,
+    storage: StorageBackend,
     project: str,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.ERROR, hit.entity_id)
@@ -169,15 +193,16 @@ def _score_and_format_error(
 
 def _scope_block(
     etype: EntityType,
-    search_backend: SqliteSearch,
-    storage: SqliteStorage,
-    counters: SqliteCounters,
+    search_backend: SearchBackend,
+    storage: StorageBackend,
+    counters: CounterStore,
     *,
     query: str,
     limit: int,
     project: str,
     min_rank: float,
     bump_counters: bool,
+    include_archived: bool = False,
 ) -> list[str]:
     """Search one entity scope and return formatted result strings."""
     # Pull more than `limit` so the threshold filter still has options to
@@ -192,7 +217,7 @@ def _scope_block(
         if etype is EntityType.KNOWLEDGE:
             result = _score_and_format_knowledge(hit, storage, counters, project)
         elif etype is EntityType.RULE:
-            result = _score_and_format_rule(hit, storage, counters)
+            result = _score_and_format_rule(hit, storage, counters, include_archived)
         elif etype is EntityType.NEGATIVE:
             result = _score_and_format_negative(hit, storage, project)
         elif etype is EntityType.ERROR:
@@ -216,15 +241,17 @@ def _scope_block(
 
 
 def _search_all_scopes(
-    search_backend: SqliteSearch,
-    storage: SqliteStorage,
-    counters: SqliteCounters,
+    search_backend: SearchBackend,
+    storage: StorageBackend,
+    counters: CounterStore,
     query: str,
     limit: int,
     plugin_search_scopes: list,
     *,
     min_rank: float,
     project: str,
+    entity_types: frozenset[EntityType] = frozenset(EntityType),
+    include_archived: bool = False,
 ) -> str:
     results: list[str] = []
 
@@ -232,56 +259,68 @@ def _search_all_scopes(
     # to disable).
     gate = min_rank if min_rank > 0 else 0.0
 
-    # Knowledge (with counter bump).
-    results.extend(_scope_block(
-        EntityType.KNOWLEDGE, search_backend, storage, counters,
-        query=query, limit=limit, project=project, min_rank=gate, bump_counters=True,
-    ))
+    if EntityType.KNOWLEDGE in entity_types:
+        results.extend(_scope_block(
+            EntityType.KNOWLEDGE, search_backend, storage, counters,
+            query=query, limit=limit, project=project,
+            min_rank=gate, bump_counters=True,
+        ))
 
-    # Negative.
-    results.extend(_scope_block(
-        EntityType.NEGATIVE, search_backend, storage, counters,
-        query=query, limit=limit, project=project, min_rank=gate, bump_counters=False,
-    ))
+    if EntityType.NEGATIVE in entity_types:
+        results.extend(_scope_block(
+            EntityType.NEGATIVE, search_backend, storage, counters,
+            query=query, limit=limit, project=project,
+            min_rank=gate, bump_counters=False,
+        ))
 
-    # Errors.
-    results.extend(_scope_block(
-        EntityType.ERROR, search_backend, storage, counters,
-        query=query, limit=limit, project=project, min_rank=gate, bump_counters=False,
-    ))
+    if EntityType.ERROR in entity_types:
+        results.extend(_scope_block(
+            EntityType.ERROR, search_backend, storage, counters,
+            query=query, limit=limit, project=project,
+            min_rank=gate, bump_counters=False,
+        ))
 
-    # Rules (with counter bump). Rules have no project column.
-    results.extend(_scope_block(
-        EntityType.RULE, search_backend, storage, counters,
-        query=query, limit=limit, project="", min_rank=gate, bump_counters=True,
-    ))
+    if EntityType.RULE in entity_types:
+        # Rules have no project column; pass "" so the project filter is a no-op.
+        results.extend(_scope_block(
+            EntityType.RULE, search_backend, storage, counters,
+            query=query, limit=limit, project="",
+            min_rank=gate, bump_counters=True,
+            include_archived=include_archived,
+        ))
 
     # Plugin search scopes route through the SearchBackend (MCM2-07).
-    for scope in plugin_search_scopes:
-        try:
-            scope_results = search_backend.search_plugin(scope, query, limit)
-            results.extend(scope_results)
-        except Exception:
-            pass
+    # Only included in the "all" scope, since `scope=` targets engine-managed
+    # entity types only.
+    if entity_types == frozenset(EntityType):
+        for scope in plugin_search_scopes:
+            try:
+                scope_results = search_backend.search_plugin(scope, query, limit)
+                results.extend(scope_results)
+            except Exception:
+                pass
 
     return "\n\n".join(results) if results else ""
 
 
 def register_search_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
     plugin_search_scopes: list,
     project_name: str = "",
 ):
     """Register the unified search tool.
 
+    Accepts a Context or a raw KnowledgeDB for backward compat.
+
     Args:
         project_name: Default project for scoping report_error auto-searches.
     """
-    storage = SqliteStorage(db=db)
-    counters = SqliteCounters(db=db)
-    search_backend = SqliteSearch(db=db)
+    ctx = coerce_context(ctx_or_db)
+    storage = ctx.storage
+    counters = ctx.counters
+    search_backend = ctx.search
 
     def search_all(query: str, limit: int = 10) -> str:
         """Internal search function used by report_error. Applies quality
@@ -293,23 +332,40 @@ def register_search_tools(
         )
 
     @mcp.tool()
-    def search(query: str, scope: str = "all", limit: int = 10, project: str = "") -> str:
-        """Search across all knowledge, negative knowledge, errors, rules,
+    def search(
+        query: str,
+        scope: str = "all",
+        limit: int = 10,
+        project: str = "",
+        include_archived: bool = False,
+    ) -> str:
+        """Search across knowledge, negative knowledge, errors, rules,
         and plugin data.
+
+        Args:
+            query: full-text query.
+            scope: which entity types to search. One of "all" (default),
+                "knowledge", "negative", "errors", "rules". Unknown values
+                fall back to "all".
+            limit: max results per entity type.
+            project: filter knowledge/negative/error rows by project name.
+            include_archived: include soft-deleted rules. Default False —
+                archived rules are invisible to everyday search.
 
         Uses FTS5 full-text search with LIKE fallback. Results are ranked by
         a composite of text relevance, hit frequency, reinforcement, and
-        recency. Weak matches (below the quality gate threshold) are
-        filtered out unless explicitly requested via the `search` tool.
-        Entries older than 90 days without recent hits are tagged [STALE].
-        Pinned items are tagged [PINNED] and never go stale.
+        recency. Entries older than 90 days without recent hits are tagged
+        [STALE]. Pinned items are tagged [PINNED] and never go stale.
         """
         tracker.record_call("search", topic=query)
+        entity_types = _SCOPE_MAP.get(scope, _SCOPE_MAP["all"])
         # Explicit search: no quality gate.
         result = _search_all_scopes(
             search_backend, storage, counters, query, limit,
             plugin_search_scopes,
             min_rank=0.0, project=project,
+            entity_types=entity_types,
+            include_archived=include_archived,
         )
         if not result:
             return _with_nudge(f"No results for '{query}'.", tracker, query)

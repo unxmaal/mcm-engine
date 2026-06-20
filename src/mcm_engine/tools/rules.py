@@ -13,11 +13,11 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from ..adapters.sqlite.counters import SqliteCounters
-from ..adapters.sqlite.storage import SqliteStorage
 from ..backends import EntityType, RuleRow
-from ..db import KnowledgeDB, log
+from ..db import log
+from ..files.watcher import compute_content_hash
 from ..tracker import SessionTracker
+from ..wiring import Context, coerce_context
 
 
 def _slugify(text: str) -> str:
@@ -30,13 +30,17 @@ def _slugify(text: str) -> str:
 
 
 def _parse_rule_file(path: Path) -> dict:
-    """Extract metadata from a rule markdown file."""
+    """Extract metadata from a rule markdown file.
+
+    Always populates ``content_hash`` so callers (notably sync_rules) can
+    seed it on the row without re-reading the file.
+    """
     try:
         content = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return {}
 
-    result: dict[str, str] = {}
+    result: dict[str, str] = {"content_hash": compute_content_hash(content)}
     lines = content.split("\n")
 
     for line in lines:
@@ -101,17 +105,21 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
 
 def register_rules_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
     project_name: str,
     rules_paths: list[Path],
     project_root: Path,
 ) -> None:
     """Register add_rule, read_rule, promote_to_rule, sync_rules,
-    reinforce_rule tools."""
+    reinforce_rule tools.
+
+    Accepts a Context or a raw KnowledgeDB for backward compat.
+    """
+    ctx = coerce_context(ctx_or_db)
     primary_rules_path = rules_paths[0] if rules_paths else project_root / "rules"
-    storage = SqliteStorage(db=db)
-    counters = SqliteCounters(db=db)
+    storage = ctx.storage
+    counters = ctx.counters
 
     @mcp.tool()
     def add_rule(
@@ -141,6 +149,10 @@ def register_rules_tools(
 
         actual_path: str = file_path
         warning = ""
+        # content_hash is needed by the watcher cascade so engine-initiated
+        # writes don't trip a redundant re-cascade — see
+        # docs/watcher-cascade.md and rules/mcm2/.
+        content_hash: str | None = None
 
         if file_path:
             full = project_root / file_path
@@ -148,6 +160,9 @@ def register_rules_tools(
                 parsed = _parse_rule_file(full)
                 if not content and parsed.get("description"):
                     content = parsed["description"]
+                content_hash = compute_content_hash(
+                    full.read_text(encoding="utf-8")
+                )
             else:
                 warning = f"\nWarning: file '{file_path}' does not exist. Rule indexed without file backing."
         else:
@@ -164,6 +179,7 @@ def register_rules_tools(
             file_content = _generate_rule_content(title, keywords, category, content or "")
             new_file.write_text(file_content, encoding="utf-8")
             actual_path = str(new_file.relative_to(project_root))
+            content_hash = compute_content_hash(file_content)
 
         description = content[:500] if content else ""
         storage.insert_rule(RuleRow(
@@ -173,6 +189,7 @@ def register_rules_tools(
             file_path=actual_path or None,
             description=description or None,
             category=category or None,
+            content_hash=content_hash,
         ))
 
         msg = f"Rule added: {title}"
@@ -302,6 +319,7 @@ def register_rules_tools(
             keywords = parsed.get("keywords", "")
             category = parsed.get("category", "")
             description = parsed.get("description", "")
+            content_hash = parsed.get("content_hash")
 
             existing = storage.find_rule_by_file_path(rel_path)
             if existing is not None:
@@ -311,7 +329,11 @@ def register_rules_tools(
                     keywords=keywords,
                     description=description,
                     category=category,
+                    content_hash=content_hash,
                 )
+                # Files-win: a reappeared file un-archives its row.
+                if existing.archived:
+                    storage.restore_rule(existing.id)
                 updated += 1
             else:
                 storage.insert_rule(RuleRow(
@@ -321,13 +343,17 @@ def register_rules_tools(
                     file_path=rel_path,
                     description=description or None,
                     category=category or None,
+                    content_hash=content_hash,
                 ))
                 indexed += 1
 
-        # Soft-delete orphans (rules whose backing files are gone).
+        # Soft-delete orphans (rules whose backing files are gone). Skip
+        # rows that are already archived — re-archiving inflates the count,
+        # loses the original archived_at timestamp, and is functionally
+        # a no-op anyway.
         for r in storage.list_rules_with_file_paths():
             fp = r.file_path
-            if not fp:
+            if not fp or r.archived:
                 continue
             full = Path(fp) if Path(fp).is_absolute() else project_root / fp
             if not full.exists():

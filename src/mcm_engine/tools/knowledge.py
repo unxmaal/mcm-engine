@@ -11,11 +11,9 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 
-from ..adapters.sqlite.counters import SqliteCounters
-from ..adapters.sqlite.storage import SqliteStorage
 from ..backends import EntityType, ErrorRow, KnowledgeRow, NegativeRow
-from ..db import KnowledgeDB
 from ..tracker import SessionTracker
+from ..wiring import Context, coerce_context
 
 
 def _extract_keywords(error_text: str) -> list[str]:
@@ -48,7 +46,7 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
 
 def register_knowledge_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
     project_name: str,
     search_all_fn,
@@ -56,11 +54,13 @@ def register_knowledge_tools(
     """Register add_knowledge, add_negative, report_error,
     reinforce_knowledge, pin_item, unpin_item.
 
-    Builds an embedded SQLite Storage + Counters pair from the shared db
-    so every SQL operation flows through the StorageBackend contract.
+    Uses ``ctx.storage`` and ``ctx.counters`` so every adapter axis
+    selected in ``backends:`` config is honored at runtime. Accepts a
+    raw KnowledgeDB too for backward compat with older callers.
     """
-    storage = SqliteStorage(db=db)
-    counters = SqliteCounters(db=db)
+    ctx = coerce_context(ctx_or_db)
+    storage = ctx.storage
+    counters = ctx.counters
 
     @mcp.tool()
     def add_knowledge(

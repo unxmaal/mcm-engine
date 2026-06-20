@@ -6,11 +6,9 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from ..adapters.sqlite.storage import SqliteStorage
-from ..backends import EntityType
-from ..db import KnowledgeDB
+from ..backends import EntityType, RelationRow, StorageBackend
 from ..tracker import SessionTracker
-from ..backends import RelationRow
+from ..wiring import Context, coerce_context
 
 VALID_TYPES = {e.value for e in EntityType}
 VALID_RELATIONS = {"fixes", "causes", "supersedes", "contradicts", "related"}
@@ -23,7 +21,7 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
     return result
 
 
-def _entry_label(storage: SqliteStorage, entry_type: str, entry_id: int) -> str:
+def _entry_label(storage: StorageBackend, entry_type: str, entry_id: int) -> str:
     """Get a human-readable label for an entry."""
     etype = EntityType(entry_type)
     row = storage.find_by_id(etype, entry_id)
@@ -42,11 +40,15 @@ def _entry_label(storage: SqliteStorage, entry_type: str, entry_id: int) -> str:
 
 def register_relations_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
 ) -> None:
-    """Register link_knowledge and get_related tools."""
-    storage = SqliteStorage(db=db)
+    """Register link_knowledge and get_related tools.
+
+    Accepts a Context or a raw KnowledgeDB for backward compat.
+    """
+    ctx = coerce_context(ctx_or_db)
+    storage = ctx.storage
 
     @mcp.tool()
     def link_knowledge(

@@ -10,10 +10,10 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from ..adapters.sqlite.storage import SqliteStorage
 from ..backends import EntityType, SessionRow, SnapshotRow
 from ..db import KnowledgeDB
 from ..tracker import SessionTracker
+from ..wiring import Context, coerce_context
 
 
 def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) -> str:
@@ -39,14 +39,27 @@ _PINNED_LABELS = [
 
 def register_session_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
     project_name: str,
     plugin_session_fns: list,
+    *,
+    plugin_db: KnowledgeDB | None = None,
 ) -> None:
     """Register session_start, session_handoff, session_summary,
-    save_snapshot, get_resume_context."""
-    storage = SqliteStorage(db=db)
+    save_snapshot, get_resume_context.
+
+    Accepts a Context or a raw KnowledgeDB for backward compat. When a
+    raw KnowledgeDB is passed (legacy callers, tests), it doubles as the
+    ``plugin_db`` for the session-start callback path unless an explicit
+    one was provided.
+    """
+    # When the legacy db is passed positionally and no plugin_db was
+    # supplied, fall back to using the same db for plugin callbacks.
+    if plugin_db is None and isinstance(ctx_or_db, KnowledgeDB):
+        plugin_db = ctx_or_db
+    ctx = coerce_context(ctx_or_db)
+    storage = ctx.storage
 
     @mcp.tool()
     def session_start() -> str:
@@ -121,15 +134,20 @@ def register_session_tools(
         else:
             parts.append("\nNo previous sessions found.")
 
-        # Plugin session context (plugins still receive raw db until MCM2-07).
-        for fn in plugin_session_fns:
-            try:
-                extra = fn(db)
-                if extra:
-                    for key, value in extra.items():
-                        parts.append(f"{key}: {value}")
-            except Exception:
-                pass
+        # Plugin session context — plugins still get raw SQL on their
+        # own tables, so we pass the SQLite db handle (only available
+        # under the embedded SQLite layout). Plugin layer is documented
+        # as embedded-only; with a non-embedded storage, plugin_db is
+        # None and we skip these callbacks.
+        if plugin_db is not None:
+            for fn in plugin_session_fns:
+                try:
+                    extra = fn(plugin_db)
+                    if extra:
+                        for key, value in extra.items():
+                            parts.append(f"{key}: {value}")
+                except Exception:
+                    pass
 
         parts.append(f"\nProject: {project_name}")
         return "\n".join(parts)
