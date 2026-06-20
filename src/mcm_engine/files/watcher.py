@@ -330,6 +330,15 @@ class RulesWatcher:
         return "upserted"
 
     def _cascade_delete(self, abs_path: Path) -> None:
+        # Spurious-delete guard: atomic-rename saves (BSD sed -i, vim's
+        # writebackup, several IDE save patterns) fire a trailing
+        # FileDeletedEvent for the original path even though the file
+        # ends up still present after the rename. If the file is on
+        # disk when the debounced delete timer fires, treat the event
+        # as a missed upsert and re-cascade the current content.
+        if abs_path.exists():
+            self._cascade_upsert(abs_path)
+            return
         rel = self._rel_path(abs_path)
         existing = self._storage.find_rule_by_file_path(rel)
         if existing is None or existing.archived:
