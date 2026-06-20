@@ -54,3 +54,33 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+
+  # LocalStack — AWS-compatible API emulator. Used for integration
+  # tests of terraform/aws/ via `tofu apply` against LocalStack instead
+  # of real AWS. Covers VPC, IAM, ECR, RDS, ElastiCache, OpenSearch,
+  # and App Runner shapes well enough to validate the plan applies.
+  # LocalStack — AWS-compatible API emulator. Available for follow-up
+  # tofu apply integration tests once a pro license is in hand:
+  # App Runner support is pro-tier only and our terraform/aws/ module
+  # provisions one. Pin to 3.8 (the last fully-free 3.x line); newer
+  # tags require LOCALSTACK_AUTH_TOKEN.
+  #
+  # Today's primary TDD path is `tofu test` with mock_provider — see
+  # terraform/aws/tests/. That covers plan-time invariants without any
+  # container. Bring LocalStack up only when you also want to exercise
+  # `tofu apply` end-to-end against an emulator instead of real AWS.
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: mcm2-test-localstack
+    environment:
+      - SERVICES=ec2,iam,rds,elasticache,opensearch,ecr,sts
+      - DEBUG=0
+      - LS_LOG=warn
+      - PERSISTENCE=0
+    ports:
+      - "127.0.0.1:54566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
