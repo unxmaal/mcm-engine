@@ -203,7 +203,7 @@ def test_search_backend_is_a_protocol(SearchBackend):
     assert getattr(SearchBackend, "_is_protocol", False)
 
 
-@pytest.mark.parametrize("method_name", ["search", "reindex"])
+@pytest.mark.parametrize("method_name", ["search", "reindex", "search_plugin"])
 def test_search_backend_method_present(SearchBackend, method_name):
     assert hasattr(SearchBackend, method_name)
 

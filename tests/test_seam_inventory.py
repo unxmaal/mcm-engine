@@ -33,16 +33,16 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # tool-side refactor lands (a follow-up step of MCM2-02).
     "db.py":               7,
     "schema.py":           36,  # +3 for v6→v7 watcher-cascade column ALTERs
-    "plugin.py":           2,
-    "tools/search.py":     4,
-    "tools/knowledge.py":  13,
-    "tools/rules.py":      15,
-    "tools/relations.py":  8,
-    "tools/session.py":    26,
+    "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
+    "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
+    "tools/knowledge.py":  0,   # MCM2-02 rewire complete — uses ctx adapters
+    "tools/rules.py":      0,   # MCM2-02 rewire complete
+    "tools/relations.py":  0,   # MCM2-02 rewire complete
+    "tools/session.py":    0,   # MCM2-02 rewire complete
     # MCM2-02 embedded SQLite adapter — SQL extracted out of tools into the
     # repository. These files are the new authoritative home for SQL.
-    "adapters/sqlite/storage.py":  26,
-    "adapters/sqlite/search.py":   3,
+    "adapters/sqlite/storage.py":  31,  # find_by_id + 4 session counters
+    "adapters/sqlite/search.py":   5,   # +2 for MCM2-07 search_plugin (FTS + LIKE)
     "adapters/sqlite/counters.py": 4,
 }
 

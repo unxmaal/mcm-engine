@@ -285,20 +285,18 @@ five distinct call sites loop over a list of table-label tuples and
 interpolate the table name into the SQL string. The repository API needs
 a `count_by_type(entity_type, *, project=..., pinned=..., ...)` shape.
 
-### `src/mcm_engine/plugin.py` — plugin SearchScope SQL
+### `src/mcm_engine/plugin.py` — plugin SearchScope SQL (RESOLVED in MCM2-07)
 
-| Line | Operation | Table | Notes |
-|------|-----------|-------|-------|
-| 46-51 | SELECT | `{fts_table}` JOIN `{base_table}` | **Plugin FTS5 search.** Plugin-supplied table names interpolated. |
-| 60-63 | SELECT | `{base_table}` | Plugin LIKE fallback. Plugin-supplied table + column names. |
-| 100  | (DDL) | — | `MCMPlugin.get_schema_sql()` returns arbitrary plugin DDL. |
+Post-MCM2-07: `plugin.py` holds **zero** SQL execution sites. The two
+formerly-here sites (FTS path + LIKE fallback) live in
+`adapters/sqlite/search.py::SqliteSearch.search_plugin`, which the engine
+calls with the plugin's `SearchScope` descriptor. The descriptor is now
+passive — table/column names only, no SQL behavior.
 
-Plugins today **own their FTS5 table names and inject SQL into the engine's
-search loop**. Per OQ-6 resolution (no external plugin users), the plugin
-contract changes freely in this refactor: plugins will receive a
-`StorageBackend` reference and use its methods rather than build SQL
-themselves. The `SearchScope` dataclass keeps its purpose (declare a
-searchable scope with display formatting) but stops carrying SQL.
+Plugins still own their FTS5 table layout via `MCMPlugin.get_schema_sql()`
+(arbitrary DDL); that's expected and the only remaining SQL surface the
+plugin layer carries, and it runs through `migrate_plugin` rather than the
+adapter contract.
 
 ---
 

@@ -1,37 +1,45 @@
-"""Unified search tool — FTS5 across all knowledge scopes."""
+"""Unified search tool — FTS5 across all knowledge scopes.
+
+Rewired in MCM2-02 (Phase 0): the composite rank formula moved out of SQL
+ORDER BY clauses into mcm_engine.scoring. SQL access goes through
+SqliteSearch / SqliteStorage / SqliteCounters. Counter bumps (the inline
+UPDATE-after-SELECT pattern) move to CounterStore.increment.
+"""
 from __future__ import annotations
+
+from datetime import datetime
+from typing import Iterable
 
 from mcp.server.fastmcp import FastMCP
 
-from ..db import KnowledgeDB, build_fts_queries, build_like_patterns, sanitize_fts
+from ..adapters.sqlite.counters import SqliteCounters
+from ..adapters.sqlite.search import SqliteSearch
+from ..adapters.sqlite.storage import SqliteStorage
+from ..backends import EntityType, SearchHit
+from ..db import KnowledgeDB
+from ..scoring import compose_rank, compose_rank_pinned_only
 from ..tracker import SessionTracker
 
-# Quality gate: FTS5 rank threshold.
-# rank is negative (more negative = better match). Results weaker than this are dropped.
-# -1.0 filters out single-word incidental matches while keeping real hits.
-RANK_THRESHOLD = -1.0
+# Quality gate: minimum normalized score (higher = better) for FTS results.
+# The v1 SQL used `rank <= -1.0` (FTS5 rank is negative-better). After our
+# higher-better normalization this becomes `score >= 1.0`.
+RANK_THRESHOLD = 1.0
 
-# Staleness: entries older than this many days without a hit are annotated as stale.
+# Staleness window: same 90-day threshold as v1.
 STALE_DAYS = 90
 
 
-def _staleness_tag(age_days: float, last_hit_age_days: float | None, pinned: int = 0) -> str:
-    """Return a staleness tag if the entry is old and un-reinforced.
-
-    Pinned items are never stale.
-    """
-    if pinned:
+def _staleness_tag(age_days: float | None, last_hit_age_days: float | None, pinned: bool) -> str:
+    if pinned or age_days is None:
         return ""
     if age_days < STALE_DAYS:
         return ""
-    # If it's been hit recently, it's still active
     if last_hit_age_days is not None and last_hit_age_days < STALE_DAYS:
         return ""
     return " [STALE]"
 
 
-def _pinned_tag(pinned: int) -> str:
-    """Return a [PINNED] tag if the entry is pinned."""
+def _pinned_tag(pinned: bool) -> str:
     return " [PINNED]" if pinned else ""
 
 
@@ -42,290 +50,216 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
     return result
 
 
-def _fts_match(db: KnowledgeDB, sql: str, fts_queries: list[str], extra_params: tuple, limit: int) -> list:
-    """Try each FTS query in order, return results from the first that hits."""
-    for fts_query in fts_queries:
-        try:
-            params = (fts_query,) + extra_params + (limit,)
-            rows = db.execute(sql, params).fetchall()
-            if rows:
-                return rows
-        except Exception:
+def _age_days(ts: datetime | None) -> float | None:
+    if ts is None:
+        return None
+    delta = datetime.now() - ts
+    return delta.total_seconds() / 86400.0
+
+
+def _project_match(row_project: str | None, requested: str) -> bool:
+    """Replicate the OR-with-NULL/empty semantics from the v1 search SQL."""
+    return (
+        row_project == requested
+        or row_project is None
+        or row_project == ""
+    )
+
+
+def _score_and_format_knowledge(
+    hit: SearchHit,
+    storage: SqliteStorage,
+    counters: SqliteCounters,
+    project: str,
+) -> tuple[float, str] | None:
+    row = storage.find_by_id(EntityType.KNOWLEDGE, hit.entity_id)
+    if row is None:
+        return None
+    if project and not _project_match(row.project, project):
+        return None
+    snap = counters.last_flushed_snapshot(EntityType.KNOWLEDGE, hit.entity_id)
+    composite = compose_rank(
+        raw_rank=hit.score,
+        hit_count=snap.get("hit_count"),
+        reinforcement_count=snap.get("reinforcement_count"),
+        pinned=bool(snap.get("pinned")),
+        age_days=_age_days(row.created_at),
+    )
+    age_d = _age_days(row.created_at)
+    last_hit_d = _age_days(row.last_hit_at)
+    stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
+    pinned = _pinned_tag(hit.is_pinned)
+    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()}]{stale}{pinned} {row.topic}: {row.summary}"
+    if row.detail:
+        entry += f"\n  Detail: {row.detail}"
+    if row.tags:
+        entry += f"\n  Tags: {row.tags}"
+    return composite, entry
+
+
+def _score_and_format_rule(
+    hit: SearchHit,
+    storage: SqliteStorage,
+    counters: SqliteCounters,
+) -> tuple[float, str] | None:
+    row = storage.find_by_id(EntityType.RULE, hit.entity_id)
+    if row is None:
+        return None
+    snap = counters.last_flushed_snapshot(EntityType.RULE, hit.entity_id)
+    composite = compose_rank(
+        raw_rank=hit.score,
+        hit_count=snap.get("hit_count"),
+        reinforcement_count=snap.get("reinforcement_count"),
+        pinned=bool(snap.get("pinned")),
+        age_days=_age_days(row.created_at),
+    )
+    age_d = _age_days(row.created_at)
+    last_hit_d = _age_days(row.last_hit_at)
+    stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
+    pinned = _pinned_tag(hit.is_pinned)
+    entry = f"[RULE]{stale}{pinned} {row.title}"
+    if row.category:
+        entry += f" ({row.category})"
+    if row.description:
+        entry += f"\n  {row.description}"
+    if row.file_path:
+        entry += f"\n  File: {row.file_path}"
+    return composite, entry
+
+
+def _score_and_format_negative(
+    hit: SearchHit,
+    storage: SqliteStorage,
+    project: str,
+) -> tuple[float, str] | None:
+    row = storage.find_by_id(EntityType.NEGATIVE, hit.entity_id)
+    if row is None:
+        return None
+    if project and not _project_match(row.project, project):
+        return None
+    composite = compose_rank_pinned_only(raw_rank=hit.score, pinned=hit.is_pinned)
+    pinned = _pinned_tag(hit.is_pinned)
+    entry = f"[NEGATIVE]{pinned} {row.category}: {row.what_failed}"
+    if row.why_failed:
+        entry += f"\n  Why: {row.why_failed}"
+    if row.correct_approach:
+        entry += f"\n  Fix: {row.correct_approach}"
+    return composite, entry
+
+
+def _score_and_format_error(
+    hit: SearchHit,
+    storage: SqliteStorage,
+    project: str,
+) -> tuple[float, str] | None:
+    row = storage.find_by_id(EntityType.ERROR, hit.entity_id)
+    if row is None:
+        return None
+    if project and not _project_match(row.project, project):
+        return None
+    composite = compose_rank_pinned_only(raw_rank=hit.score, pinned=hit.is_pinned)
+    pinned = _pinned_tag(hit.is_pinned)
+    entry = f"[ERROR]{pinned} {row.pattern}"
+    if row.root_cause:
+        entry += f"\n  Root cause: {row.root_cause}"
+    if row.fix:
+        entry += f"\n  Fix: {row.fix}"
+    return composite, entry
+
+
+def _scope_block(
+    etype: EntityType,
+    search_backend: SqliteSearch,
+    storage: SqliteStorage,
+    counters: SqliteCounters,
+    *,
+    query: str,
+    limit: int,
+    project: str,
+    min_rank: float,
+    bump_counters: bool,
+) -> list[str]:
+    """Search one entity scope and return formatted result strings."""
+    # Pull more than `limit` so the threshold filter still has options to
+    # sort across. SqliteSearch already sorts by raw rank desc; the
+    # composite re-sort may reorder a bit.
+    raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3)
+
+    scored: list[tuple[float, str, int]] = []  # (composite, formatted, entity_id)
+    for hit in raw_hits:
+        if min_rank > 0 and hit.score < min_rank:
             continue
-    return []
+        if etype is EntityType.KNOWLEDGE:
+            result = _score_and_format_knowledge(hit, storage, counters, project)
+        elif etype is EntityType.RULE:
+            result = _score_and_format_rule(hit, storage, counters)
+        elif etype is EntityType.NEGATIVE:
+            result = _score_and_format_negative(hit, storage, project)
+        elif etype is EntityType.ERROR:
+            result = _score_and_format_error(hit, storage, project)
+        else:
+            continue
+        if result is None:
+            continue
+        composite, formatted = result
+        scored.append((composite, formatted, hit.entity_id))
 
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:limit]
 
-def _like_search(db: KnowledgeDB, sql: str, like_patterns: list[str], columns: list[str],
-                 extra_params: tuple, limit: int) -> list:
-    """Per-term OR LIKE fallback search."""
-    if not like_patterns:
-        return []
+    if bump_counters and etype in (EntityType.KNOWLEDGE, EntityType.RULE):
+        for _, _, eid in top:
+            counters.increment(etype, eid, "hit_count")
+            counters.increment(etype, eid, "last_hit_at")
 
-    clauses = []
-    params: list = []
-    for pat in like_patterns:
-        col_clauses = [f"{col} LIKE ?" for col in columns]
-        clauses.append(f"({' OR '.join(col_clauses)})")
-        params.extend([pat] * len(columns))
-
-    where = " OR ".join(clauses)
-    full_sql = sql.replace("{LIKE_WHERE}", where)
-    return db.execute(full_sql, tuple(params) + extra_params + (limit,)).fetchall()
+    return [formatted for _, formatted, _ in top]
 
 
 def _search_all_scopes(
-    db: KnowledgeDB,
+    search_backend: SqliteSearch,
+    storage: SqliteStorage,
+    counters: SqliteCounters,
     query: str,
     limit: int,
     plugin_search_scopes: list,
-    min_rank: float = RANK_THRESHOLD,
-    project: str = "",
+    *,
+    min_rank: float,
+    project: str,
 ) -> str:
-    """Search all scopes and return formatted results. Used by both search tool and report_error.
-
-    Args:
-        min_rank: Quality gate — FTS5 rank threshold. Results with rank > min_rank
-                  (i.e., weaker matches) are dropped. Set to 0.0 to disable.
-        project: If non-empty, filter to entries matching this project + global (NULL project).
-    """
     results: list[str] = []
-    fts_queries = build_fts_queries(query)
-    like_patterns = build_like_patterns(query)
 
-    # Build project filter clause
-    project_filter = ""
-    project_params: tuple = ()
-    if project:
-        project_filter = "AND (k.project = ? OR k.project IS NULL OR k.project = '')"
-        project_params = (project,)
+    # Apply gate only when min_rank > 0 (the explicit-search path passes 0
+    # to disable).
+    gate = min_rank if min_rank > 0 else 0.0
 
-    # Knowledge FTS — composite ranking with quality gate
-    rank_filter = "AND rank <= ?" if min_rank < 0 else ""
-    rank_params: tuple = (min_rank,) if min_rank < 0 else ()
+    # Knowledge (with counter bump).
+    results.extend(_scope_block(
+        EntityType.KNOWLEDGE, search_backend, storage, counters,
+        query=query, limit=limit, project=project, min_rank=gate, bump_counters=True,
+    ))
 
-    rows = _fts_match(
-        db,
-        "SELECT k.id, k.topic, k.kind, k.summary, k.detail, k.tags, k.hit_count, "
-        "  k.reinforcement_count, k.pinned, rank AS fts_rank, "
-        "  COALESCE((julianday('now') - julianday(k.created_at)), 0) AS age_days, "
-        "  CASE WHEN k.last_hit_at IS NOT NULL "
-        "    THEN (julianday('now') - julianday(k.last_hit_at)) ELSE NULL END AS last_hit_age "
-        "FROM knowledge_fts f JOIN knowledge k ON f.rowid = k.id "
-        f"WHERE knowledge_fts MATCH ? {rank_filter} {project_filter} "
-        "ORDER BY (rank - 0.1 * k.hit_count - 0.3 * k.reinforcement_count - 2.0 * k.pinned "
-        "  - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(k.created_at), 999)) / 30.0) "
-        "LIMIT ?",
-        fts_queries,
-        rank_params + project_params,
-        limit,
-    )
+    # Negative.
+    results.extend(_scope_block(
+        EntityType.NEGATIVE, search_backend, storage, counters,
+        query=query, limit=limit, project=project, min_rank=gate, bump_counters=False,
+    ))
 
-    if not rows:
-        # LIKE fallback — per-term OR
-        like_project_filter = ""
-        like_project_params: tuple = ()
-        if project:
-            like_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
-            like_project_params = (project,)
+    # Errors.
+    results.extend(_scope_block(
+        EntityType.ERROR, search_backend, storage, counters,
+        query=query, limit=limit, project=project, min_rank=gate, bump_counters=False,
+    ))
 
-        rows = _like_search(
-            db,
-            "SELECT id, topic, kind, summary, detail, tags, pinned, "
-            "  COALESCE((julianday('now') - julianday(created_at)), 0) AS age_days, "
-            "  CASE WHEN last_hit_at IS NOT NULL "
-            "    THEN (julianday('now') - julianday(last_hit_at)) ELSE NULL END AS last_hit_age "
-            f"FROM knowledge WHERE ({{LIKE_WHERE}}) {like_project_filter} "
-            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
-            "LIMIT ?",
-            like_patterns,
-            ["topic", "summary", "detail", "tags"],
-            like_project_params,
-            limit,
-        )
-        for r in rows:
-            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[KNOWLEDGE/{r['kind'].upper()}]{stale}{pinned} {r['topic']}: {r['summary']}"
-            if r["detail"]:
-                entry += f"\n  Detail: {r['detail']}"
-            results.append(entry)
-    else:
-        for r in rows:
-            db.execute_write(
-                "UPDATE knowledge SET hit_count = hit_count + 1, "
-                "last_hit_at = datetime('now') WHERE id = ?",
-                (r["id"],),
-            )
-            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[KNOWLEDGE/{r['kind'].upper()}]{stale}{pinned} {r['topic']}: {r['summary']}"
-            if r["detail"]:
-                entry += f"\n  Detail: {r['detail']}"
-            if r["tags"]:
-                entry += f"\n  Tags: {r['tags']}"
-            results.append(entry)
-        db.commit()
+    # Rules (with counter bump). Rules have no project column.
+    results.extend(_scope_block(
+        EntityType.RULE, search_backend, storage, counters,
+        query=query, limit=limit, project="", min_rank=gate, bump_counters=True,
+    ))
 
-    # Negative knowledge FTS
-    neg_project_filter = ""
-    neg_project_params: tuple = ()
-    if project:
-        neg_project_filter = "AND (n.project = ? OR n.project IS NULL OR n.project = '')"
-        neg_project_params = (project,)
-
-    rows = _fts_match(
-        db,
-        "SELECT n.id, n.category, n.what_failed, n.why_failed, n.correct_approach, "
-        "  n.pinned, rank AS fts_rank "
-        "FROM negative_fts f JOIN negative_knowledge n ON f.rowid = n.id "
-        f"WHERE negative_fts MATCH ? {rank_filter} {neg_project_filter} "
-        "ORDER BY (rank - 2.0 * n.pinned) LIMIT ?",
-        fts_queries,
-        rank_params + neg_project_params,
-        limit,
-    )
-
-    if not rows:
-        like_neg_project_filter = ""
-        like_neg_project_params: tuple = ()
-        if project:
-            like_neg_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
-            like_neg_project_params = (project,)
-
-        rows = _like_search(
-            db,
-            "SELECT category, what_failed, why_failed, correct_approach, pinned "
-            f"FROM negative_knowledge WHERE ({{LIKE_WHERE}}) {like_neg_project_filter} "
-            "LIMIT ?",
-            like_patterns,
-            ["category", "what_failed", "why_failed"],
-            like_neg_project_params,
-            limit,
-        )
-
-    for r in rows:
-        pinned = _pinned_tag(r["pinned"])
-        entry = f"[NEGATIVE]{pinned} {r['category']}: {r['what_failed']}"
-        if r["why_failed"]:
-            entry += f"\n  Why: {r['why_failed']}"
-        if r["correct_approach"]:
-            entry += f"\n  Fix: {r['correct_approach']}"
-        results.append(entry)
-
-    # Errors FTS
-    err_project_filter = ""
-    err_project_params: tuple = ()
-    if project:
-        err_project_filter = "AND (e.project = ? OR e.project IS NULL OR e.project = '')"
-        err_project_params = (project,)
-
-    rows = _fts_match(
-        db,
-        "SELECT e.id, e.pattern, e.context, e.root_cause, e.fix, e.pinned, "
-        "  rank AS fts_rank "
-        "FROM errors_fts f JOIN errors e ON f.rowid = e.id "
-        f"WHERE errors_fts MATCH ? {rank_filter} {err_project_filter} "
-        "ORDER BY (rank - 2.0 * e.pinned) LIMIT ?",
-        fts_queries,
-        rank_params + err_project_params,
-        limit,
-    )
-
-    if not rows:
-        like_err_project_filter = ""
-        like_err_project_params: tuple = ()
-        if project:
-            like_err_project_filter = "AND (project = ? OR project IS NULL OR project = '')"
-            like_err_project_params = (project,)
-
-        rows = _like_search(
-            db,
-            "SELECT pattern, context, root_cause, fix, pinned FROM errors "
-            f"WHERE ({{LIKE_WHERE}}) {like_err_project_filter} "
-            "LIMIT ?",
-            like_patterns,
-            ["pattern", "context", "root_cause"],
-            like_err_project_params,
-            limit,
-        )
-
-    for r in rows:
-        pinned = _pinned_tag(r["pinned"])
-        entry = f"[ERROR]{pinned} {r['pattern']}"
-        if r["root_cause"]:
-            entry += f"\n  Root cause: {r['root_cause']}"
-        if r["fix"]:
-            entry += f"\n  Fix: {r['fix']}"
-        results.append(entry)
-
-    # Rules FTS — composite ranking with quality gate (rules have no project column)
-    rows = _fts_match(
-        db,
-        "SELECT r.id, r.title, r.keywords, r.description, r.category, r.file_path, "
-        "  r.hit_count, r.reinforcement_count, r.pinned, rank AS fts_rank, "
-        "  COALESCE((julianday('now') - julianday(r.created_at)), 0) AS age_days, "
-        "  CASE WHEN r.last_hit_at IS NOT NULL "
-        "    THEN (julianday('now') - julianday(r.last_hit_at)) ELSE NULL END AS last_hit_age "
-        "FROM rules_fts f JOIN rules r ON f.rowid = r.id "
-        f"WHERE rules_fts MATCH ? {rank_filter} "
-        "ORDER BY (rank - 0.1 * r.hit_count - 0.3 * r.reinforcement_count - 2.0 * r.pinned "
-        "  - MAX(0, 30.0 - COALESCE(julianday('now') - julianday(r.created_at), 999)) / 30.0) "
-        "LIMIT ?",
-        fts_queries,
-        rank_params,
-        limit,
-    )
-
-    if not rows:
-        rows = _like_search(
-            db,
-            "SELECT id, title, keywords, description, category, file_path, pinned, "
-            "  COALESCE((julianday('now') - julianday(created_at)), 0) AS age_days, "
-            "  CASE WHEN last_hit_at IS NOT NULL "
-            "    THEN (julianday('now') - julianday(last_hit_at)) ELSE NULL END AS last_hit_age "
-            "FROM rules WHERE ({LIKE_WHERE}) "
-            "ORDER BY (hit_count + MAX(0, 30 - COALESCE(julianday('now') - julianday(created_at), 999)) / 30.0) DESC "
-            "LIMIT ?",
-            like_patterns,
-            ["title", "keywords", "description", "category"],
-            (),
-            limit,
-        )
-        for r in rows:
-            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[RULE]{stale}{pinned} {r['title']}"
-            if r["category"]:
-                entry += f" ({r['category']})"
-            if r["description"]:
-                entry += f"\n  {r['description']}"
-            if r["file_path"]:
-                entry += f"\n  File: {r['file_path']}"
-            results.append(entry)
-    else:
-        for r in rows:
-            db.execute_write(
-                "UPDATE rules SET hit_count = hit_count + 1, "
-                "last_hit_at = datetime('now') WHERE id = ?",
-                (r["id"],),
-            )
-            stale = _staleness_tag(r["age_days"], r["last_hit_age"], r["pinned"])
-            pinned = _pinned_tag(r["pinned"])
-            entry = f"[RULE]{stale}{pinned} {r['title']}"
-            if r["category"]:
-                entry += f" ({r['category']})"
-            if r["description"]:
-                entry += f"\n  {r['description']}"
-            if r["file_path"]:
-                entry += f"\n  File: {r['file_path']}"
-            results.append(entry)
-        db.commit()
-
-    # Plugin search scopes
+    # Plugin search scopes route through the SearchBackend (MCM2-07).
     for scope in plugin_search_scopes:
         try:
-            scope_results = scope.search(db, query, sanitize_fts(query),
-                                         f"%{query}%", limit)
+            scope_results = search_backend.search_plugin(scope, query, limit)
             results.extend(scope_results)
         except Exception:
             pass
@@ -339,54 +273,46 @@ def register_search_tools(
     tracker: SessionTracker,
     plugin_search_scopes: list,
     project_name: str = "",
-) -> None:
+):
     """Register the unified search tool.
 
     Args:
         project_name: Default project for scoping report_error auto-searches.
     """
+    storage = SqliteStorage(db=db)
+    counters = SqliteCounters(db=db)
+    search_backend = SqliteSearch(db=db)
 
     def search_all(query: str, limit: int = 10) -> str:
-        """Internal search function used by report_error. Applies quality gate and project scope."""
+        """Internal search function used by report_error. Applies quality
+        gate and project scope."""
         return _search_all_scopes(
-            db, query, limit, plugin_search_scopes,
+            search_backend, storage, counters, query, limit,
+            plugin_search_scopes,
             min_rank=RANK_THRESHOLD, project=project_name,
         )
 
     @mcp.tool()
     def search(query: str, scope: str = "all", limit: int = 10, project: str = "") -> str:
-        """Search across all knowledge, negative knowledge, errors, rules, and plugin data.
+        """Search across all knowledge, negative knowledge, errors, rules,
+        and plugin data.
 
         Uses FTS5 full-text search with LIKE fallback. Results are ranked by
-        a composite of text relevance, hit frequency, reinforcement, and recency.
-        Weak matches (below the quality gate threshold) are filtered out.
+        a composite of text relevance, hit frequency, reinforcement, and
+        recency. Weak matches (below the quality gate threshold) are
+        filtered out unless explicitly requested via the `search` tool.
         Entries older than 90 days without recent hits are tagged [STALE].
         Pinned items are tagged [PINNED] and never go stale.
-
-        QUERY TIPS — use short keyword phrases, not natural language:
-          Good: "convert SRPM"     Bad: "how does worker package conversion work"
-          Good: "staging mtime"    Bad: "what causes the staging environment to be stale"
-          Good: "dlmalloc link"    Bad: "why does linking fail with dlmalloc"
-
-        Porter stemming matches inflected forms automatically (e.g., "convert"
-        matches "conversion", "converting"). Multi-word queries try AND first,
-        then OR, then prefix matching.
-
-        Args:
-            query: Search keywords (2-4 words ideal, avoid full sentences)
-            scope: 'all', 'knowledge', 'negative', 'errors', or a plugin scope name
-            limit: Max results per scope (default 10)
-            project: Filter to this project (+ global items). Empty = no filter.
         """
         tracker.record_call("search", topic=query)
-
-        # Explicit search: no quality gate (user asked for it)
+        # Explicit search: no quality gate.
         result = _search_all_scopes(
-            db, query, limit, plugin_search_scopes, min_rank=0.0, project=project,
+            search_backend, storage, counters, query, limit,
+            plugin_search_scopes,
+            min_rank=0.0, project=project,
         )
         if not result:
             return _with_nudge(f"No results for '{query}'.", tracker, query)
         return _with_nudge(result, tracker, query)
 
-    # Return the internal search function for report_error to use
     return search_all

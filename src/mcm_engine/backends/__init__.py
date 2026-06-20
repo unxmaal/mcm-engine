@@ -313,6 +313,34 @@ class StorageBackend(Protocol):
         *, caller: Optional[str] = None,
     ) -> bool: ...
 
+    def find_by_id(
+        self, entity_type: EntityType, entity_id: int,
+        *, caller: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Generic entity lookup by (type, id). Returns the appropriate
+        Row dataclass (KnowledgeRow / NegativeRow / ErrorRow / RuleRow),
+        or None when absent. Used by tools that need an entry back for
+        response formatting."""
+        ...
+
+    # ---- Engine-wide counters (session.py rewire) ----
+    def count_relations(self, *, caller: Optional[str] = None) -> int: ...
+    def count_snapshots(self, *, caller: Optional[str] = None) -> int: ...
+    def count_recent_knowledge(
+        self, since_days: float, *, caller: Optional[str] = None,
+    ) -> int:
+        """Count knowledge entries created within the last `since_days` days."""
+        ...
+    def count_stale_knowledge(
+        self,
+        threshold_days: float = 90.0,
+        *,
+        caller: Optional[str] = None,
+    ) -> int:
+        """Count un-pinned knowledge entries older than threshold_days
+        with no hit within the same window."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Protocol: CounterStore
@@ -400,6 +428,28 @@ class SearchBackend(Protocol):
         """Rebuild the search index from the current StorageBackend
         state. Required when the durable store has changed outside the
         normal write path (e.g., a bulk migration)."""
+        ...
+
+    def search_plugin(
+        self,
+        scope: Any,
+        query: str,
+        limit: int = 10,
+        *,
+        caller: Optional[str] = None,
+    ) -> list[str]:
+        """Search a plugin-defined table described by `scope` and return
+        formatted result strings.
+
+        `scope` is a structural descriptor (the plugin layer's SearchScope
+        dataclass) carrying table/column metadata. The adapter decides how
+        to translate that into its own index — SQLite uses the named FTS5
+        virtual table + LIKE fallback; Postgres adapters can interpret the
+        same descriptor against their own tsvector index.
+
+        MCM2-07: this replaced SearchScope.search so plugin code holds no
+        SQL of its own.
+        """
         ...
 
 

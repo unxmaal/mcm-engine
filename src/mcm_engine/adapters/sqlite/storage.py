@@ -482,3 +482,61 @@ class SqliteStorage:
             (entity_id,),
         ).fetchone()
         return r is not None
+
+    def find_by_id(
+        self, entity_type: EntityType, entity_id: int,
+        *, caller: Optional[str] = None,
+    ) -> Optional[Any]:
+        table = _ENTITY_TABLE[entity_type]
+        row = self._db.execute(
+            f"SELECT * FROM {table} WHERE id = ?",
+            (entity_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if entity_type is EntityType.KNOWLEDGE:
+            return _knowledge_from_row(row)
+        if entity_type is EntityType.NEGATIVE:
+            return _negative_from_row(row)
+        if entity_type is EntityType.ERROR:
+            return _error_from_row(row)
+        if entity_type is EntityType.RULE:
+            return _rule_from_row(row)
+        raise ValueError(f"unknown EntityType {entity_type}")
+
+    # ---- Engine-wide counters ----
+
+    def count_relations(self, *, caller: Optional[str] = None) -> int:
+        r = self._db.execute("SELECT COUNT(*) AS cnt FROM relations").fetchone()
+        return r["cnt"]
+
+    def count_snapshots(self, *, caller: Optional[str] = None) -> int:
+        r = self._db.execute("SELECT COUNT(*) AS cnt FROM snapshots").fetchone()
+        return r["cnt"]
+
+    def count_recent_knowledge(
+        self, since_days: float, *, caller: Optional[str] = None,
+    ) -> int:
+        # julianday-based to match SQLite's recency model exactly.
+        r = self._db.execute(
+            "SELECT COUNT(*) AS cnt FROM knowledge "
+            "WHERE julianday('now') - julianday(created_at) < ?",
+            (float(since_days),),
+        ).fetchone()
+        return r["cnt"]
+
+    def count_stale_knowledge(
+        self,
+        threshold_days: float = 90.0,
+        *,
+        caller: Optional[str] = None,
+    ) -> int:
+        r = self._db.execute(
+            "SELECT COUNT(*) AS cnt FROM knowledge "
+            "WHERE julianday('now') - julianday(created_at) > ? "
+            "AND (last_hit_at IS NULL "
+            "     OR julianday('now') - julianday(last_hit_at) > ?) "
+            "AND pinned = 0",
+            (float(threshold_days), float(threshold_days)),
+        ).fetchone()
+        return r["cnt"]

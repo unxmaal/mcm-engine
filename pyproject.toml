@@ -32,6 +32,16 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+# Adapter extras — `pip install mcm-engine[postgres]` etc.
+postgres = [
+    "psycopg[binary]>=3.2",
+]
+redis = [
+    "redis>=5.0",
+]
+opensearch = [
+    "opensearch-py>=2.6",
+]
 
 [project.scripts]
 mcm-engine = "mcm_engine.cli:main"

@@ -114,7 +114,10 @@ class TestPluginSessionStart:
 
 class TestSearchScope:
     def test_like_fallback(self, db, mock_plugin):
-        """When FTS5 fails, LIKE fallback should still work."""
+        """When FTS5 fails, the LIKE fallback in SearchBackend.search_plugin
+        still finds the row."""
+        from mcm_engine.adapters.sqlite.search import SqliteSearch
+
         schema_sql = mock_plugin.get_schema_sql()
         migrate_plugin(db, mock_plugin.name, schema_sql, mock_plugin.version)
 
@@ -125,7 +128,7 @@ class TestSearchScope:
         db.commit()
 
         scope = mock_plugin.get_search_scopes()[0]
-        # Use a query that won't match FTS but will match LIKE
-        results = scope.search(db, "special-chars", '"special-chars"', "%special-chars%", 10)
+        backend = SqliteSearch(db=db)
+        results = backend.search_plugin(scope, "special-chars", 10)
         assert len(results) > 0
         assert "MOCK" in results[0]

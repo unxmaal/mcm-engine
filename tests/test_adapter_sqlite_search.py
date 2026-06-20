@@ -1,96 +1,184 @@
-"""Conformance for the embedded SQLite SearchBackend."""
+"""Embedded SQLite SearchBackend — pinned to the shared SearchConformance,
+plus the SQLite-specific plugin-search tests that exercise FTS5 virtual
+tables and the LIKE fallback.
+
+The MCM2-07 ``search_plugin`` tests are intentionally not part of the
+shared conformance: each non-SQLite adapter will interpret SearchScope's
+table-descriptor metadata against its own index (Postgres tsvector,
+Meilisearch, etc.), and the seed mechanism differs per backend.
+"""
 from __future__ import annotations
 
 import pytest
 
-from mcm_engine.backends import (
-    CONTRACT_VERSION,
-    EntityType,
-    KnowledgeRow,
-    NegativeRow,
-    RuleRow,
-    SearchBackend,
-    SearchHit,
-)
+from mcm_engine.testing.conformance import SearchConformance
+
+
+class TestSqliteSearch(SearchConformance):
+    @pytest.fixture
+    def _shared(self, tmp_path):
+        from mcm_engine.adapters.sqlite.search import SqliteSearch
+        from mcm_engine.adapters.sqlite.storage import SqliteStorage
+
+        db_path = str(tmp_path / "search.db")
+        storage = SqliteStorage(db_path=db_path)
+        storage.ensure_schema()
+        search = SqliteSearch(db_path=db_path)
+        return storage, search
+
+    @pytest.fixture
+    def storage(self, _shared):
+        return _shared[0]
+
+    @pytest.fixture
+    def search(self, _shared):
+        return _shared[1]
+
+
+# ---------------------------------------------------------------------------
+# search_plugin — MCM2-07. Plugin-side SQL moved here from plugin.py.
+# These are SQLite-specific because the descriptor names FTS5 virtual
+# tables; other adapters provide their own plugin-search tests.
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def store(tmp_path):
-    from mcm_engine.adapters.sqlite.storage import SqliteStorage
-    p = str(tmp_path / "search.db")
-    s = SqliteStorage(db_path=p)
-    s.ensure_schema()
-    return p, s
+def plugin_db(tmp_path):
+    """A KnowledgeDB with the mock plugin table + FTS table set up."""
+    from mcm_engine.db import KnowledgeDB
+    from mcm_engine.schema import migrate_core, migrate_plugin
+
+    db = KnowledgeDB(tmp_path / "plugin.db")
+    migrate_core(db)
+    migrate_plugin(db, "mock", """
+        CREATE TABLE IF NOT EXISTS mock_data (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS mock_fts USING fts5(
+            title, body,
+            content='mock_data',
+            content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS mock_ai AFTER INSERT ON mock_data BEGIN
+            INSERT INTO mock_fts(rowid, title, body)
+            VALUES (new.id, new.title, new.body);
+        END;
+    """, 1)
+    return db
 
 
-@pytest.fixture
-def search(store):
+def _make_scope():
+    from mcm_engine.plugin import SearchScope
+    return SearchScope(
+        name="mock",
+        label="MOCK",
+        fts_table="mock_fts",
+        base_table="mock_data",
+        fts_columns=["title", "body"],
+        display_columns=["title", "body"],
+        like_columns=["title", "body"],
+    )
+
+
+def test_search_plugin_fts_path(plugin_db):
+    """search_plugin runs FTS against the descriptor's fts_table."""
     from mcm_engine.adapters.sqlite.search import SqliteSearch
-    p, _ = store
-    return SqliteSearch(db_path=p)
+
+    plugin_db.execute_write(
+        "INSERT INTO mock_data (title, body) VALUES (?, ?)",
+        ("WAL journal mode", "SQLite WAL is better for concurrency"),
+    )
+    plugin_db.commit()
+
+    backend = SqliteSearch(db=plugin_db)
+    results = backend.search_plugin(_make_scope(), "WAL journal", 10)
+    assert results
+    assert any("MOCK" in r for r in results)
 
 
-def test_protocol_runtime_check(search):
-    assert isinstance(search, SearchBackend)
-    assert search.CONTRACT_VERSION == CONTRACT_VERSION
+def test_search_plugin_like_fallback(plugin_db):
+    """When FTS5 chokes on hostile chars, LIKE fallback still finds the row."""
+    from mcm_engine.adapters.sqlite.search import SqliteSearch
+
+    plugin_db.execute_write(
+        "INSERT INTO mock_data (title, body) VALUES (?, ?)",
+        ("special-chars: test", "body with colons:and:stuff"),
+    )
+    plugin_db.commit()
+
+    backend = SqliteSearch(db=plugin_db)
+    results = backend.search_plugin(_make_scope(), "special-chars", 10)
+    assert results
+    assert "MOCK" in results[0]
 
 
-def test_search_finds_inserted_knowledge(store, search):
-    _, s = store
-    s.insert_knowledge(KnowledgeRow(
-        id=0, topic="postgres tsvector setup", summary="how-to", kind="finding",
-    ))
-    hits = search.search("tsvector")
-    assert len(hits) >= 1
-    assert hits[0].entity_type == EntityType.KNOWLEDGE
-    assert hits[0].score > 0  # higher = better
+def test_search_plugin_default_formatter(plugin_db):
+    """With format_fn=None the default '[LABEL] col1 | col2' format is used."""
+    from mcm_engine.adapters.sqlite.search import SqliteSearch
+
+    plugin_db.execute_write(
+        "INSERT INTO mock_data (title, body) VALUES (?, ?)",
+        ("alpha", "beta"),
+    )
+    plugin_db.commit()
+
+    backend = SqliteSearch(db=plugin_db)
+    results = backend.search_plugin(_make_scope(), "alpha", 10)
+    assert results
+    assert results[0].startswith("[MOCK]")
+    assert "alpha" in results[0]
+    assert "beta" in results[0]
 
 
-def test_search_returns_search_hits(store, search):
-    _, s = store
-    s.insert_knowledge(KnowledgeRow(id=0, topic="A", summary="hello world", kind="finding"))
-    hits = search.search("hello")
-    assert all(isinstance(h, SearchHit) for h in hits)
+def test_search_plugin_custom_formatter(plugin_db):
+    """When format_fn is provided the adapter delegates formatting to it."""
+    from mcm_engine.adapters.sqlite.search import SqliteSearch
+    from mcm_engine.plugin import SearchScope
+
+    plugin_db.execute_write(
+        "INSERT INTO mock_data (title, body) VALUES (?, ?)",
+        ("alpha", "beta"),
+    )
+    plugin_db.commit()
+
+    scope = SearchScope(
+        name="mock",
+        label="MOCK",
+        fts_table="mock_fts",
+        base_table="mock_data",
+        fts_columns=["title", "body"],
+        display_columns=["title", "body"],
+        like_columns=["title", "body"],
+        format_fn=lambda r: f"CUSTOM::{r['title']}",
+    )
+    backend = SqliteSearch(db=plugin_db)
+    results = backend.search_plugin(scope, "alpha", 10)
+    assert results == ["CUSTOM::alpha"]
 
 
-def test_search_respects_entity_types(store, search):
-    _, s = store
-    s.insert_knowledge(KnowledgeRow(id=0, topic="A", summary="alpha unique-token", kind="finding"))
-    s.insert_negative(NegativeRow(id=0, category="C", what_failed="alpha unique-token"))
-    hits_k = search.search("unique-token", entity_types={EntityType.KNOWLEDGE})
-    hits_n = search.search("unique-token", entity_types={EntityType.NEGATIVE})
-    assert all(h.entity_type == EntityType.KNOWLEDGE for h in hits_k)
-    assert all(h.entity_type == EntityType.NEGATIVE for h in hits_n)
+def test_search_plugin_no_match_returns_empty(plugin_db):
+    from mcm_engine.adapters.sqlite.search import SqliteSearch
+
+    backend = SqliteSearch(db=plugin_db)
+    assert backend.search_plugin(_make_scope(), "zzqqnotanything", 10) == []
 
 
-def test_search_empty_result_for_unknown_query(search):
-    assert search.search("zzqqxxnotanything") == []
+def test_search_scope_has_no_search_method():
+    """SearchScope is a passive descriptor — no SQL on it post-MCM2-07."""
+    from mcm_engine.plugin import SearchScope
 
-
-def test_search_pinned_flag_propagates(store, search):
-    _, s = store
-    k = s.insert_knowledge(KnowledgeRow(id=0, topic="A", summary="pinned-tag", kind="finding"))
-    s.set_pinned(EntityType.KNOWLEDGE, k, True)
-    hits = search.search("pinned-tag")
-    assert hits
-    assert hits[0].is_pinned is True
-
-
-def test_search_higher_score_is_better(store, search):
-    """SearchHit.score is normalized to 'higher = better' across adapters."""
-    _, s = store
-    # Two distinct entries — both match, order should be score-descending.
-    s.insert_knowledge(KnowledgeRow(id=0, topic="alpha alpha alpha", summary="x", kind="finding"))
-    s.insert_knowledge(KnowledgeRow(id=0, topic="alpha", summary="x", kind="finding"))
-    hits = search.search("alpha")
-    scores = [h.score for h in hits]
-    assert scores == sorted(scores, reverse=True)
-
-
-def test_reindex_does_not_error(store, search):
-    _, s = store
-    s.insert_knowledge(KnowledgeRow(id=0, topic="t", summary="s", kind="finding"))
-    search.reindex()  # All types
-    search.reindex(EntityType.KNOWLEDGE)  # Single type
-    # After reindex, search still works
-    assert search.search("t")
+    scope = SearchScope(
+        name="mock",
+        label="MOCK",
+        fts_table="mock_fts",
+        base_table="mock_data",
+    )
+    assert not hasattr(scope, "search"), (
+        "SearchScope.search method removed in MCM2-07 — SQL moved to "
+        "SearchBackend.search_plugin."
+    )

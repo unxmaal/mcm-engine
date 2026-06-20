@@ -21,7 +21,7 @@ from ...backends import (
     EntityType,
     SearchHit,
 )
-from ...db import KnowledgeDB, build_fts_queries, build_like_patterns
+from ...db import KnowledgeDB, build_fts_queries, build_like_patterns, sanitize_fts
 
 # Per-entity FTS table mapping. The adapter knows the SQLite-specific
 # FTS5 virtual-table layout; the abstract score (higher = better) lives
@@ -94,6 +94,56 @@ class SqliteSearch:
             fts = _FTS[et]["fts_table"]
             self._db.execute_write(f"INSERT INTO {fts}({fts}) VALUES('rebuild')")
         self._db.commit()
+
+    def search_plugin(
+        self,
+        scope: Any,
+        query: str,
+        limit: int = 10,
+        *,
+        caller: Optional[str] = None,
+    ) -> list[str]:
+        """Search a plugin's table per the SearchScope descriptor.
+
+        MCM2-07: this is the new home for what used to live as
+        SearchScope.search. The plugin layer carries only metadata; this
+        adapter owns the SQL.
+        """
+        fts_query = sanitize_fts(query)
+        like_pattern = f"%{query}%"
+        rows: list[sqlite3.Row] = []
+
+        # Try FTS5 first when the scope declares one.
+        if scope.fts_table and scope.fts_columns:
+            try:
+                cols = ", ".join(f"b.{c}" for c in scope.display_columns)
+                rows = self._db.execute(
+                    f"SELECT {cols} FROM {scope.fts_table} f "
+                    f"JOIN {scope.base_table} b ON f.rowid = b.id "
+                    f"WHERE {scope.fts_table} MATCH ? ORDER BY rank LIMIT ?",
+                    (fts_query, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+
+        # LIKE fallback.
+        if not rows and scope.like_columns:
+            conditions = " OR ".join(f"{c} LIKE ?" for c in scope.like_columns)
+            cols = ", ".join(scope.display_columns)
+            params = tuple(like_pattern for _ in scope.like_columns) + (limit,)
+            rows = self._db.execute(
+                f"SELECT {cols} FROM {scope.base_table} WHERE {conditions} LIMIT ?",
+                params,
+            ).fetchall()
+
+        results: list[str] = []
+        for r in rows:
+            if scope.format_fn:
+                results.append(scope.format_fn(r))
+            else:
+                vals = [str(r[c]) for c in scope.display_columns if r[c]]
+                results.append(f"[{scope.label}] {' | '.join(vals)}")
+        return results
 
     # ---- internals ----
 
