@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from .config import MCMConfig, load_config
+from .migrate import format_report, migrate, open_storage
 from .server import MCMServer
 
 
@@ -69,6 +70,19 @@ def cmd_init(args):
     print('  }')
 
 
+def cmd_migrate(args):
+    """Copy every row from --from DSN into --to DSN, ids preserved."""
+    source = open_storage(args.source)
+    dest = open_storage(args.dest)
+    try:
+        report = migrate(source, dest, force=args.force)
+    except ValueError as e:
+        print(f"migration aborted: {e}", file=sys.stderr)
+        sys.exit(2)
+    print("Migration complete:")
+    print(format_report(report))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="mcm-engine",
@@ -88,6 +102,27 @@ def main():
     init_parser.add_argument("--project-root", help="Project root directory")
     init_parser.add_argument("--force", action="store_true", help="Overwrite existing config")
     init_parser.set_defaults(func=cmd_init)
+
+    # migrate
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Copy storage between adapters (e.g., sqlite -> postgres)",
+    )
+    migrate_parser.add_argument(
+        "--from", dest="source", required=True,
+        help="Source DSN (e.g., sqlite:///path/to/db, postgresql://...)",
+    )
+    migrate_parser.add_argument(
+        "--to", dest="dest", required=True,
+        help="Destination DSN",
+    )
+    migrate_parser.add_argument(
+        "--force", action="store_true",
+        help="Allow writing to a non-empty destination (rows are appended; "
+             "existing rows are not touched). Caller is responsible for "
+             "truncating the destination if a clean slate is required.",
+    )
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     args = parser.parse_args()
     args.func(args)

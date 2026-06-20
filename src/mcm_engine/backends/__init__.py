@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Iterator, Optional, Protocol, runtime_checkable
 
 #: Bumped on any breaking change to the Protocol classes or row dataclasses.
 #: Adapters declare the version they were built against; mismatch raises at
@@ -321,6 +321,37 @@ class StorageBackend(Protocol):
         Row dataclass (KnowledgeRow / NegativeRow / ErrorRow / RuleRow),
         or None when absent. Used by tools that need an entry back for
         response formatting."""
+        ...
+
+    # ---- Bulk iteration (used by the migrate CLI) ----
+    def iter_entries(
+        self, entity_type: EntityType, *, caller: Optional[str] = None,
+    ) -> Iterator[Any]:
+        """Yield every row of an entity type in id-ascending order.
+
+        Returns the same dataclass shape as ``find_by_id``. Used by the
+        ``mcm-engine migrate`` CLI to walk a source store row-by-row.
+        Adapters MAY stream (cursor-based) or batch.
+        """
+        ...
+
+    def iter_sessions(
+        self, *, caller: Optional[str] = None,
+    ) -> Iterator[SessionRow]: ...
+
+    def iter_snapshots(
+        self, *, caller: Optional[str] = None,
+    ) -> Iterator[SnapshotRow]: ...
+
+    def iter_relations(
+        self, *, caller: Optional[str] = None,
+    ) -> Iterator[RelationRow]: ...
+
+    def bump_sequences(self) -> None:
+        """After a bulk load that inserted explicit ids, advance the
+        adapter's id generator past the maximum existing id. Postgres
+        IDENTITY columns need this; SQLite ROWID does not (no-op there).
+        """
         ...
 
     # ---- Engine-wide counters (session.py rewire) ----

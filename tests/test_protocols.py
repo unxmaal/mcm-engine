@@ -20,18 +20,24 @@ def test_backends_module_imports_cheaply():
 
     NG-8: the engine core has zero adapter-specific dependencies. If
     importing backends triggers `import psycopg` (etc.), the import is
-    bleeding adapter coupling into the core.
+    bleeding adapter coupling into the core. Runs in a fresh subprocess
+    so the check is order-independent — other tests in the same session
+    may have already imported psycopg/redis for their own purposes.
     """
+    import subprocess
     import sys
 
-    # Force a fresh import to be sure
-    for name in list(sys.modules):
-        if name.startswith("mcm_engine.backends"):
-            del sys.modules[name]
-    import mcm_engine.backends  # noqa: F401
-
-    forbidden = {"psycopg", "psycopg2", "redis", "opensearchpy", "opensearch", "elasticsearch"}
-    present = forbidden & set(sys.modules)
+    proc = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys, mcm_engine.backends; "
+            "forbidden = {'psycopg', 'psycopg2', 'redis', "
+            "'opensearchpy', 'opensearch', 'elasticsearch'}; "
+            "present = sorted(forbidden & set(sys.modules)); "
+            "print(','.join(present))"
+        )],
+        capture_output=True, text=True, check=True,
+    )
+    present = [m for m in proc.stdout.strip().split(",") if m]
     assert not present, f"backends import pulled in adapter deps: {present}"
 
 

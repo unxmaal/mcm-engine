@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from ...backends import (
     CONTRACT_VERSION,
@@ -203,13 +203,22 @@ class SqliteStorage:
             return None
 
     def insert_knowledge(self, row: KnowledgeRow) -> int:
-        cur = self._db.execute_write(
-            "INSERT INTO knowledge "
-            "(topic, kind, summary, detail, tags, project, rationale, alternatives) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (row.topic, row.kind, row.summary, row.detail, row.tags,
-             row.project, row.rationale, row.alternatives),
-        )
+        if row.id:
+            cur = self._db.execute_write(
+                "INSERT INTO knowledge "
+                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.topic, row.kind, row.summary, row.detail, row.tags,
+                 row.project, row.rationale, row.alternatives),
+            )
+        else:
+            cur = self._db.execute_write(
+                "INSERT INTO knowledge "
+                "(topic, kind, summary, detail, tags, project, rationale, alternatives) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.topic, row.kind, row.summary, row.detail, row.tags,
+                 row.project, row.rationale, row.alternatives),
+            )
         self._db.commit()
         return cur.lastrowid
 
@@ -232,24 +241,40 @@ class SqliteStorage:
     # ---- Negative ----
 
     def insert_negative(self, row: NegativeRow) -> int:
-        cur = self._db.execute_write(
-            "INSERT INTO negative_knowledge "
-            "(category, what_failed, why_failed, correct_approach, severity, project) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (row.category, row.what_failed, row.why_failed,
-             row.correct_approach, row.severity, row.project),
-        )
+        if row.id:
+            cur = self._db.execute_write(
+                "INSERT INTO negative_knowledge "
+                "(id, category, what_failed, why_failed, correct_approach, severity, project) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.category, row.what_failed, row.why_failed,
+                 row.correct_approach, row.severity, row.project),
+            )
+        else:
+            cur = self._db.execute_write(
+                "INSERT INTO negative_knowledge "
+                "(category, what_failed, why_failed, correct_approach, severity, project) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row.category, row.what_failed, row.why_failed,
+                 row.correct_approach, row.severity, row.project),
+            )
         self._db.commit()
         return cur.lastrowid
 
     # ---- Errors ----
 
     def insert_error(self, row: ErrorRow) -> int:
-        cur = self._db.execute_write(
-            "INSERT INTO errors (pattern, context, root_cause, fix, tags, project) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (row.pattern, row.context, row.root_cause, row.fix, row.tags, row.project),
-        )
+        if row.id:
+            cur = self._db.execute_write(
+                "INSERT INTO errors (id, pattern, context, root_cause, fix, tags, project) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.pattern, row.context, row.root_cause, row.fix, row.tags, row.project),
+            )
+        else:
+            cur = self._db.execute_write(
+                "INSERT INTO errors (pattern, context, root_cause, fix, tags, project) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row.pattern, row.context, row.root_cause, row.fix, row.tags, row.project),
+            )
         self._db.commit()
         return cur.lastrowid
 
@@ -272,13 +297,22 @@ class SqliteStorage:
         return _rule_from_row(r) if r else None
 
     def insert_rule(self, row: RuleRow) -> int:
-        cur = self._db.execute_write(
-            "INSERT INTO rules "
-            "(title, keywords, file_path, description, category, content_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (row.title, row.keywords, row.file_path, row.description,
-             row.category, row.content_hash),
-        )
+        if row.id:
+            cur = self._db.execute_write(
+                "INSERT INTO rules "
+                "(id, title, keywords, file_path, description, category, content_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.title, row.keywords, row.file_path, row.description,
+                 row.category, row.content_hash),
+            )
+        else:
+            cur = self._db.execute_write(
+                "INSERT INTO rules "
+                "(title, keywords, file_path, description, category, content_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row.title, row.keywords, row.file_path, row.description,
+                 row.category, row.content_hash),
+            )
         self._db.commit()
         return cur.lastrowid
 
@@ -326,13 +360,22 @@ class SqliteStorage:
 
     def insert_relation(self, row: RelationRow) -> Optional[int]:
         try:
-            cur = self._db.execute_write(
-                "INSERT INTO relations "
-                "(source_type, source_id, target_type, target_id, relation, note) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (row.source_type.value, row.source_id, row.target_type.value,
-                 row.target_id, row.relation, row.note),
-            )
+            if row.id:
+                cur = self._db.execute_write(
+                    "INSERT INTO relations "
+                    "(id, source_type, source_id, target_type, target_id, relation, note) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (row.id, row.source_type.value, row.source_id,
+                     row.target_type.value, row.target_id, row.relation, row.note),
+                )
+            else:
+                cur = self._db.execute_write(
+                    "INSERT INTO relations "
+                    "(source_type, source_id, target_type, target_id, relation, note) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (row.source_type.value, row.source_id, row.target_type.value,
+                     row.target_id, row.relation, row.note),
+                )
             self._db.commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
@@ -362,13 +405,22 @@ class SqliteStorage:
     # ---- Sessions + snapshots ----
 
     def insert_session(self, row: SessionRow) -> int:
-        cur = self._db.execute_write(
-            "INSERT INTO sessions "
-            "(status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (row.status, row.current_task, row.findings_summary,
-             row.next_steps, row.blockers, row.context_snapshot),
-        )
+        if row.id:
+            cur = self._db.execute_write(
+                "INSERT INTO sessions "
+                "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.status, row.current_task, row.findings_summary,
+                 row.next_steps, row.blockers, row.context_snapshot),
+            )
+        else:
+            cur = self._db.execute_write(
+                "INSERT INTO sessions "
+                "(status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row.status, row.current_task, row.findings_summary,
+                 row.next_steps, row.blockers, row.context_snapshot),
+            )
         self._db.commit()
         return cur.lastrowid
 
@@ -395,15 +447,26 @@ class SqliteStorage:
         return r["next_seq"]
 
     def insert_snapshot(self, row: SnapshotRow) -> int:
-        cur = self._db.execute_write(
-            "INSERT INTO snapshots "
-            "(session_id, sequence_num, goal, progress, open_questions, blockers, "
-            " next_steps, active_files, key_decisions) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (row.session_id, row.sequence_num, row.goal, row.progress,
-             row.open_questions, row.blockers, row.next_steps,
-             row.active_files, row.key_decisions),
-        )
+        if row.id:
+            cur = self._db.execute_write(
+                "INSERT INTO snapshots "
+                "(id, session_id, sequence_num, goal, progress, open_questions, blockers, "
+                " next_steps, active_files, key_decisions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.session_id, row.sequence_num, row.goal, row.progress,
+                 row.open_questions, row.blockers, row.next_steps,
+                 row.active_files, row.key_decisions),
+            )
+        else:
+            cur = self._db.execute_write(
+                "INSERT INTO snapshots "
+                "(session_id, sequence_num, goal, progress, open_questions, blockers, "
+                " next_steps, active_files, key_decisions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.session_id, row.sequence_num, row.goal, row.progress,
+                 row.open_questions, row.blockers, row.next_steps,
+                 row.active_files, row.key_decisions),
+            )
         self._db.commit()
         return cur.lastrowid
 
@@ -503,6 +566,55 @@ class SqliteStorage:
         if entity_type is EntityType.RULE:
             return _rule_from_row(row)
         raise ValueError(f"unknown EntityType {entity_type}")
+
+    # ---- Bulk iteration (migrate CLI) ----
+
+    def iter_entries(
+        self, entity_type: EntityType, *, caller: Optional[str] = None,
+    ) -> Iterator[Any]:
+        table = _ENTITY_TABLE[entity_type]
+        hydrate = {
+            EntityType.KNOWLEDGE: _knowledge_from_row,
+            EntityType.NEGATIVE:  _negative_from_row,
+            EntityType.ERROR:     _error_from_row,
+            EntityType.RULE:      _rule_from_row,
+        }[entity_type]
+        rows = self._db.execute(
+            f"SELECT * FROM {table} ORDER BY id"
+        ).fetchall()
+        for r in rows:
+            yield hydrate(r)
+
+    def iter_sessions(
+        self, *, caller: Optional[str] = None,
+    ) -> Iterator[SessionRow]:
+        rows = self._db.execute(
+            "SELECT * FROM sessions ORDER BY id"
+        ).fetchall()
+        for r in rows:
+            yield _session_from_row(r)
+
+    def iter_snapshots(
+        self, *, caller: Optional[str] = None,
+    ) -> Iterator[SnapshotRow]:
+        rows = self._db.execute(
+            "SELECT * FROM snapshots ORDER BY id"
+        ).fetchall()
+        for r in rows:
+            yield _snapshot_from_row(r)
+
+    def iter_relations(
+        self, *, caller: Optional[str] = None,
+    ) -> Iterator[RelationRow]:
+        rows = self._db.execute(
+            "SELECT * FROM relations ORDER BY id"
+        ).fetchall()
+        for r in rows:
+            yield _relation_from_row(r)
+
+    def bump_sequences(self) -> None:
+        """No-op on SQLite — ROWID auto-advances past any explicit id."""
+        return None
 
     # ---- Engine-wide counters ----
 
