@@ -171,7 +171,40 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
             f"unknown backends key(s): {', '.join(unknown_backends)}. "
             f"Valid backends keys: {valid}"
         )
+
+    # Env-var overrides for backend selection (Phase 4b deployments
+    # often have the YAML baked into the image and twist knobs only
+    # through env vars).
+    backend_axes = {
+        "MCM_BACKENDS_STORAGE":  "storage",
+        "MCM_BACKENDS_COUNTERS": "counters",
+        "MCM_BACKENDS_SEARCH":   "search",
+        "MCM_BACKENDS_SESSION":  "session",
+    }
+    for env_key, axis in backend_axes.items():
+        val = os.environ.get(env_key)
+        if val is not None:
+            backends_raw[axis] = val
+
+    # Convenience env vars that populate the most common adapter options
+    # (DSNs / URLs) without forcing operators to write a YAML block.
+    # These map straight into the *_options dicts below.
+    pg_dsn = os.environ.get("MCM_POSTGRES_DSN")
+    redis_url = os.environ.get("MCM_REDIS_URL")
+    opensearch_url = os.environ.get("MCM_OPENSEARCH_URL")
+
     backends = BackendsConfig(**backends_raw)
+    if pg_dsn:
+        if backends.storage == "postgres":
+            backends.storage_options.setdefault("dsn", pg_dsn)
+        if backends.counters == "postgres":
+            backends.counters_options.setdefault("dsn", pg_dsn)
+        if backends.search == "postgres":
+            backends.search_options.setdefault("dsn", pg_dsn)
+    if redis_url and backends.counters == "redis":
+        backends.counters_options.setdefault("url", redis_url)
+    if opensearch_url and backends.search == "opensearch":
+        backends.search_options.setdefault("url", opensearch_url)
 
     # Build top-level config — fail closed on unknown keys, except for the
     # explicit `extra:` block which is the documented escape hatch.

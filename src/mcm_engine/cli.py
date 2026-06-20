@@ -70,6 +70,18 @@ def cmd_init(args):
     print('  }')
 
 
+def cmd_serve(args):
+    """Run the engine as a long-lived HTTP/SSE daemon."""
+    from .transport import serve
+
+    config_path = Path(args.config) if args.config else None
+    project_root = Path(args.project_root) if args.project_root else None
+
+    config = load_config(config_path=config_path, project_root=project_root)
+    server = MCMServer(config, project_root=project_root or Path.cwd())
+    serve(server, host=args.host, port=args.port, transport=args.transport)
+
+
 def cmd_migrate(args):
     """Copy every row from --from DSN into --to DSN, ids preserved."""
     source = open_storage(args.source)
@@ -102,6 +114,27 @@ def main():
     init_parser.add_argument("--project-root", help="Project root directory")
     init_parser.add_argument("--force", action="store_true", help="Overwrite existing config")
     init_parser.set_defaults(func=cmd_init)
+
+    # serve (HTTP/SSE daemon)
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the engine as a long-lived HTTP/SSE daemon (MCM2-20)",
+    )
+    serve_parser.add_argument("--config", help="Path to mcm-engine.yaml")
+    serve_parser.add_argument("--project-root", help="Project root directory")
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="Bind address (default 127.0.0.1; pass 0.0.0.0 for all interfaces).",
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8080,
+        help="Bind port (default 8080).",
+    )
+    serve_parser.add_argument(
+        "--transport", choices=["sse", "streamable-http"], default="sse",
+        help="MCP transport variant (default sse).",
+    )
+    serve_parser.set_defaults(func=cmd_serve)
 
     # migrate
     migrate_parser = subparsers.add_parser(

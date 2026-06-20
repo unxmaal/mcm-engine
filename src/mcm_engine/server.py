@@ -7,8 +7,13 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from .adapters.sqlite.counters import SqliteCounters
+from .adapters.sqlite.search import SqliteSearch
+from .adapters.sqlite.session import InMemorySession
+from .adapters.sqlite.storage import SqliteStorage
 from .config import MCMConfig
 from .db import KnowledgeDB, log, set_log_path
+from .files.watcher import RulesWatcher
 from .plugin import MCMPlugin, SearchScope
 from .schema import migrate_core, migrate_plugin
 from .tracker import SessionTracker
@@ -17,6 +22,7 @@ from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
 from .tools.search import register_search_tools
 from .tools.session import register_session_tools
+from .wiring import Context
 
 
 def _load_plugin(spec: str) -> MCMPlugin:
@@ -70,6 +76,18 @@ class MCMServer:
         db_path = config.resolve_db_path(project_root)
         self.db = KnowledgeDB(db_path)
         migrate_core(self.db)
+
+        # Engine-managed adapters (the Context). Today the embedded
+        # SQLite set is used for the legacy stdio path; the orthogonal
+        # config switches in MCM2-19 are exercised by build_context()
+        # callers (the test suite and future serve startup). Plugins
+        # can read ``self.ctx`` per MCM2-07's docstring.
+        self.ctx: Context = Context(
+            storage=SqliteStorage(db=self.db),
+            counters=SqliteCounters(db=self.db),
+            search=SqliteSearch(db=self.db),
+            session=InMemorySession(),
+        )
 
         # Tracker
         self.tracker = SessionTracker(config.nudges)
@@ -149,7 +167,28 @@ class MCMServer:
             except Exception as e:
                 log(f"Failed to register tools for plugin '{plugin.name}': {e}")
 
+        # Watcher cascade (MCM2-23). Constructed but NOT started here —
+        # stdio mode calls sync_once at startup and never starts the
+        # background thread; serve mode (start_watcher()) starts the
+        # observer for live file→DB cascades.
+        rules_paths = config.resolve_rules_paths(project_root)
+        primary_rules = rules_paths[0] if rules_paths else project_root / "rules"
+        self.watcher: RulesWatcher = RulesWatcher(
+            self.ctx.storage, primary_rules, project_root,
+        )
+
         log("MCM Engine ready")
+
+    def start_watcher(self) -> None:
+        """Daemon-mode startup: run a one-shot sync and then begin the
+        background observer thread. See docs/watcher-cascade.md."""
+        counts = self.watcher.sync_once()
+        log(f"sync_rules at startup: {counts}")
+        self.watcher.start()
+
+    def stop_watcher(self) -> None:
+        """Halt the observer (graceful shutdown)."""
+        self.watcher.stop()
 
     def with_nudge(self, result: str, topic: str | None = None) -> str:
         """Append a behavioral nudge to a result string."""
@@ -159,5 +198,17 @@ class MCMServer:
         return result
 
     def run(self):
-        """Start the MCP server (stdio transport)."""
+        """Start the MCP server (stdio transport).
+
+        Per docs/watcher-cascade.md: stdio mode runs sync_once at
+        startup so the DB reflects the disk state at the moment the
+        session begins, but does NOT start the background observer —
+        process lifetime is too short for live file watching to pay
+        for itself.
+        """
+        try:
+            counts = self.watcher.sync_once()
+            log(f"sync_rules at stdio startup: {counts}")
+        except Exception as e:
+            log(f"sync_rules at stdio startup failed (non-fatal): {e}")
         self.mcp.run()
