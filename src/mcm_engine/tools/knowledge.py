@@ -1,12 +1,19 @@
-"""Knowledge management tools — add_knowledge, add_negative, report_error."""
+"""Knowledge management tools — add_knowledge, add_negative, report_error,
+reinforce_knowledge, pin_item, unpin_item.
+
+Rewired in MCM2-02 (Phase 0): all SQL goes through SqliteStorage /
+SqliteCounters instead of db.execute directly. The tool functions remain
+the same shape externally; only their internals changed.
+"""
 from __future__ import annotations
 
 import re
 
 from mcp.server.fastmcp import FastMCP
 
-from ..db import KnowledgeDB, sanitize_fts
+from ..backends import EntityType, ErrorRow, KnowledgeRow, NegativeRow
 from ..tracker import SessionTracker
+from ..wiring import Context, coerce_context
 
 
 def _extract_keywords(error_text: str) -> list[str]:
@@ -18,7 +25,7 @@ def _extract_keywords(error_text: str) -> list[str]:
         "but", "if", "line", "file", "symbol", "function", "type",
     }
     words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", error_text)
-    keywords = []
+    keywords: list[str] = []
     seen: set[str] = set()
     for w in words:
         wl = w.lower()
@@ -39,12 +46,21 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
 
 def register_knowledge_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
     project_name: str,
     search_all_fn,
 ) -> None:
-    """Register add_knowledge, add_negative, report_error tools on the MCP server."""
+    """Register add_knowledge, add_negative, report_error,
+    reinforce_knowledge, pin_item, unpin_item.
+
+    Uses ``ctx.storage`` and ``ctx.counters`` so every adapter axis
+    selected in ``backends:`` config is honored at runtime. Accepts a
+    raw KnowledgeDB too for backward compat with older callers.
+    """
+    ctx = coerce_context(ctx_or_db)
+    storage = ctx.storage
+    counters = ctx.counters
 
     @mcp.tool()
     def add_knowledge(
@@ -61,59 +77,46 @@ def register_knowledge_tools(
 
         Automatically detects duplicates: exact topic match updates the existing
         entry; fuzzy match warns but still inserts.
-
-        Args:
-            topic: What this knowledge is about
-            summary: One-line summary
-            kind: One of 'finding', 'decision', 'insight'
-            detail: Extended explanation
-            tags: Comma-separated tags for search
-            rationale: For decisions — why this choice
-            alternatives: For decisions — what was rejected
-            project: Project name (defaults to server's project_name)
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
 
-        # Exact topic match — update instead of insert
-        existing = db.execute(
-            "SELECT id, summary FROM knowledge WHERE topic = ? AND kind = ?",
-            (topic, kind),
-        ).fetchone()
-        if existing:
-            db.execute_write(
-                "UPDATE knowledge SET summary = ?, detail = ?, tags = ?, "
-                "rationale = ?, alternatives = ?, updated_at = datetime('now') "
-                "WHERE id = ?",
-                (summary, detail, tags, rationale, alternatives, existing["id"]),
+        # Exact topic match — update instead of insert.
+        existing = storage.find_knowledge_by_topic_kind(topic, kind)
+        if existing is not None:
+            storage.update_knowledge(
+                existing.id,
+                summary=summary,
+                detail=detail,
+                tags=tags,
+                rationale=rationale,
+                alternatives=alternatives,
             )
-            db.commit()
             return _with_nudge(
-                f"Updated existing {kind}: {topic} (was: {existing['summary'][:80]})",
+                f"Updated existing {kind}: {topic} (was: {existing.summary[:80]})",
                 tracker, topic,
             )
 
-        # Fuzzy match — warn but still insert
+        # Fuzzy match — warn but still insert.
         warning = ""
-        try:
-            fts_query = sanitize_fts(topic)
-            similar = db.execute(
-                "SELECT k.id, k.topic, k.summary "
-                "FROM knowledge_fts f JOIN knowledge k ON f.rowid = k.id "
-                "WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT 1",
-                (fts_query,),
-            ).fetchone()
-            if similar:
-                warning = f"\n  Note: similar entry exists — [{similar['topic']}]: {similar['summary'][:80]}"
-        except Exception:
-            pass
+        similar = storage.find_similar_knowledge(topic)
+        if similar is not None:
+            warning = (
+                f"\n  Note: similar entry exists — "
+                f"[{similar.topic}]: {(similar.summary or '')[:80]}"
+            )
 
-        db.execute_write(
-            "INSERT INTO knowledge (topic, kind, summary, detail, tags, project, rationale, alternatives) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (topic, kind, summary, detail, tags, project or project_name, rationale, alternatives),
-        )
-        db.commit()
+        storage.insert_knowledge(KnowledgeRow(
+            id=0,  # adapter assigns
+            topic=topic,
+            kind=kind,
+            summary=summary,
+            detail=detail or None,
+            tags=tags or None,
+            project=project or project_name,
+            rationale=rationale or None,
+            alternatives=alternatives or None,
+        ))
         msg = f"Stored {kind}: {topic} — {summary}"
         if warning:
             msg += warning
@@ -128,27 +131,21 @@ def register_knowledge_tools(
         severity: str = "normal",
         project: str = "",
     ) -> str:
-        """Store what doesn't work — mistakes, anti-patterns, dead ends.
-
-        Args:
-            category: Area or topic
-            what_failed: What was tried
-            why_failed: Why it didn't work
-            correct_approach: What to do instead
-            severity: 'normal' or 'critical'
-            project: Project name (defaults to server's project_name)
-        """
+        """Store what doesn't work — mistakes, anti-patterns, dead ends."""
         tracker.record_call("add_negative", topic=category)
         tracker.record_store()
-        db.execute_write(
-            "INSERT INTO negative_knowledge "
-            "(category, what_failed, why_failed, correct_approach, severity, project) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (category, what_failed, why_failed, correct_approach, severity, project or project_name),
-        )
-        db.commit()
+        storage.insert_negative(NegativeRow(
+            id=0,
+            category=category,
+            what_failed=what_failed,
+            why_failed=why_failed or None,
+            correct_approach=correct_approach or None,
+            severity=severity,
+            project=project or project_name,
+        ))
         return _with_nudge(
-            f"Stored negative knowledge: {category} — {what_failed}", tracker, category
+            f"Stored negative knowledge: {category} — {what_failed}",
+            tracker, category,
         )
 
     @mcp.tool()
@@ -161,28 +158,21 @@ def register_knowledge_tools(
         """Report an error AND automatically search for matching fixes.
 
         THE KILLER FEATURE: one tool call logs the error AND searches all
-        knowledge scopes for matching fixes. Always returns both the logged
-        confirmation and any matching rules/fixes.
-
-        Args:
-            error_text: The error message or text
-            context: Additional context (build phase, file, etc.)
-            tags: Comma-separated tags
-            project: Project name (defaults to server's project_name)
+        knowledge scopes for matching fixes.
         """
         tracker.record_call("report_error", topic=error_text[:50])
         tracker.record_store()
 
-        # Insert error
-        db.execute_write(
-            "INSERT INTO errors (pattern, context, tags, project) VALUES (?, ?, ?, ?)",
-            (error_text, context, tags, project or project_name),
-        )
-        db.commit()
+        storage.insert_error(ErrorRow(
+            id=0,
+            pattern=error_text,
+            context=context or None,
+            tags=tags or None,
+            project=project or project_name,
+        ))
 
         parts = [f"Error logged: {error_text[:100]}"]
 
-        # Auto-search: extract keywords and search all scopes
         keywords = _extract_keywords(error_text)
         if keywords:
             query = " ".join(keywords[:5])
@@ -199,82 +189,49 @@ def register_knowledge_tools(
 
     @mcp.tool()
     def reinforce_knowledge(entry_id: int) -> str:
-        """Deliberately reinforce a knowledge entry — signals "still correct".
-
-        Stronger than a passive search hit (3x weight in ranking).
-
-        Args:
-            entry_id: ID of the knowledge entry to reinforce
-        """
+        """Deliberately reinforce a knowledge entry — signals "still correct"."""
         tracker.record_call("reinforce_knowledge")
-        row = db.execute("SELECT id, topic FROM knowledge WHERE id = ?", (entry_id,)).fetchone()
-        if not row:
+        row = storage.find_by_id(EntityType.KNOWLEDGE, entry_id)
+        if row is None:
             return _with_nudge(f"Knowledge entry {entry_id} not found.", tracker)
 
-        db.execute_write(
-            "UPDATE knowledge SET reinforcement_count = reinforcement_count + 1, "
-            "last_hit_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
-            (entry_id,),
-        )
-        db.commit()
-        count = db.execute(
-            "SELECT reinforcement_count FROM knowledge WHERE id = ?", (entry_id,)
-        ).fetchone()["reinforcement_count"]
-        return _with_nudge(
-            f"Reinforced: {row['topic']} (reinforcement_count={count})", tracker
-        )
+        counters.increment(EntityType.KNOWLEDGE, entry_id, "reinforcement_count")
+        counters.increment(EntityType.KNOWLEDGE, entry_id, "last_hit_at")
 
-    _PINNABLE_TABLES = {
-        "knowledge": "knowledge",
-        "negative": "negative_knowledge",
-        "error": "errors",
-        "rule": "rules",
-    }
+        snap = counters.get(EntityType.KNOWLEDGE, entry_id)
+        count = snap.get("reinforcement_count", 0)
+        return _with_nudge(
+            f"Reinforced: {row.topic} (reinforcement_count={count})", tracker,
+        )
 
     @mcp.tool()
     def pin_item(entry_type: str, entry_id: int) -> str:
-        """Pin an item so it's always loaded and never goes stale.
-
-        Pinned items get a fixed 2.0 boost in search ranking (~20 passive hits).
-
-        Args:
-            entry_type: 'knowledge', 'negative', 'error', or 'rule'
-            entry_id: ID of the entry to pin
-        """
+        """Pin an item so it's always loaded and never goes stale."""
         tracker.record_call("pin_item")
-        table = _PINNABLE_TABLES.get(entry_type)
-        if not table:
+        try:
+            etype = EntityType(entry_type)
+        except ValueError:
+            valid = ", ".join(e.value for e in EntityType)
             return _with_nudge(
-                f"Invalid entry_type '{entry_type}'. Use: {', '.join(_PINNABLE_TABLES.keys())}",
-                tracker,
+                f"Invalid entry_type '{entry_type}'. Use: {valid}", tracker,
             )
-        row = db.execute(f"SELECT id FROM {table} WHERE id = ?", (entry_id,)).fetchone()
-        if not row:
+        if not storage.entry_exists(etype, entry_id):
             return _with_nudge(f"{entry_type} entry {entry_id} not found.", tracker)
-
-        db.execute_write(f"UPDATE {table} SET pinned = 1 WHERE id = ?", (entry_id,))
-        db.commit()
+        storage.set_pinned(etype, entry_id, True)
         return _with_nudge(f"Pinned {entry_type} #{entry_id}.", tracker)
 
     @mcp.tool()
     def unpin_item(entry_type: str, entry_id: int) -> str:
-        """Unpin an item, restoring normal staleness behavior.
-
-        Args:
-            entry_type: 'knowledge', 'negative', 'error', or 'rule'
-            entry_id: ID of the entry to unpin
-        """
+        """Unpin an item, restoring normal staleness behavior."""
         tracker.record_call("unpin_item")
-        table = _PINNABLE_TABLES.get(entry_type)
-        if not table:
+        try:
+            etype = EntityType(entry_type)
+        except ValueError:
+            valid = ", ".join(e.value for e in EntityType)
             return _with_nudge(
-                f"Invalid entry_type '{entry_type}'. Use: {', '.join(_PINNABLE_TABLES.keys())}",
-                tracker,
+                f"Invalid entry_type '{entry_type}'. Use: {valid}", tracker,
             )
-        row = db.execute(f"SELECT id FROM {table} WHERE id = ?", (entry_id,)).fetchone()
-        if not row:
+        if not storage.entry_exists(etype, entry_id):
             return _with_nudge(f"{entry_type} entry {entry_id} not found.", tracker)
-
-        db.execute_write(f"UPDATE {table} SET pinned = 0 WHERE id = ?", (entry_id,))
-        db.commit()
+        storage.set_pinned(etype, entry_id, False)
         return _with_nudge(f"Unpinned {entry_type} #{entry_id}.", tracker)

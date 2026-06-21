@@ -111,8 +111,16 @@ class KnowledgeDB:
         self.conn = self._open_connection()
 
     def _open_connection(self) -> sqlite3.Connection:
-        """Open a fresh SQLite connection with correct pragmas."""
-        conn = sqlite3.connect(str(self.db_path))
+        """Open a fresh SQLite connection with correct pragmas.
+
+        ``check_same_thread=False`` lets the HTTP/SSE daemon (MCM2-20)
+        and the watcher cascade (MCM2-23) share a single connection
+        across uvicorn worker threads and the watchdog Observer
+        thread. SQLite still serializes writes internally via WAL +
+        busy_timeout — the disabled guard only matters for read-only
+        contention which WAL handles correctly.
+        """
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")

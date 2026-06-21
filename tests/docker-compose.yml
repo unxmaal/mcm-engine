@@ -1,0 +1,86 @@
+# Test-stack containers for mcm-engine Phase 1+ conformance.
+#
+# Bring up only what you need:
+#   docker compose -f tests/docker-compose.yml up -d postgres   # Phase 1
+#   docker compose -f tests/docker-compose.yml up -d redis      # Phase 2
+#   docker compose -f tests/docker-compose.yml up -d opensearch # Phase 3
+#
+# All services bind to localhost on non-standard ports so they don't
+# collide with anything the developer already has running.
+#
+# Tests autodetect by attempting a connection at the documented host/port;
+# absent the container, conformance suites for that adapter skip cleanly.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mcm2-test-postgres
+    environment:
+      POSTGRES_USER: mcm
+      POSTGRES_PASSWORD: mcm
+      POSTGRES_DB: mcm_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcm -d mcm_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data  # ephemeral; tests are idempotent
+
+  redis:
+    image: redis:7-alpine
+    container_name: mcm2-test-redis
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  opensearch:
+    image: opensearchproject/opensearch:2
+    container_name: mcm2-test-opensearch
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=mcm-test-pw
+    ports:
+      - "127.0.0.1:59200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # LocalStack — AWS-compatible API emulator. Used for integration
+  # tests of terraform/aws/ via `tofu apply` against LocalStack instead
+  # of real AWS. Covers VPC, IAM, ECR, RDS, ElastiCache, OpenSearch,
+  # and App Runner shapes well enough to validate the plan applies.
+  # LocalStack — AWS-compatible API emulator. Available for follow-up
+  # tofu apply integration tests once a pro license is in hand:
+  # App Runner support is pro-tier only and our terraform/aws/ module
+  # provisions one. Pin to 3.8 (the last fully-free 3.x line); newer
+  # tags require LOCALSTACK_AUTH_TOKEN.
+  #
+  # Today's primary TDD path is `tofu test` with mock_provider — see
+  # terraform/aws/tests/. That covers plan-time invariants without any
+  # container. Bring LocalStack up only when you also want to exercise
+  # `tofu apply` end-to-end against an emulator instead of real AWS.
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: mcm2-test-localstack
+    environment:
+      - SERVICES=ec2,iam,rds,elasticache,opensearch,ecr,sts
+      - DEBUG=0
+      - LS_LOG=warn
+      - PERSISTENCE=0
+    ports:
+      - "127.0.0.1:54566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30

@@ -9,7 +9,9 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import MCMConfig
 from .db import KnowledgeDB, log, set_log_path
+from .files.watcher import RulesWatcher
 from .plugin import MCMPlugin, SearchScope
+from .registry import AdapterRegistry
 from .schema import migrate_core, migrate_plugin
 from .tracker import SessionTracker
 from .tools.knowledge import register_knowledge_tools
@@ -17,6 +19,7 @@ from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
 from .tools.search import register_search_tools
 from .tools.session import register_session_tools
+from .wiring import Context, build_context
 
 
 def _load_plugin(spec: str) -> MCMPlugin:
@@ -56,7 +59,13 @@ class MCMServer:
         server.run()
     """
 
-    def __init__(self, config: MCMConfig, project_root: Path | None = None):
+    def __init__(
+        self,
+        config: MCMConfig,
+        project_root: Path | None = None,
+        *,
+        registry: AdapterRegistry | None = None,
+    ):
         if project_root is None:
             project_root = Path.cwd()
         self.config = config
@@ -66,10 +75,30 @@ class MCMServer:
         set_log_path(config.log_path)
         log(f"MCM Engine starting for project '{config.project_name}'")
 
-        # Database
+        # Database — kept for plugin compatibility (plugins write SQL
+        # against their own tables on this connection). The engine-side
+        # adapters resolved via build_context below are what tools use.
         db_path = config.resolve_db_path(project_root)
         self.db = KnowledgeDB(db_path)
         migrate_core(self.db)
+
+        # Wire engine-managed adapters from config. This is the line
+        # that makes the YAML `backends:` block actually take effect at
+        # runtime — defect #5 from the cutover test.
+        #
+        # When backends.storage selects "embedded" + no explicit db_path
+        # option, point the embedded adapter at the same db file the
+        # plugin layer uses so we don't end up with two separate SQLite
+        # connections to different files.
+        backends = config.backends
+        if backends.storage == "embedded" and "db_path" not in backends.storage_options:
+            backends.storage_options["db_path"] = str(db_path)
+        if backends.counters == "embedded" and "db_path" not in backends.counters_options:
+            backends.counters_options["db_path"] = str(db_path)
+        if backends.search == "embedded" and "db_path" not in backends.search_options:
+            backends.search_options["db_path"] = str(db_path)
+
+        self.ctx: Context = build_context(config, registry=registry)
 
         # Tracker
         self.tracker = SessionTracker(config.nudges)
@@ -115,32 +144,37 @@ class MCMServer:
             if nudge_fn:
                 self.tracker.register_plugin_nudge(nudge_fn)
 
-        # Register core tools
+        # Register core tools. Each takes the Context built from config,
+        # so adapter selection is config-driven all the way through.
+        # The raw `db` is still passed for paths that legitimately need
+        # SQLite-specific behavior (plugin session callbacks, etc.).
         # Search first (returns the internal search_all function)
         search_all_fn = register_search_tools(
-            self.mcp, self.db, self.tracker, self._search_scopes,
+            self.mcp, self.ctx, self.tracker, self._search_scopes,
             project_name=config.project_name,
         )
         self._search_all_fn = search_all_fn
 
         # Knowledge tools (needs search_all for report_error)
         register_knowledge_tools(
-            self.mcp, self.db, self.tracker, config.project_name, search_all_fn
+            self.mcp, self.ctx, self.tracker, config.project_name, search_all_fn
         )
 
-        # Session tools
+        # Session tools (plugin callbacks still receive raw db)
         register_session_tools(
-            self.mcp, self.db, self.tracker, config.project_name, self._plugin_session_fns
+            self.mcp, self.ctx, self.tracker, config.project_name,
+            self._plugin_session_fns, plugin_db=self.db,
         )
 
         # Rules tools
         rules_paths = config.resolve_rules_paths(project_root)
         register_rules_tools(
-            self.mcp, self.db, self.tracker, config.project_name, rules_paths, project_root
+            self.mcp, self.ctx, self.tracker, config.project_name,
+            rules_paths, project_root,
         )
 
         # Relations tools
-        register_relations_tools(self.mcp, self.db, self.tracker)
+        register_relations_tools(self.mcp, self.ctx, self.tracker)
 
         # Register plugin tools
         for plugin in self._plugins:
@@ -149,7 +183,28 @@ class MCMServer:
             except Exception as e:
                 log(f"Failed to register tools for plugin '{plugin.name}': {e}")
 
+        # Watcher cascade (MCM2-23). Constructed but NOT started here —
+        # stdio mode calls sync_once at startup and never starts the
+        # background thread; serve mode (start_watcher()) starts the
+        # observer for live file→DB cascades.
+        rules_paths = config.resolve_rules_paths(project_root)
+        primary_rules = rules_paths[0] if rules_paths else project_root / "rules"
+        self.watcher: RulesWatcher = RulesWatcher(
+            self.ctx.storage, primary_rules, project_root,
+        )
+
         log("MCM Engine ready")
+
+    def start_watcher(self) -> None:
+        """Daemon-mode startup: run a one-shot sync and then begin the
+        background observer thread. See docs/watcher-cascade.md."""
+        counts = self.watcher.sync_once()
+        log(f"sync_rules at startup: {counts}")
+        self.watcher.start()
+
+    def stop_watcher(self) -> None:
+        """Halt the observer (graceful shutdown)."""
+        self.watcher.stop()
 
     def with_nudge(self, result: str, topic: str | None = None) -> str:
         """Append a behavioral nudge to a result string."""
@@ -159,5 +214,17 @@ class MCMServer:
         return result
 
     def run(self):
-        """Start the MCP server (stdio transport)."""
+        """Start the MCP server (stdio transport).
+
+        Per docs/watcher-cascade.md: stdio mode runs sync_once at
+        startup so the DB reflects the disk state at the moment the
+        session begins, but does NOT start the background observer —
+        process lifetime is too short for live file watching to pay
+        for itself.
+        """
+        try:
+            counts = self.watcher.sync_once()
+            log(f"sync_rules at stdio startup: {counts}")
+        except Exception as e:
+            log(f"sync_rules at stdio startup failed (non-fatal): {e}")
         self.mcp.run()

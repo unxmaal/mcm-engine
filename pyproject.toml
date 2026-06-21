@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcm-engine"
-version = "0.4.0"
+version = "2.0.0"
 description = "Memory Context Management engine — persistent knowledge management for AI coding sessions"
 readme = "README.md"
 license = "MIT"
@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "mcp>=1.0.0",
     "pyyaml>=6.0",
+    "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -32,12 +33,41 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+# Adapter extras — `pip install mcm-engine[postgres]` etc.
+postgres = [
+    "psycopg[binary]>=3.2",
+]
+redis = [
+    "redis>=5.0",
+]
+opensearch = [
+    "opensearch-py>=2.6",
+]
 
 [project.scripts]
 mcm-engine = "mcm_engine.cli:main"
 
 [project.entry-points."mcm_engine.plugins"]
 # Example: my_plugin = "my_package:MyPlugin"
+
+# Adapter entry points — these resolve via importlib.metadata.entry_points
+# in mcm_engine.registry.AdapterRegistry. "embedded" is auto-registered
+# at registry init (no entry point needed); other adapters live here.
+
+[project.entry-points."mcm_engine.adapters.storage"]
+postgres = "mcm_engine.adapters.postgres:PostgresStorage"
+
+[project.entry-points."mcm_engine.adapters.counters"]
+redis = "mcm_engine.adapters.redis:RedisCounters"
+postgres = "mcm_engine.adapters.postgres:PostgresCounters"
+
+[project.entry-points."mcm_engine.adapters.search"]
+postgres = "mcm_engine.adapters.postgres:PostgresSearch"
+opensearch = "mcm_engine.adapters.opensearch:OpenSearchSearch"
+
+[project.entry-points."mcm_engine.adapters.session"]
+# "embedded" (InMemorySession) is auto-registered; no third-party
+# SessionStore ships in v1.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcm_engine"]

@@ -12,7 +12,13 @@ if TYPE_CHECKING:
 
 @dataclass
 class SearchScope:
-    """Defines how to FTS5-search a plugin table and format results.
+    """Table descriptor for a plugin-owned table that should participate in
+    the unified search tool.
+
+    MCM2-07: this is purely passive metadata. The engine's SearchBackend
+    consumes the descriptor and runs the search; the plugin layer carries
+    no SQL of its own. To run a search against a scope, call
+    ``ctx.search.search_plugin(scope, query, limit)``.
 
     Attributes:
         name: Unique scope name (e.g., "rules", "site_data")
@@ -21,8 +27,10 @@ class SearchScope:
         base_table: The real table to join against
         fts_columns: Columns in the FTS5 table to search
         display_columns: Columns to show in results
-        format_fn: Optional custom formatter. Receives a sqlite3.Row, returns str.
-                   If None, a default formatter is used.
+        like_columns: Columns to scan in the LIKE fallback
+        format_fn: Optional custom formatter. Receives a row mapping,
+            returns str. If None, the backend uses a default
+            "[LABEL] col1 | col2" formatter.
     """
 
     name: str
@@ -32,46 +40,7 @@ class SearchScope:
     fts_columns: list[str] = field(default_factory=list)
     display_columns: list[str] = field(default_factory=list)
     like_columns: list[str] = field(default_factory=list)
-    format_fn: Any = None  # Callable[[sqlite3.Row], str] | None
-
-    def search(self, db, query: str, fts_query: str, like_pattern: str, limit: int) -> list[str]:
-        """Search this scope and return formatted result strings."""
-        results: list[str] = []
-        rows = []
-
-        # Try FTS5 first
-        if self.fts_table and self.fts_columns:
-            try:
-                cols = ", ".join(f"b.{c}" for c in self.display_columns)
-                rows = db.execute(
-                    f"SELECT {cols} FROM {self.fts_table} f "
-                    f"JOIN {self.base_table} b ON f.rowid = b.id "
-                    f"WHERE {self.fts_table} MATCH ? ORDER BY rank LIMIT ?",
-                    (fts_query, limit),
-                ).fetchall()
-            except Exception:
-                rows = []
-
-        # LIKE fallback
-        if not rows and self.like_columns:
-            conditions = " OR ".join(f"{c} LIKE ?" for c in self.like_columns)
-            cols = ", ".join(self.display_columns)
-            params = tuple(like_pattern for _ in self.like_columns) + (limit,)
-            rows = db.execute(
-                f"SELECT {cols} FROM {self.base_table} WHERE {conditions} LIMIT ?",
-                params,
-            ).fetchall()
-
-        # Format results
-        for r in rows:
-            if self.format_fn:
-                results.append(self.format_fn(r))
-            else:
-                # Default: [LABEL] col1: col2
-                vals = [str(r[c]) for c in self.display_columns if r[c]]
-                results.append(f"[{self.label}] {' | '.join(vals)}")
-
-        return results
+    format_fn: Any = None  # Callable[[Mapping[str, Any]], str] | None
 
 
 class MCMPlugin(ABC):
@@ -107,12 +76,23 @@ class MCMPlugin(ABC):
     def register_tools(self, server) -> None:
         """Register additional MCP tools on the server.
 
-        server is an MCMServer instance — use server.mcp, server.db, server.tracker.
+        server is an MCMServer instance. Plugins use:
+          - server.mcp           — register MCP tool decorators on this
+          - server.tracker       — record_call / nudge integration
+          - server.ctx           — engine-managed adapters (storage, counters,
+                                   search). MCM2-07: prefer ctx over raw db
+                                   for engine-owned entity types.
+          - server.db            — raw KnowledgeDB handle for the plugin's
+                                   own tables (engine tables go through ctx).
         """
         pass
 
     def get_search_scopes(self) -> list[SearchScope]:
-        """Return SearchScope definitions to extend the unified search tool."""
+        """Return SearchScope descriptors to extend the unified search tool.
+
+        Post-MCM2-07 each scope is passive metadata; the engine's
+        SearchBackend runs the actual search.
+        """
         return []
 
     def get_nudge(self, tracker: SessionTracker) -> str | None:

@@ -359,22 +359,25 @@ class TestSyncRules:
         assert row["title"] == "Updated Title"
         assert row["keywords"] == "new, updated"
 
-    def test_removes_orphans(self, rules_env):
+    def test_archives_orphans(self, rules_env):
+        # MCM2-02 + MCM2-23 (watcher cascade) direction: orphan files
+        # soft-delete the row (archived=1, archived_at set) instead of
+        # hard-deleting. Row stays around for audit / restore-on-recreate.
         mcp, db, tracker, rules_path, project_root = rules_env
-        # Create and index a file
         f = rules_path / "doomed.md"
         f.write_text("# Doomed Rule\n\n**Keywords:** doomed\n\nGoing away.\n")
         mcp["sync_rules"]()
 
-        # Delete the file
         f.unlink()
         result = mcp["sync_rules"]()
-        assert "1 orphans removed" in result
+        assert "1 orphans archived" in result
 
         row = db.execute(
             "SELECT * FROM rules WHERE title = 'Doomed Rule'"
         ).fetchone()
-        assert row is None
+        assert row is not None
+        assert row["archived"] == 1
+        assert row["archived_at"] is not None
 
     def test_missing_rules_dir(self, rules_env):
         mcp, db, tracker, rules_path, project_root = rules_env
@@ -526,23 +529,24 @@ class TestMultiPathRules:
         assert "# Readable Shared" in result
         assert "Shared content." in result
 
-    def test_orphan_removal_for_external_path(self, multi_env):
+    def test_orphan_archival_for_external_path(self, multi_env):
+        # See test_archives_orphans above — same soft-delete semantics
+        # for rules outside project_root.
         mcp, db, tracker, local_rules, shared_rules, project_root = multi_env
         f = shared_rules / "doomed-shared.md"
         f.write_text("# Doomed Shared\n\n**Keywords:** doomed\n\nGoing away.\n")
         mcp["sync_rules"]()
 
-        # Verify it was indexed
         row = db.execute("SELECT * FROM rules WHERE title = 'Doomed Shared'").fetchone()
         assert row is not None
 
-        # Delete the file and re-sync
         f.unlink()
         result = mcp["sync_rules"]()
-        assert "1 orphans removed" in result
+        assert "1 orphans archived" in result
 
         row = db.execute("SELECT * FROM rules WHERE title = 'Doomed Shared'").fetchone()
-        assert row is None
+        assert row is not None
+        assert row["archived"] == 1
 
     def test_missing_shared_path_still_syncs_local(self, multi_env):
         mcp, db, tracker, local_rules, shared_rules, project_root = multi_env

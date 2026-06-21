@@ -7,7 +7,9 @@ from pathlib import Path
 
 import yaml
 
+from . import __version__
 from .config import MCMConfig, load_config
+from .migrate import format_report, migrate, open_storage
 from .server import MCMServer
 
 
@@ -69,10 +71,43 @@ def cmd_init(args):
     print('  }')
 
 
+def cmd_serve(args):
+    """Run the engine as a long-lived HTTP/SSE daemon."""
+    from .transport import serve
+
+    config_path = Path(args.config) if args.config else None
+    project_root = Path(args.project_root) if args.project_root else None
+
+    config = load_config(config_path=config_path, project_root=project_root)
+    server = MCMServer(config, project_root=project_root or Path.cwd())
+    serve(server, host=args.host, port=args.port, transport=args.transport)
+
+
+def cmd_migrate(args):
+    """Copy every row from --from DSN into --to DSN, ids preserved."""
+    source = open_storage(args.source)
+    dest = open_storage(args.dest)
+    try:
+        report = migrate(source, dest, force=args.force)
+    except ValueError as e:
+        print(f"migration aborted: {e}", file=sys.stderr)
+        sys.exit(2)
+    print("Migration complete:")
+    print(format_report(report))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="mcm-engine",
-        description="Memory Context Management engine for AI coding sessions",
+        description=(
+            f"Memory Context Management engine for AI coding sessions "
+            f"(v{__version__})"
+        ),
+    )
+    parser.add_argument(
+        "--version", "-v",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -88,6 +123,48 @@ def main():
     init_parser.add_argument("--project-root", help="Project root directory")
     init_parser.add_argument("--force", action="store_true", help="Overwrite existing config")
     init_parser.set_defaults(func=cmd_init)
+
+    # serve (HTTP/SSE daemon)
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the engine as a long-lived HTTP/SSE daemon (MCM2-20)",
+    )
+    serve_parser.add_argument("--config", help="Path to mcm-engine.yaml")
+    serve_parser.add_argument("--project-root", help="Project root directory")
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="Bind address (default 127.0.0.1; pass 0.0.0.0 for all interfaces).",
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8080,
+        help="Bind port (default 8080).",
+    )
+    serve_parser.add_argument(
+        "--transport", choices=["sse", "streamable-http"], default="sse",
+        help="MCP transport variant (default sse).",
+    )
+    serve_parser.set_defaults(func=cmd_serve)
+
+    # migrate
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Copy storage between adapters (e.g., sqlite -> postgres)",
+    )
+    migrate_parser.add_argument(
+        "--from", dest="source", required=True,
+        help="Source DSN (e.g., sqlite:///path/to/db, postgresql://...)",
+    )
+    migrate_parser.add_argument(
+        "--to", dest="dest", required=True,
+        help="Destination DSN",
+    )
+    migrate_parser.add_argument(
+        "--force", action="store_true",
+        help="Allow writing to a non-empty destination (rows are appended; "
+             "existing rows are not touched). Caller is responsible for "
+             "truncating the destination if a clean slate is required.",
+    )
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     args = parser.parse_args()
     args.func(args)

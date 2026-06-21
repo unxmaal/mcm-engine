@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 6
+CORE_VERSION = 7
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -148,6 +148,7 @@ CREATE TRIGGER IF NOT EXISTS errors_au AFTER UPDATE ON errors BEGIN
 END;
 
 -- External rules (file-backed knowledge)
+-- v7: content_hash + archived columns support the watcher cascade (MCM2-23).
 CREATE TABLE IF NOT EXISTS rules (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
@@ -159,6 +160,9 @@ CREATE TABLE IF NOT EXISTS rules (
     last_hit_at TEXT,
     reinforcement_count INTEGER DEFAULT 0,
     pinned INTEGER DEFAULT 0,
+    content_hash TEXT,
+    archived INTEGER DEFAULT 0,
+    archived_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -404,6 +408,25 @@ def _migrate_v5_to_v6(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v6_to_v7(db: KnowledgeDB) -> None:
+    """v6 -> v7: Add watcher-cascade columns to rules.
+
+    The watcher (MCM2-23) writes `content_hash` per file so engine-initiated
+    writes can short-circuit the cascade as no-ops; soft-deletes via
+    `archived` + `archived_at` replace the v6 hard DELETE on orphan removal.
+    """
+    if not _has_column(db, "rules", "content_hash"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN content_hash TEXT")
+        log("Migration v6->v7: added rules.content_hash")
+    if not _has_column(db, "rules", "archived"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN archived INTEGER DEFAULT 0")
+        log("Migration v6->v7: added rules.archived")
+    if not _has_column(db, "rules", "archived_at"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN archived_at TEXT")
+        log("Migration v6->v7: added rules.archived_at")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -411,6 +434,7 @@ _MIGRATIONS = [
     (3, 4, _migrate_v3_to_v4),
     (4, 5, _migrate_v4_to_v5),
     (5, 6, _migrate_v5_to_v6),
+    (6, 7, _migrate_v6_to_v7),
 ]
 
 

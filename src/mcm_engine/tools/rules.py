@@ -1,4 +1,11 @@
-"""External rules file tools — add_rule, read_rule, promote_to_rule, sync_rules."""
+"""External rules file tools — add_rule, read_rule, promote_to_rule,
+sync_rules, reinforce_rule.
+
+Rewired in MCM2-02 (Phase 0): all SQL routes through SqliteStorage /
+SqliteCounters. Orphan removal in sync_rules now soft-deletes (sets
+archived=1) instead of hard-deleting, matching the watcher-cascade
+direction (MCM2-23) and the v7 schema columns.
+"""
 from __future__ import annotations
 
 import re
@@ -6,8 +13,11 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from ..db import KnowledgeDB, log
+from ..backends import EntityType, RuleRow
+from ..db import log
+from ..files.watcher import compute_content_hash
 from ..tracker import SessionTracker
+from ..wiring import Context, coerce_context
 
 
 def _slugify(text: str) -> str:
@@ -22,30 +32,23 @@ def _slugify(text: str) -> str:
 def _parse_rule_file(path: Path) -> dict:
     """Extract metadata from a rule markdown file.
 
-    Expected format:
-        # Title
-        **Keywords:** kw1, kw2
-        **Category:** cat
-        Body text...
-
-    Returns dict with title, keywords, category, description.
+    Always populates ``content_hash`` so callers (notably sync_rules) can
+    seed it on the row without re-reading the file.
     """
     try:
         content = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return {}
 
-    result: dict[str, str] = {}
+    result: dict[str, str] = {"content_hash": compute_content_hash(content)}
     lines = content.split("\n")
 
-    # Title from first # heading
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("# ") and not stripped.startswith("## "):
             result["title"] = stripped[2:].strip()
             break
 
-    # Keywords and Category from **Key:** value lines
     for line in lines:
         stripped = line.strip()
         kw_match = re.match(r"\*\*Keywords?:\*\*\s*(.+)", stripped, re.IGNORECASE)
@@ -57,13 +60,11 @@ def _parse_rule_file(path: Path) -> dict:
             result["category"] = cat_match.group(1).strip()
             continue
 
-    # Description: first non-empty, non-metadata body paragraph
     in_body = False
     desc_lines: list[str] = []
     for line in lines:
         stripped = line.strip()
         if not in_body:
-            # Skip title and metadata lines
             if stripped.startswith("# ") and not stripped.startswith("## "):
                 continue
             if re.match(r"\*\*(Keywords?|Category):\*\*", stripped, re.IGNORECASE):
@@ -73,9 +74,9 @@ def _parse_rule_file(path: Path) -> dict:
             in_body = True
         if in_body:
             if stripped == "" and desc_lines:
-                break  # End of first paragraph
+                break
             if stripped.startswith("## "):
-                break  # Hit a subsection
+                break
             desc_lines.append(stripped)
 
     if desc_lines:
@@ -85,7 +86,6 @@ def _parse_rule_file(path: Path) -> dict:
 
 
 def _generate_rule_content(title: str, keywords: str, category: str, content: str) -> str:
-    """Generate a rule markdown file."""
     parts = [f"# {title}", ""]
     parts.append(f"**Keywords:** {keywords}")
     if category:
@@ -105,21 +105,21 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
 
 def register_rules_tools(
     mcp: FastMCP,
-    db: KnowledgeDB,
+    ctx_or_db,
     tracker: SessionTracker,
     project_name: str,
     rules_paths: list[Path],
     project_root: Path,
 ) -> None:
-    """Register add_rule, read_rule, promote_to_rule, sync_rules tools.
+    """Register add_rule, read_rule, promote_to_rule, sync_rules,
+    reinforce_rule tools.
 
-    Args:
-        rules_paths: List of rules directories. The first is the primary
-            directory where new rule files are created. All are scanned
-            by sync_rules.
+    Accepts a Context or a raw KnowledgeDB for backward compat.
     """
-    # Primary path for creating new files; all paths for scanning
+    ctx = coerce_context(ctx_or_db)
     primary_rules_path = rules_paths[0] if rules_paths else project_root / "rules"
+    storage = ctx.storage
+    counters = ctx.counters
 
     @mcp.tool()
     def add_rule(
@@ -129,76 +129,68 @@ def register_rules_tools(
         category: str = "",
         file_path: str = "",
     ) -> str:
-        """Create or index a rule file. If file_path is empty, creates a new file
-        under rules/{category}/{slug}.md. If file_path is provided, indexes an
-        existing file.
-
-        Args:
-            title: Rule title
-            keywords: Comma-separated search keywords
-            content: Rule body text (used when creating a new file)
-            category: Rule category (used for directory organization)
-            file_path: Relative path to existing rule file (indexes it if provided)
-        """
+        """Create or index a rule file."""
         tracker.record_call("add_rule", topic=title)
         tracker.record_store()
 
-        # Check for duplicate by title
-        existing = db.execute(
-            "SELECT id, file_path FROM rules WHERE title = ?", (title,)
-        ).fetchone()
-        if existing:
-            # Update existing rule
-            db.execute_write(
-                "UPDATE rules SET keywords = ?, description = ?, category = ?, "
-                "file_path = ?, updated_at = datetime('now') WHERE id = ?",
-                (keywords, content[:500] if content else "", category,
-                 file_path or existing["file_path"], existing["id"]),
+        existing = storage.find_rule_by_title(title)
+        if existing is not None:
+            storage.update_rule(
+                existing.id,
+                keywords=keywords,
+                description=(content[:500] if content else ""),
+                category=category,
+                file_path=file_path or existing.file_path,
             )
-            db.commit()
             return _with_nudge(
-                f"Updated existing rule: {title} (id={existing['id']})",
+                f"Updated existing rule: {title} (id={existing.id})",
                 tracker, title,
             )
 
         actual_path: str = file_path
         warning = ""
+        # content_hash is needed by the watcher cascade so engine-initiated
+        # writes don't trip a redundant re-cascade — see
+        # docs/watcher-cascade.md and rules/mcm2/.
+        content_hash: str | None = None
 
         if file_path:
-            # Index an existing file
             full = project_root / file_path
             if full.exists():
                 parsed = _parse_rule_file(full)
                 if not content and parsed.get("description"):
                     content = parsed["description"]
+                content_hash = compute_content_hash(
+                    full.read_text(encoding="utf-8")
+                )
             else:
                 warning = f"\nWarning: file '{file_path}' does not exist. Rule indexed without file backing."
         else:
-            # Create a new rule file
             cat_dir = primary_rules_path / category if category else primary_rules_path
             cat_dir.mkdir(parents=True, exist_ok=True)
             slug = _slugify(title)
             new_file = cat_dir / f"{slug}.md"
 
-            # Avoid overwriting
             counter = 1
             while new_file.exists():
                 new_file = cat_dir / f"{slug}-{counter}.md"
                 counter += 1
 
-            file_content = _generate_rule_content(
-                title, keywords, category, content or ""
-            )
+            file_content = _generate_rule_content(title, keywords, category, content or "")
             new_file.write_text(file_content, encoding="utf-8")
             actual_path = str(new_file.relative_to(project_root))
+            content_hash = compute_content_hash(file_content)
 
         description = content[:500] if content else ""
-        db.execute_write(
-            "INSERT INTO rules (title, keywords, file_path, description, category) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (title, keywords, actual_path, description, category),
-        )
-        db.commit()
+        storage.insert_rule(RuleRow(
+            id=0,
+            title=title,
+            keywords=keywords,
+            file_path=actual_path or None,
+            description=description or None,
+            category=category or None,
+            content_hash=content_hash,
+        ))
 
         msg = f"Rule added: {title}"
         if actual_path:
@@ -209,11 +201,7 @@ def register_rules_tools(
 
     @mcp.tool()
     def read_rule(file_path: str) -> str:
-        """Read a rule file's contents. Increments hit_count for tracking.
-
-        Args:
-            file_path: Relative path to the rule file
-        """
+        """Read a rule file's contents. Increments hit_count for tracking."""
         tracker.record_call("read_rule", topic=file_path)
 
         fp = Path(file_path)
@@ -221,14 +209,10 @@ def register_rules_tools(
         if not full.exists():
             return _with_nudge(f"Rule file not found: {file_path}", tracker)
 
-        # Increment hit count and record last_hit_at
-        db.execute_write(
-            "UPDATE rules SET hit_count = hit_count + 1, "
-            "last_hit_at = datetime('now'), updated_at = datetime('now') "
-            "WHERE file_path = ?",
-            (file_path,),
-        )
-        db.commit()
+        row = storage.find_rule_by_file_path(file_path)
+        if row is not None:
+            counters.increment(EntityType.RULE, row.id, "hit_count")
+            counters.increment(EntityType.RULE, row.id, "last_hit_at")
 
         try:
             content = full.read_text(encoding="utf-8")
@@ -245,73 +229,53 @@ def register_rules_tools(
         category: str = "",
         keywords: str = "",
     ) -> str:
-        """Promote a DB entry (knowledge, negative, or error) to a persistent rule file.
-
-        Args:
-            source_type: 'knowledge', 'negative', or 'error'
-            source_id: ID of the source entry
-            title: Title for the new rule
-            category: Rule category
-            keywords: Comma-separated keywords (auto-extracted if empty)
-        """
+        """Promote a DB entry to a persistent rule file."""
         tracker.record_call("promote_to_rule", topic=title)
 
-        # Fetch source entry
-        if source_type == "knowledge":
-            row = db.execute(
-                "SELECT topic, summary, detail, tags FROM knowledge WHERE id = ?",
-                (source_id,),
-            ).fetchone()
-            if not row:
-                return _with_nudge(f"Knowledge entry {source_id} not found.", tracker)
-            content = row["summary"]
-            if row["detail"]:
-                content += f"\n\n{row['detail']}"
-            if not keywords:
-                keywords = row["tags"] or row["topic"]
-
-        elif source_type == "negative":
-            row = db.execute(
-                "SELECT category, what_failed, why_failed, correct_approach "
-                "FROM negative_knowledge WHERE id = ?",
-                (source_id,),
-            ).fetchone()
-            if not row:
-                return _with_nudge(f"Negative knowledge entry {source_id} not found.", tracker)
-            content = f"**What failed:** {row['what_failed']}"
-            if row["why_failed"]:
-                content += f"\n\n**Why:** {row['why_failed']}"
-            if row["correct_approach"]:
-                content += f"\n\n## Fix\n\n{row['correct_approach']}"
-            if not keywords:
-                keywords = row["category"]
-            if not category:
-                category = row["category"]
-
-        elif source_type == "error":
-            row = db.execute(
-                "SELECT pattern, context, root_cause, fix FROM errors WHERE id = ?",
-                (source_id,),
-            ).fetchone()
-            if not row:
-                return _with_nudge(f"Error entry {source_id} not found.", tracker)
-            content = f"**Error:** {row['pattern']}"
-            if row["context"]:
-                content += f"\n\n**Context:** {row['context']}"
-            if row["root_cause"]:
-                content += f"\n\n**Root cause:** {row['root_cause']}"
-            if row["fix"]:
-                content += f"\n\n## Fix\n\n{row['fix']}"
-            if not keywords:
-                keywords = row["pattern"][:100]
-
-        else:
+        try:
+            etype = EntityType(source_type)
+        except ValueError:
             return _with_nudge(
                 f"Invalid source_type '{source_type}'. Use 'knowledge', 'negative', or 'error'.",
                 tracker,
             )
 
-        # Delegate to add_rule
+        row = storage.find_by_id(etype, source_id)
+        if row is None:
+            label = source_type.capitalize() if source_type != "negative" else "Negative knowledge"
+            return _with_nudge(f"{label} entry {source_id} not found.", tracker)
+
+        if etype is EntityType.KNOWLEDGE:
+            content = row.summary
+            if row.detail:
+                content += f"\n\n{row.detail}"
+            if not keywords:
+                keywords = row.tags or row.topic
+        elif etype is EntityType.NEGATIVE:
+            content = f"**What failed:** {row.what_failed}"
+            if row.why_failed:
+                content += f"\n\n**Why:** {row.why_failed}"
+            if row.correct_approach:
+                content += f"\n\n## Fix\n\n{row.correct_approach}"
+            if not keywords:
+                keywords = row.category
+            if not category:
+                category = row.category
+        elif etype is EntityType.ERROR:
+            content = f"**Error:** {row.pattern}"
+            if row.context:
+                content += f"\n\n**Context:** {row.context}"
+            if row.root_cause:
+                content += f"\n\n**Root cause:** {row.root_cause}"
+            if row.fix:
+                content += f"\n\n## Fix\n\n{row.fix}"
+            if not keywords:
+                keywords = row.pattern[:100]
+        else:
+            return _with_nudge(
+                f"Cannot promote source_type '{source_type}' to a rule.", tracker,
+            )
+
         return add_rule(
             title=title,
             keywords=keywords,
@@ -321,12 +285,10 @@ def register_rules_tools(
 
     @mcp.tool()
     def sync_rules() -> str:
-        """Re-index all .md files across all configured rules directories.
-        Upserts DB entries and removes orphans for files that no longer exist.
-        """
+        """Re-index all .md files. Upserts DB entries; archives orphans
+        (soft-delete) for files that no longer exist."""
         tracker.record_call("sync_rules")
 
-        # Collect .md files from all rules paths
         md_files: list[Path] = []
         missing_paths: list[str] = []
         for rp in rules_paths:
@@ -337,88 +299,84 @@ def register_rules_tools(
 
         if not md_files and missing_paths:
             return _with_nudge(
-                f"No rules directories found: {', '.join(missing_paths)}", tracker
+                f"No rules directories found: {', '.join(missing_paths)}", tracker,
             )
 
         indexed = 0
         updated = 0
-        removed = 0
+        archived = 0
 
         for md_file in md_files:
             try:
                 rel_path = str(md_file.relative_to(project_root))
             except ValueError:
-                # External path (not under project_root) — store absolute
                 rel_path = str(md_file)
             parsed = _parse_rule_file(md_file)
             if not parsed.get("title"):
-                continue  # Skip files without a title heading
+                continue
 
             title = parsed["title"]
             keywords = parsed.get("keywords", "")
             category = parsed.get("category", "")
             description = parsed.get("description", "")
+            content_hash = parsed.get("content_hash")
 
-            existing = db.execute(
-                "SELECT id FROM rules WHERE file_path = ?", (rel_path,)
-            ).fetchone()
-
-            if existing:
-                db.execute_write(
-                    "UPDATE rules SET title = ?, keywords = ?, description = ?, "
-                    "category = ?, updated_at = datetime('now') WHERE id = ?",
-                    (title, keywords, description, category, existing["id"]),
+            existing = storage.find_rule_by_file_path(rel_path)
+            if existing is not None:
+                storage.update_rule(
+                    existing.id,
+                    title=title,
+                    keywords=keywords,
+                    description=description,
+                    category=category,
+                    content_hash=content_hash,
                 )
+                # Files-win: a reappeared file un-archives its row.
+                if existing.archived:
+                    storage.restore_rule(existing.id)
                 updated += 1
             else:
-                db.execute_write(
-                    "INSERT INTO rules (title, keywords, file_path, description, category) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (title, keywords, rel_path, description, category),
-                )
+                storage.insert_rule(RuleRow(
+                    id=0,
+                    title=title,
+                    keywords=keywords,
+                    file_path=rel_path,
+                    description=description or None,
+                    category=category or None,
+                    content_hash=content_hash,
+                ))
                 indexed += 1
 
-        # Remove orphans: DB entries whose files no longer exist
-        all_rules = db.execute("SELECT id, file_path FROM rules WHERE file_path IS NOT NULL").fetchall()
-        for rule in all_rules:
-            fp = rule["file_path"]
-            if fp:
-                # Absolute paths stored as-is; relative paths resolved against project_root
-                full = Path(fp) if Path(fp).is_absolute() else project_root / fp
-                if not full.exists():
-                    db.execute_write("DELETE FROM rules WHERE id = ?", (rule["id"],))
-                    removed += 1
-
-        db.commit()
+        # Soft-delete orphans (rules whose backing files are gone). Skip
+        # rows that are already archived — re-archiving inflates the count,
+        # loses the original archived_at timestamp, and is functionally
+        # a no-op anyway.
+        for r in storage.list_rules_with_file_paths():
+            fp = r.file_path
+            if not fp or r.archived:
+                continue
+            full = Path(fp) if Path(fp).is_absolute() else project_root / fp
+            if not full.exists():
+                storage.soft_delete_rule(r.id)
+                archived += 1
 
         return _with_nudge(
-            f"Sync complete: {indexed} new, {updated} updated, {removed} orphans removed.",
+            f"Sync complete: {indexed} new, {updated} updated, {archived} orphans archived.",
             tracker,
         )
 
     @mcp.tool()
     def reinforce_rule(rule_id: int) -> str:
-        """Deliberately reinforce a rule — signals "still correct".
-
-        Stronger than a passive search hit (3x weight in ranking).
-
-        Args:
-            rule_id: ID of the rule to reinforce
-        """
+        """Deliberately reinforce a rule — signals 'still correct'."""
         tracker.record_call("reinforce_rule")
-        row = db.execute("SELECT id, title FROM rules WHERE id = ?", (rule_id,)).fetchone()
-        if not row:
+        row = storage.find_by_id(EntityType.RULE, rule_id)
+        if row is None:
             return _with_nudge(f"Rule {rule_id} not found.", tracker)
 
-        db.execute_write(
-            "UPDATE rules SET reinforcement_count = reinforcement_count + 1, "
-            "last_hit_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
-            (rule_id,),
-        )
-        db.commit()
-        count = db.execute(
-            "SELECT reinforcement_count FROM rules WHERE id = ?", (rule_id,)
-        ).fetchone()["reinforcement_count"]
+        counters.increment(EntityType.RULE, rule_id, "reinforcement_count")
+        counters.increment(EntityType.RULE, rule_id, "last_hit_at")
+        snap = counters.get(EntityType.RULE, rule_id)
+        count = snap.get("reinforcement_count", 0)
         return _with_nudge(
-            f"Reinforced: {row['title']} (reinforcement_count={count})", tracker
+            f"Reinforced: {row.title} (reinforcement_count={count})", tracker,
         )

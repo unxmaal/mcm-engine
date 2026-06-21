@@ -8,6 +8,8 @@ Public API:
     KnowledgeDB — SQLite wrapper (for plugin use)
     load_config — Load config from YAML + env vars
 """
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
 from .config import MCMConfig, NudgeConfig, load_config
 from .db import KnowledgeDB
 from .plugin import MCMPlugin, SearchScope
@@ -25,4 +27,7 @@ __all__ = [
     "load_config",
 ]
 
-__version__ = "0.1.0"
+try:
+    __version__ = _dist_version("mcm-engine")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
