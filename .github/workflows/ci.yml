@@ -139,9 +139,10 @@ jobs:
       - name: Install OpenTofu
         uses: opentofu/setup-opentofu@v1
         with:
-          # 1.8+ adds override_resource / mock_data inside mock_provider,
-          # which the unit_*.tftest.hcl suites rely on.
-          tofu_version: 1.8.0
+          # Pinned to match the version used to author and validate the
+          # tests/*.tftest.hcl suites locally. `override_resource` inside
+          # `mock_provider` is not in OpenTofu 1.8; pin to a recent stable.
+          tofu_version: 1.12.3
 
       - name: tofu init (providers, no backend)
         working-directory: terraform/aws
