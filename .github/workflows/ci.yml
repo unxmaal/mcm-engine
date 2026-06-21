@@ -111,10 +111,13 @@ jobs:
         run: uv sync --extra dev --extra postgres --extra redis --extra opensearch
 
       - name: Wait for services
+        # pg_isready ships with ubuntu-latest's postgresql-client; curl
+        # is preinstalled. redis-cli is NOT preinstalled, so we ping
+        # Redis through the Python client `uv sync` already installed.
         run: |
           for i in {1..30}; do
             if pg_isready -h 127.0.0.1 -p 55432 -U mcm -d mcm_test \
-               && redis-cli -h 127.0.0.1 -p 56379 ping \
+               && .venv/bin/python -c "import redis; redis.Redis(host='127.0.0.1', port=56379).ping()" 2>/dev/null \
                && curl -sf http://127.0.0.1:59200/_cluster/health; then
               echo "all services ready"; exit 0
             fi
