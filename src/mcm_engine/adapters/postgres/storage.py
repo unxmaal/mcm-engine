@@ -9,15 +9,16 @@ generated column.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
-import psycopg
-from psycopg.rows import dict_row
+if TYPE_CHECKING:
+    import psycopg
 
 from ...backends import (
     CONTRACT_VERSION,
     Capability,
     EntityType,
+    MissingDependencyError,
     ErrorRow,
     KnowledgeRow,
     NegativeRow,
@@ -352,7 +353,16 @@ class PostgresStorage:
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
 
-    def __init__(self, dsn: str, *, conn: Optional[psycopg.Connection] = None):
+    def __init__(self, dsn: str, *, conn: Optional["psycopg.Connection"] = None):
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as e:
+            raise MissingDependencyError(
+                "PostgresStorage requires psycopg. "
+                "Install with: pip install 'mcm-engine[postgres]'"
+            ) from e
+        self._psycopg = psycopg
         self._dsn = dsn
         if conn is None:
             conn = psycopg.connect(dsn, row_factory=dict_row)
@@ -605,7 +615,7 @@ class PostgresStorage:
                 new_id = cur.fetchone()["id"]
             self._conn.commit()
             return new_id
-        except psycopg.errors.UniqueViolation:
+        except self._psycopg.errors.UniqueViolation:
             self._conn.rollback()
             return None
 

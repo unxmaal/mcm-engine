@@ -17,8 +17,14 @@ mix of the two through config alone.
   |------|----------|
   | storage | SQLite (default), Postgres |
   | counters | SQLite (default), Postgres, Redis |
-  | search | SQLite FTS5 (default), Postgres tsvector, OpenSearch |
+  | search | SQLite FTS5 (default), Postgres tsvector, OpenSearch¹ |
   | session | In-memory (default) |
+
+  ¹ The OpenSearch adapter is contract-correct but uses a v1 sync model
+  that re-indexes from storage on every `search()` call — O(N) per query.
+  Suitable for validating the contract and small datasets; **do not deploy
+  to production**. The watcher-cascade-fed OpenSearch path is tracked
+  separately and is not landed yet. See [Backend maturity](#backend-maturity).
 - **Two transports:** `mcm-engine run` (stdio, today's Claude Code flow)
   and `mcm-engine serve` (HTTP/SSE daemon with `/healthz` + `/readyz`).
 - **Files-win watcher cascade:** in daemon mode, edits to `rules/*.md`
@@ -122,7 +128,29 @@ backends:
 You can mix freely. Common shapes:
 - **Default embedded:** no `backends:` block. SQLite all the way down.
 - **Postgres-everything:** `storage=postgres, counters=postgres, search=postgres`. One DSN, no Redis, no OpenSearch.
-- **Production scaled:** `storage=postgres, counters=redis, search=opensearch`. The shape `terraform/aws/` provisions.
+- **Production scaled:** `storage=postgres, counters=redis, search=opensearch`. The shape `terraform/aws/` provisions. **Caveat:** the OpenSearch adapter is not yet production-performant — see Backend maturity below.
+
+### Backend maturity
+
+Not every adapter is at the same readiness level. Be honest with yourself
+about what each one is for:
+
+| Axis / Adapter | Status | Notes |
+|----------------|--------|-------|
+| storage / SQLite | Production | Default; battle-tested on the v1 surface. |
+| storage / Postgres | Production | Conformance suite green; ID-preserving migrate covered. |
+| counters / SQLite | Production | |
+| counters / Postgres | Production | Same write-through semantics as SQLite. |
+| counters / Redis | Production | ZSET-per-counter; `flush()` is a no-op (Redis IS the live store). Durable write-back daemon is not yet shipped — fine for ephemeral counters, not for long-term reinforcement state without periodic snapshots. |
+| search / SQLite FTS5 | Production | |
+| search / Postgres tsvector | Production | `ts_rank_cd` + GIN indexes. |
+| search / OpenSearch | **Reference / contract validation only** | v1 sync model re-indexes from storage on every `search()` — O(N) per query, slower than the SQLite default it's nominally meant to outscale. Demonstrates the adapter contract works against an external search engine; **do not demo or deploy expecting speed**. The performant version requires a storage→OpenSearch indexer (watcher cascade extension) which is not landed yet. |
+| session / In-memory | Production | Today's default. Durable session adapter is a defined extension point; no impl shipped. |
+
+If a row says "Production," storage+counters swaps are safe today. The
+search tier has two production-ready impls (SQLite FTS5, Postgres
+tsvector). OpenSearch is wired and the conformance suite passes, but
+it is not the path to higher search throughput in its current shape.
 
 ### Env-var overrides
 

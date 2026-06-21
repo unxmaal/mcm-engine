@@ -11,12 +11,17 @@ real difference is timestamps (Postgres ``TIMESTAMPTZ now()`` vs SQLite
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import psycopg
-from psycopg.rows import dict_row
+if TYPE_CHECKING:
+    import psycopg
 
-from ...backends import CONTRACT_VERSION, Capability, EntityType
+from ...backends import (
+    CONTRACT_VERSION,
+    Capability,
+    EntityType,
+    MissingDependencyError,
+)
 
 
 _TABLE: dict[EntityType, str] = {
@@ -40,7 +45,15 @@ class PostgresCounters:
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
 
-    def __init__(self, dsn: str, *, conn: Optional[psycopg.Connection] = None):
+    def __init__(self, dsn: str, *, conn: Optional["psycopg.Connection"] = None):
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as e:
+            raise MissingDependencyError(
+                "PostgresCounters requires psycopg. "
+                "Install with: pip install 'mcm-engine[postgres]'"
+            ) from e
         self._dsn = dsn
         if conn is None:
             conn = psycopg.connect(dsn, row_factory=dict_row)

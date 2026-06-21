@@ -12,14 +12,16 @@ for a reference adapter validating the contract.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from opensearchpy import OpenSearch, helpers
+if TYPE_CHECKING:
+    from opensearchpy import OpenSearch  # noqa: F401
 
 from ...backends import (
     CONTRACT_VERSION,
     Capability,
     EntityType,
+    MissingDependencyError,
     SearchHit,
     StorageBackend,
 )
@@ -107,6 +109,10 @@ class OpenSearchSearch:
 
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
+    # Cross-adapter wiring opt-in: when True, build_context() injects
+    # the live storage instance into __init__'s `storage` kwarg unless
+    # the caller pre-populated search_options['storage']. See wiring.py.
+    needs_storage: bool = True
 
     def __init__(
         self,
@@ -115,6 +121,14 @@ class OpenSearchSearch:
         storage: StorageBackend,
         index_prefix: str = "mcm-",
     ):
+        try:
+            from opensearchpy import OpenSearch, helpers
+        except ImportError as e:
+            raise MissingDependencyError(
+                "OpenSearchSearch requires opensearch-py. "
+                "Install with: pip install 'mcm-engine[opensearch]'"
+            ) from e
+        self._helpers = helpers
         self._url = url
         self._prefix = index_prefix
         self._storage = storage
@@ -161,7 +175,7 @@ class OpenSearchSearch:
                     "_source": doc,
                 })
             if actions:
-                helpers.bulk(self._client, actions, refresh="true")
+                self._helpers.bulk(self._client, actions, refresh="true")
             else:
                 # Empty source — ensure the index is also empty.
                 self._client.delete_by_query(

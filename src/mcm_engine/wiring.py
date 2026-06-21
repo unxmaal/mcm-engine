@@ -11,7 +11,6 @@ demands them.
 """
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
@@ -66,11 +65,12 @@ def build_context(
 
     # Cross-adapter dependency injection: some search adapters (notably
     # the v1 OpenSearch one) need a storage handle for their sync model.
-    # Detect by inspecting __init__'s parameter list and inject the live
-    # storage instance if not already in search_options.
+    # Adapters opt in explicitly via a `needs_storage = True` class
+    # attribute — no introspection of __init__ signatures, so renaming
+    # the constructor's `storage` kwarg can't silently break the wiring.
     storage = storage_cls(**backends.storage_options)
     search_options = dict(backends.search_options)
-    if _accepts_kwarg(search_cls, "storage") and "storage" not in search_options:
+    if getattr(search_cls, "needs_storage", False) and "storage" not in search_options:
         search_options["storage"] = storage
 
     return Context(
@@ -79,17 +79,6 @@ def build_context(
         search=search_cls(**search_options),
         session=session_cls(**backends.session_options),
     )
-
-
-def _accepts_kwarg(cls: type, name: str) -> bool:
-    """True if cls.__init__ has a parameter named `name`. Used to detect
-    cross-adapter wiring needs without making the contract leak across
-    the adapter boundary."""
-    try:
-        sig = inspect.signature(cls.__init__)
-    except (TypeError, ValueError):
-        return False
-    return name in sig.parameters
 
 
 def coerce_context(value: Any) -> Context:

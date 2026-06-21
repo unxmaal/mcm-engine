@@ -28,6 +28,17 @@ from typing import Any, Iterator, Optional, Protocol, runtime_checkable
 CONTRACT_VERSION: int = 1
 
 
+class MissingDependencyError(ImportError):
+    """Raised when an adapter is instantiated without its optional client
+    library installed.
+
+    Importing the adapter module + class is always free — registry
+    resolution must work on a bare `pip install mcm-engine`. The cost
+    only lands when the adapter is actually constructed, and the error
+    points at the right extras name (e.g. ``mcm-engine[postgres]``).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------

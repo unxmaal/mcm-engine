@@ -19,11 +19,17 @@ write-back daemon, not part of the read path). See
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import redis
+if TYPE_CHECKING:
+    import redis
 
-from ...backends import CONTRACT_VERSION, Capability, EntityType
+from ...backends import (
+    CONTRACT_VERSION,
+    Capability,
+    EntityType,
+    MissingDependencyError,
+)
 
 
 # Per-entity-type counter columns — same shape as SqliteCounters so the
@@ -47,8 +53,15 @@ class RedisCounters:
         url: str = "redis://127.0.0.1:6379/0",
         *,
         namespace: str = "mcm:",
-        client: Optional[redis.Redis] = None,
+        client: Optional["redis.Redis"] = None,
     ):
+        try:
+            import redis
+        except ImportError as e:
+            raise MissingDependencyError(
+                "RedisCounters requires redis. "
+                "Install with: pip install 'mcm-engine[redis]'"
+            ) from e
         self._namespace = namespace
         self._client = client or redis.Redis.from_url(url, decode_responses=True)
 

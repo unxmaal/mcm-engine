@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from . import __version__
 from .config import MCMConfig, load_config
 from .migrate import format_report, migrate, open_storage
 from .server import MCMServer
@@ -98,7 +99,15 @@ def cmd_migrate(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="mcm-engine",
-        description="Memory Context Management engine for AI coding sessions",
+        description=(
+            f"Memory Context Management engine for AI coding sessions "
+            f"(v{__version__})"
+        ),
+    )
+    parser.add_argument(
+        "--version", "-v",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
