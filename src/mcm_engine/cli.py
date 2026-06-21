@@ -96,6 +96,15 @@ def cmd_migrate(args):
     print(format_report(report))
 
 
+def cmd_hook(args):
+    """Run the PreToolUse enforcement hook. Reads a single event from
+    stdin and exits 0 (allow) or 2 (block). Wire into your agent
+    harness's settings.json — see README "Making agents actually use it"
+    section."""
+    from .hooks.mcp_enforcement import main as hook_main
+    sys.exit(hook_main())
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="mcm-engine",
@@ -165,6 +174,14 @@ def main():
              "truncating the destination if a clean slate is required.",
     )
     migrate_parser.set_defaults(func=cmd_migrate)
+
+    # hook (PreToolUse enforcement)
+    hook_parser = subparsers.add_parser(
+        "hook",
+        help="PreToolUse enforcement hook for Claude Code / compatible agent harnesses. "
+             "Reads one event from stdin; exits 0 (allow) or 2 (block).",
+    )
+    hook_parser.set_defaults(func=cmd_hook)
 
     args = parser.parse_args()
     args.func(args)

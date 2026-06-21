@@ -89,6 +89,145 @@ Add to your project's `.mcp.json`:
 
 For the HTTP/SSE daemon variant, see [Daemon mode](#daemon-mode-http--sse).
 
+## Making agents actually use it
+
+Wiring the MCP server is necessary but not sufficient. A language model
+left to its own devices will happily skip the knowledge layer and just
+start editing files. mcm-engine ships three layers of "use the MCP first"
+enforcement; pick what suits your project:
+
+| Layer | What it is | Failure mode it catches |
+|-------|------------|-------------------------|
+| `CLAUDE.md` instructions | Project-root prompt the agent reads on startup | None alone — it's the soft layer. Agents follow it most of the time. |
+| In-process MCP nudge (built-in) | The MCP server itself counts MCP-tool turns and emits warnings on `session_start` / tool responses. Tunable via `nudges:` in `mcm-engine.yaml`. | Agent ignores the prompt for several turns of MCP work. |
+| **PreToolUse hook** (recommended) | A Python script wired into the agent harness (Claude Code / opencode / similar) that intercepts EVERY built-in tool call and counts toward a budget. | Agent routes around the MCP entirely by using only `Edit`/`Write`/`Bash`. The in-process nudge can't see those calls. |
+
+The PreToolUse hook is the only layer with actual teeth — it can BLOCK a
+tool call before it runs. The other two are advisory. If you only set up
+one layer, set up the hook.
+
+### Wiring the PreToolUse hook (Claude Code)
+
+Add to `~/.claude/settings.json` (user-level) or your project's
+`.claude/settings.local.json` (per-project):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|Bash|mcp__.+?__(search|report_error|sync_rules|session_start|get_resume_context|read_rule)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mcm-engine hook",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `mcm-engine hook` subcommand reads a single PreToolUse event from
+stdin, updates the per-session counter, and exits 0 (allow) or 2 (block).
+It works under every install path — `uv tool install`, `pip install`,
+editable checkout — because the `mcm-engine` binary itself is always on
+PATH after install (system `python3 -m mcm_engine.hooks.mcp_enforcement`
+would NOT work under `uv tool install`, which sequesters mcm-engine in
+an isolated venv).
+
+**Behavior:**
+- Counts every `Edit`, `Write`, `NotebookEdit`, `Bash` call.
+- At **8** built-in calls without a compliance MCP read, emits a warning.
+- At **20** built-in calls, BLOCKS `Edit` / `Write` / `NotebookEdit` (Bash is exempt — bash-heavy work is too often legitimate).
+- A compliance MCP read on ANY server name (`search`, `report_error`, `sync_rules`, `session_start`, `get_resume_context`, `read_rule`) RESETS the counter.
+- Pure-write MCP tools (`add_knowledge`, `add_rule`, `pin_item`, etc.) do NOT reset the counter — recording after the fact doesn't excuse skipping the look-first step.
+
+**State**: `<project>/.claude/mcp-enforcement-state.json`, keyed by the
+agent harness's per-session UUID. Entries older than 30 days are pruned
+on every hook invocation, so the file doesn't accumulate forever.
+Delete the file any time to start fresh. Separate sessions have
+independent counters.
+
+### Wiring the PreToolUse hook (opencode)
+
+opencode doesn't use Claude Code's `settings.json` `hooks` schema; it
+uses a plugin system that runs JS/TS modules. mcm-engine ships an
+opencode adapter that translates the plugin API to the same
+`mcm-engine hook` CLI Claude Code calls, so the enforcement logic stays
+identical across both harnesses.
+
+Copy [`examples/opencode/mcp-enforcement.js`](examples/opencode/mcp-enforcement.js)
+to ONE of:
+
+- `.opencode/plugins/mcp-enforcement.js` — this project only
+- `~/.config/opencode/plugins/mcp-enforcement.js` — all opencode projects
+
+That's it. The `mcm-engine` binary must be on PATH (`uv tool install
+mcm-engine` handles that); the plugin spawns it via `Bun.spawn`, pipes
+the opencode tool event in as JSON, and translates a non-zero exit into
+a `throw` that opencode treats as a block.
+
+opencode-specific behavior notes:
+- opencode names built-in tools lowercase (`edit`, `write`, `bash`,
+  `apply_patch`). The hook recognizes these alongside Claude Code's
+  capitalized names — no config needed.
+- opencode names MCP tools `<server>_<tool>` (e.g.
+  `mcm-engine_search`), not Claude Code's `mcp__server__tool`. The hook
+  recognizes both formats.
+- `apply_patch` is opencode-only and counts as a file mutation — it's
+  subject to the block, same as `edit`/`write`.
+
+### Other harnesses
+
+Tested against Claude Code and opencode. Any harness implementing
+either contract should work without changes:
+- **stdin/exit-code contract** (Claude Code style): JSON event on stdin
+  with `tool_name` / `session_id` / `cwd`; exit 0 = allow, 2 = block.
+  Wire your harness directly at `mcm-engine hook`.
+- **JS plugin contract** (opencode style): an `input` object with
+  `tool` / `sessionID` / `callID` fields, throw to block. Adapt
+  `examples/opencode/mcp-enforcement.js`.
+
+For a harness with a different contract, patches welcome — the Python
+script is the single source of truth, and the per-harness adapter is
+~20 lines of glue.
+
+### Project-root instructions template
+
+Drop this in `CLAUDE.md` (Claude Code) or `AGENTS.md` (opencode) at your
+project root, as the soft layer that sits above the hook. Adjust the
+server name to match the key under `mcpServers` in your `.mcp.json`.
+For opencode users, replace the `mcp__mcm-engine__` prefix with
+`mcm-engine_` throughout (opencode's MCP tool naming convention):
+
+```markdown
+## MCP-first protocol
+
+This project uses mcm-engine via the `mcm-engine` MCP server (see
+`.mcp.json`). Use the knowledge layer BEFORE editing, NOT after.
+
+Look-first tools (these RESET the enforcement counter):
+- `mcp__mcm-engine__search` — first lookup for anything
+- `mcp__mcm-engine__report_error` — before any fix attempt
+- `mcp__mcm-engine__sync_rules` — to confirm current rule set
+- `mcp__mcm-engine__session_start` — at the top of every session
+
+Write tools (record findings; do NOT reset the counter):
+- `mcp__mcm-engine__add_rule` — immediately after a fix is confirmed
+- `mcp__mcm-engine__add_knowledge` — for non-rule findings
+- `mcp__mcm-engine__add_negative` — for dead ends
+- `mcp__mcm-engine__session_handoff` — before ending
+
+The PreToolUse hook enforces this contract. At 8 built-in tool calls
+(Edit/Write/NotebookEdit/Bash) without a look-first call, you get a
+warning. At 20, Edit/Write/NotebookEdit are BLOCKED until you call one
+of the look-first tools above. Don't fight the hook — calling `search`
+is faster than the block.
+```
+
 ## Configuration
 
 `mcm-engine.yaml` in your project root. Embedded-only minimal config:
