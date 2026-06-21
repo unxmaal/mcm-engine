@@ -1,21 +1,25 @@
-"""Cutover defect #8: macOS BSD `sed -i ''` does atomic-rename (write
-to .!PID!file then rename over the original), and watchdog reports a
-TRAILING FileDeletedEvent for the original .md path after the rename
-completes. Our 500ms debounce coalesces all the events into "last op
-wins" — which is `delete` — so the row gets soft-deleted even though
-the file still exists.
+"""Cutover defect #8: an atomic-rename file save (write to ``.tmp`` then
+``rename(tmp, target)``) emits a TRAILING ``FileDeletedEvent`` for the
+original path even though the file still exists on disk after the
+rename completes. Our 500ms debounce coalesces the event sequence into
+"last op wins" — which is ``delete`` — so the row was being soft-deleted
+even though the file was still there.
+
+This is the save pattern used by vim's ``writebackup``, IntelliJ,
+VSCode under certain configurations, BSD/GNU ``sed -i``, and most
+other modern editors. We simulate it portably in Python — write to a
+NamedTemporaryFile in the same directory, then ``os.replace`` over the
+target — which makes the exact same kernel syscalls (and emits the
+exact same fsnotify events) as the editors above.
 
 The fix: in ``_cascade_delete`` verify the file is actually gone
 before archiving. If it still exists, treat the spurious delete as
 an upsert and re-cascade the current content.
-
-This is real-world: any editor doing atomic save (most modern editors:
-sed, vim's writebackup, IntelliJ, VSCode under certain configurations)
-hits this pattern.
 """
 from __future__ import annotations
 
-import subprocess
+import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -30,6 +34,25 @@ from mcm_engine.db import KnowledgeDB
 
 _DEBOUNCE_MS = 50
 _SETTLE_S = 0.6
+
+
+def _atomic_rename_replace(path: Path, new_content: str) -> None:
+    """The portable equivalent of what every atomic-save editor does
+    under the hood: write transformed content to a temp file in the
+    SAME directory, then ``os.replace`` it over the target. ``os.replace``
+    is atomic on POSIX (single ``rename(2)`` syscall) and produces the
+    same fsnotify event sequence as ``sed -i``, vim writebackup, etc."""
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=str(path.parent),
+        prefix=path.name + ".",
+        suffix=".tmp",
+        delete=False,
+        encoding="utf-8",
+    ) as tf:
+        tf.write(new_content)
+        tmp_path = tf.name
+    os.replace(tmp_path, path)
 
 
 @pytest.fixture
@@ -47,33 +70,30 @@ def wired(tmp_path):
     w.stop()
 
 
-def test_sed_inplace_edit_does_not_archive_row(wired):
-    """sed -i '' on a rule file MUST end with the row containing the
+def test_atomic_rename_edit_does_not_archive_row(wired):
+    """An atomic-rename file save MUST end with the row containing the
     new content, NOT archived. Defect #8 from the live cutover Phase C:
     the trailing FileDeletedEvent from atomic-rename was archiving rows
     whose files were still on disk."""
-    rule_path = wired["rules_dir"] / "sed-target.md"
+    rule_path = wired["rules_dir"] / "edited-target.md"
     rule_path.write_text(
-        "# Sed target rule\n\n**Keywords:** sed,test\n\noriginal body line\n",
+        "# Atomic-rename target\n\n**Keywords:** atomic,test\n\noriginal body line\n",
         encoding="utf-8",
     )
     wired["watcher"].sync_once()
-    rid = wired["storage"].find_rule_by_file_path("rules/sed-target.md").id
+    rid = wired["storage"].find_rule_by_file_path("rules/edited-target.md").id
 
     wired["watcher"].start()
-    # macOS BSD sed -i syntax. On Linux this would be `sed -i 's/.../.../'`
-    # without the empty-string positional argument; the behavior is the
-    # same — atomic-rename via temp file.
-    subprocess.run(
-        ["sed", "-i", "", "s/original body line/updated body line/", str(rule_path)],
-        check=True,
+    _atomic_rename_replace(
+        rule_path,
+        "# Atomic-rename target\n\n**Keywords:** atomic,test\n\nupdated body line\n",
     )
     time.sleep(_SETTLE_S)
 
     row = wired["storage"].find_by_id(EntityType.RULE, rid)
     assert row is not None
     assert row.archived is False, (
-        "sed -i atomic-rename produced a FileDeletedEvent that the watcher "
+        "atomic-rename produced a FileDeletedEvent that the watcher "
         "treated as a real delete — row was archived even though the file "
         "still exists. Defect #8."
     )
