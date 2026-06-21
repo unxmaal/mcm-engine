@@ -1,0 +1,176 @@
+# MCM2-26: CI matrix.
+#
+# Two paths:
+#  - "embedded" runs on EVERY push/PR. Uses only SQLite + InMemorySession
+#    (zero external services). This is the "engine works on a clean
+#    machine" guarantee — Phase 0/4a.
+#  - "cross-adapter" runs against docker-compose services (postgres,
+#    redis, opensearch). Slower, exercises Phase 1/2/3 adapters. Runs
+#    on every push to main + nightly. Gated separately from the
+#    embedded path so a flaky container doesn't block PRs.
+#
+# AWS conformance (MCM2-25) is NOT part of this CI — that runs on the
+# work system via ./scripts/run-aws-conformance.sh against a real
+# terraform-applied stack.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  embedded:
+    name: Embedded conformance (SQLite + InMemorySession)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dev dependencies
+        run: uv sync --extra dev
+
+      - name: Run embedded-only test suite
+        run: |
+          uv run python -m pytest \
+            --ignore=tests/test_adapter_postgres_storage.py \
+            --ignore=tests/test_adapter_postgres_counters.py \
+            --ignore=tests/test_adapter_postgres_search.py \
+            --ignore=tests/test_adapter_redis_counters.py \
+            --ignore=tests/test_adapter_opensearch_search.py \
+            --ignore=tests/test_orthogonal_wiring.py \
+            -v
+
+  cross-adapter:
+    name: Cross-adapter conformance (postgres + redis + opensearch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Run on main + nightly. PRs hit only the embedded suite above to
+    # keep PR feedback fast; full matrix runs at merge time.
+    if: github.event_name != 'pull_request'
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mcm
+          POSTGRES_PASSWORD: mcm
+          POSTGRES_DB: mcm_test
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mcm -d mcm_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+
+      redis:
+        image: redis:7-alpine
+        ports: ["56379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+
+      opensearch:
+        image: opensearchproject/opensearch:2
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          OPENSEARCH_INITIAL_ADMIN_PASSWORD: mcm-ci-pw
+        ports: ["59200:9200"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - run: uv python install 3.11
+
+      - name: Sync dev + adapter extras
+        run: uv sync --extra dev --extra postgres --extra redis --extra opensearch
+
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h 127.0.0.1 -p 55432 -U mcm -d mcm_test \
+               && redis-cli -h 127.0.0.1 -p 56379 ping \
+               && curl -sf http://127.0.0.1:59200/_cluster/health; then
+              echo "all services ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "services failed to come up"; exit 1
+
+      - name: Run full conformance against the matrix
+        env:
+          MCM_TEST_POSTGRES_DSN: postgresql://mcm:mcm@127.0.0.1:55432/mcm_test
+          MCM_TEST_REDIS_URL: redis://127.0.0.1:56379/0
+          MCM_TEST_OPENSEARCH_URL: http://127.0.0.1:59200
+        run: uv run python -m pytest -v
+
+  tofu-test:
+    name: OpenTofu unit tests (terraform/aws/)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.7.0
+
+      - name: tofu init (providers, no backend)
+        working-directory: terraform/aws
+        run: tofu init -backend=false
+
+      - name: tofu test (mock_provider unit suites)
+        working-directory: terraform/aws
+        run: tofu test
+
+  build-image:
+    name: Build deployable container image
+    runs-on: ubuntu-latest
+    needs: embedded
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (smoke; not pushed)
+        run: docker build --load -t mcm-engine:ci-${{ github.sha }} .
+
+      - name: Run /healthz against the freshly-built image
+        run: |
+          docker run -d --name mcm-engine-ci -p 18080:8080 \
+            mcm-engine:ci-${{ github.sha }}
+          for i in {1..15}; do
+            if curl -sf http://127.0.0.1:18080/healthz; then
+              docker stop mcm-engine-ci; exit 0
+            fi
+            sleep 2
+          done
+          docker logs mcm-engine-ci
+          exit 1
