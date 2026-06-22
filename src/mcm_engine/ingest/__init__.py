@@ -61,6 +61,14 @@ class Ingester(Protocol):
         (missing file, malformed root) may raise other exceptions."""
         ...
 
+    def report(self) -> str:
+        """Optional post-stream report. Returns multi-line text the CLI
+        prints to stderr after ``stream()`` is exhausted. Use to surface
+        per-ingester observations (e.g. "saw N .rs files; no rust-ast
+        ingester registered — consider building one"). Default
+        implementation returns the empty string (no report)."""
+        ...
+
 
 class IngestError(Exception):
     """Per-row failure during ingest. Carries a human-readable context
@@ -142,6 +150,16 @@ def find(source: str, *, explicit_name: Optional[str] = None) -> Ingester:
 
 
 # Eager-import the built-in ingesters so they self-register on package
-# load. Keep this list short and well-curated; third-party ingesters
-# should register themselves at their own import time.
+# load. Order MATTERS — find() returns the first matching ingester, and
+# the right precedence is "most specific first":
+#
+#   1. python-ast   — only matches on Python project markers / .py files
+#   2. markdown-dir — matches any directory containing .md
+#   3. text-dir     — catch-all for directories containing any text-like file
+#
+# A Python project that also has a README.md will resolve to python-ast.
+# Pure markdown vault → markdown-dir. A Rust/Go/JS project → text-dir.
+# Use --type to override the auto-pick when the default isn't what you want.
+from . import python_ast as _python_ast  # noqa: F401, E402
 from . import markdown as _markdown  # noqa: F401, E402
+from . import text_dir as _text_dir  # noqa: F401, E402

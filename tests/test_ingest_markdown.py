@@ -65,8 +65,11 @@ def test_find_by_auto_detect_picks_markdown_dir(tmp_path):
 
 
 def test_find_no_match_raises_with_help(tmp_path):
-    """A directory containing zero .md files shouldn't match."""
-    (tmp_path / "ignored.txt").write_text("nope", encoding="utf-8")
+    """A truly empty directory matches no ingester (text-dir is the
+    catch-all but still requires SOMETHING text-like to be present)."""
+    # tmp_path is empty — no files at all. With text-dir registered as
+    # catch-all, anything containing a text-like file would match; only
+    # an empty dir yields NoMatchingIngester.
     with pytest.raises(NoMatchingIngester) as exc:
         find(str(tmp_path))
     assert "markdown-dir" in str(exc.value)  # error names alternatives

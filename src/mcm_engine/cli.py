@@ -199,6 +199,16 @@ def cmd_ingest(args):
     else:
         _ingest_emit(window, start_index=start, total=total)
 
+    # Post-stream report: ingesters can surface observations (extension
+    # counts, AST-upgrade suggestions, etc.) to stderr. Optional method;
+    # absent or empty → no report.
+    report_fn = getattr(ingester, "report", None)
+    if callable(report_fn):
+        text = report_fn()
+        if isinstance(text, str) and text.strip():
+            print(file=sys.stderr)
+            print(text, file=sys.stderr)
+
 
 def _ingest_emit(window, *, start_index: int, total: int) -> None:
     """Curated mode: emit each candidate as a delimited block on stdout.
