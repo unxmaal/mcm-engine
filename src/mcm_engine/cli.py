@@ -105,6 +105,180 @@ def cmd_hook(args):
     sys.exit(hook_main())
 
 
+def cmd_ingest(args):
+    """Surface candidates from an external source for agent evaluation.
+
+    Default mode (curated): emits candidate blocks to stdout. NO DB writes.
+    The agent reads each candidate and decides — via the same methods used
+    at session-end — whether it's a new finding (`add_knowledge`), a rule
+    (`add_rule`), an anti-pattern (`add_negative`), or nothing worth storing.
+
+    --bulk mode: skips per-item evaluation and upserts every candidate
+    directly through the configured storage backend. Use only when the
+    source IS your declared authoritative corpus (e.g. an Obsidian vault
+    you've already accepted as canonical). The default refuses to bulk-load
+    because the resulting noise drowns the high-signal KB.
+
+    Idempotent in either mode (--bulk dedups on topic+kind; default mode
+    leaves the decision to the agent's add_* calls, which dedup themselves).
+    """
+    from .ingest import (
+        NoMatchingIngester,
+        UnknownIngester,
+        find as find_ingester,
+        registered as list_registered,
+    )
+    from .wiring import build_context
+
+    if args.list_types:
+        names = [cls.name for cls in list_registered()]
+        if not names:
+            print("(no ingesters registered)")
+        for n in names:
+            print(n)
+        return
+
+    if not args.source:
+        print("error: source path required (or pass --list-types)", file=sys.stderr)
+        sys.exit(2)
+
+    project_root = Path(args.project_root) if args.project_root else Path.cwd()
+    config_path = Path(args.config) if args.config else None
+    config = load_config(config_path=config_path, project_root=project_root)
+
+    # Same wiring fix MCMServer does in server.py:81-99: resolve db_path
+    # against project_root, and pre-populate the embedded adapters'
+    # storage_options.db_path so build_context sees an absolute path.
+    resolved_db = config.resolve_db_path(project_root)
+    backends = config.backends
+    for axis_name, axis_opts in (
+        ("storage", backends.storage_options),
+        ("counters", backends.counters_options),
+        ("search", backends.search_options),
+    ):
+        if getattr(backends, axis_name) == "embedded" and "db_path" not in axis_opts:
+            axis_opts["db_path"] = str(resolved_db)
+
+    try:
+        ingester = find_ingester(args.source, explicit_name=args.type)
+    except (UnknownIngester, NoMatchingIngester) as e:
+        print(f"ingest: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    skip = set(args.skip.split(",")) if args.skip else None
+    opts = {
+        "kind": args.kind,
+        "project": args.project,
+        "skip": skip,
+    }
+
+    # Walk first, then page. Streamers are cheap because they're generators,
+    # but `--bulk` needs counts and `--offset`/`--batch` needs slicing.
+    candidates = list(ingester.stream(args.source, opts))
+    total = len(candidates)
+    start = max(0, args.offset)
+    end = total if args.bulk else min(start + args.batch, total)
+    window = candidates[start:end]
+
+    print(f"# ingester: {ingester.name}", file=sys.stderr)
+    print(f"# source:   {args.source}", file=sys.stderr)
+    print(f"# total:    {total} candidates", file=sys.stderr)
+    if args.bulk:
+        print(f"# mode:     --bulk (writes to {resolved_db})", file=sys.stderr)
+        if args.dry_run:
+            print(f"# dry-run:  yes (no writes)", file=sys.stderr)
+    else:
+        print(f"# mode:     curated (no writes — agent decides per candidate)", file=sys.stderr)
+        print(f"# showing:  {start + 1}-{end} of {total}", file=sys.stderr)
+        if end < total:
+            print(f"# next:     --offset {end} --batch {args.batch}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    if args.bulk:
+        _ingest_bulk(window, config, dry_run=args.dry_run, total=total)
+    else:
+        _ingest_emit(window, start_index=start, total=total)
+
+    # Post-stream report: ingesters can surface observations (extension
+    # counts, AST-upgrade suggestions, etc.) to stderr. Optional method;
+    # absent or empty → no report.
+    report_fn = getattr(ingester, "report", None)
+    if callable(report_fn):
+        text = report_fn()
+        if isinstance(text, str) and text.strip():
+            print(file=sys.stderr)
+            print(text, file=sys.stderr)
+
+
+def _ingest_emit(window, *, start_index: int, total: int) -> None:
+    """Curated mode: emit each candidate as a delimited block on stdout.
+    The agent reads, evaluates, and calls add_knowledge / add_rule /
+    add_negative selectively. No writes happen from here."""
+    for offset, row in enumerate(window):
+        idx = start_index + offset + 1
+        print(f"=== candidate {idx}/{total} ===")
+        print(f"topic: {row.topic}")
+        if row.tags:
+            print(f"tags: {row.tags}")
+        if row.project:
+            print(f"suggested_project: {row.project}")
+        if row.kind:
+            print(f"suggested_kind: {row.kind}")
+        print(f"summary: {row.summary}")
+        print()
+        if row.detail:
+            print(row.detail.rstrip())
+        print()
+
+
+def _ingest_bulk(window, config, *, dry_run: bool, total: int) -> None:
+    """--bulk mode: write every candidate. Same path the v1 ingest used.
+    For declared-authoritative corpora only."""
+    from .db import KnowledgeDB
+    from .schema import migrate_core
+    from .wiring import build_context
+
+    # Ensure the SQLite schema exists. build_context wires storage adapters
+    # against the configured db_path but doesn't migrate the schema — the
+    # engine usually does that during MCMServer init.
+    if config.backends.storage == "embedded":
+        db_path = config.backends.storage_options.get("db_path")
+        if db_path:
+            migrate_core(KnowledgeDB(db_path))
+
+    ctx = build_context(config)
+    inserted = updated = errors = 0
+    for i, row in enumerate(window, 1):
+        existing = ctx.storage.find_knowledge_by_topic_kind(row.topic, row.kind)
+        if dry_run:
+            verb = "update" if existing else "insert"
+            print(f"  would {verb}: {row.topic}")
+            if existing:
+                updated += 1
+            else:
+                inserted += 1
+        else:
+            if existing is not None:
+                ctx.storage.update_knowledge(
+                    existing.id,
+                    summary=row.summary,
+                    detail=row.detail,
+                    tags=row.tags,
+                    project=row.project,
+                )
+                updated += 1
+            else:
+                ctx.storage.insert_knowledge(row)
+                inserted += 1
+        if i % 100 == 0:
+            print(f"  {i}/{total}  (inserted={inserted} updated={updated} errors={errors})")
+    print()
+    print(
+        f"bulk done. inserted={inserted}, updated={updated}, errors={errors}"
+        f"{' [DRY RUN]' if dry_run else ''}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="mcm-engine",
@@ -182,6 +356,67 @@ def main():
              "Reads one event from stdin; exits 0 (allow) or 2 (block).",
     )
     hook_parser.set_defaults(func=cmd_hook)
+
+    # ingest (polymorphic bulk import)
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Bulk-ingest data from an external source (markdown dir today; "
+             "more ingester types pluggable later) into the knowledge layer.",
+        description="Reads a source path, detects its type (or uses --type), "
+                    "and upserts one knowledge entry per record. Idempotent "
+                    "on (topic, kind). Use --list-types to see what ingesters "
+                    "are available.",
+    )
+    ingest_parser.add_argument(
+        "source", nargs="?",
+        help="Path or URL to ingest from (omit when using --list-types).",
+    )
+    ingest_parser.add_argument(
+        "--type", dest="type", default=None,
+        help="Force a specific ingester (skip auto-detection). "
+             "See --list-types.",
+    )
+    ingest_parser.add_argument(
+        "--list-types", action="store_true",
+        help="Print registered ingester names and exit.",
+    )
+    ingest_parser.add_argument(
+        "--kind", default="knowledge",
+        help="KnowledgeRow.kind for ingested rows (default: knowledge).",
+    )
+    ingest_parser.add_argument(
+        "--project", default=None,
+        help="KnowledgeRow.project for ingested rows (default: none).",
+    )
+    ingest_parser.add_argument(
+        "--skip", default=None,
+        help="Comma-separated directory names to skip during traversal "
+             "(ingester-specific; markdown-dir defaults to .obsidian,.trash,.git).",
+    )
+    ingest_parser.add_argument(
+        "--bulk", action="store_true",
+        help="Auto-insert every candidate as a knowledge row (skip the "
+             "per-item evaluation step). Use only for declared-authoritative "
+             "corpora; default mode is recommended for everything else.",
+    )
+    ingest_parser.add_argument(
+        "--batch", type=int, default=25,
+        help="Curated mode: how many candidates to emit per invocation "
+             "(default 25). Ignored under --bulk.",
+    )
+    ingest_parser.add_argument(
+        "--offset", type=int, default=0,
+        help="Curated mode: start from this candidate index (default 0). "
+             "Use to page through a large source in successive runs.",
+    )
+    ingest_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="With --bulk, print what would be inserted/updated without "
+             "writing. (Curated mode is already no-write.)",
+    )
+    ingest_parser.add_argument("--config", help="Path to mcm-engine.yaml")
+    ingest_parser.add_argument("--project-root", help="Project root directory")
+    ingest_parser.set_defaults(func=cmd_ingest)
 
     args = parser.parse_args()
     args.func(args)

@@ -26,6 +26,7 @@ htmlcov/
 *.db-shm
 *.db-wal
 *.log
+.claude/mcp-enforcement-state.json
 
 # OS
 .DS_Store
