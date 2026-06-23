@@ -25,6 +25,7 @@ from mcm_engine.hooks.mcp_enforcement import (
     STATE_TTL_SECONDS,
     WARN_THRESHOLD,
     _decide,
+    _find_project_root,
     _is_compliance_mcp_tool,
     _normalize_builtin_tool,
     _prune_stale,
@@ -157,6 +158,77 @@ def test_uncounted_tool_does_nothing():
     assert exit_code == 0
     assert msg == ""
     assert s["builtin_calls"] == 5    # untouched
+
+
+# ---------------------------------------------------------------------------
+# Project-root discovery for state file location.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("marker", [".git", "pyproject.toml", ".claude"])
+def test_find_project_root_walks_up_to_marker(tmp_path, marker):
+    """A deep cwd inside a project resolves to the marker's directory."""
+    project = tmp_path / "myproject"
+    project.mkdir()
+    if marker == "pyproject.toml":
+        (project / marker).write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    else:
+        (project / marker).mkdir()
+    deep = project / "src" / "nested" / "deeper"
+    deep.mkdir(parents=True)
+
+    assert _find_project_root(deep) == project.resolve()
+
+
+def test_find_project_root_returns_cwd_when_no_marker(tmp_path):
+    """Without any marker in the ancestor chain, fall back to the original
+    cwd so the state file lands somewhere predictable rather than at /."""
+    deep = tmp_path / "no" / "markers" / "here"
+    deep.mkdir(parents=True)
+
+    assert _find_project_root(deep) == deep
+
+
+def test_find_project_root_does_not_ascend_past_home(tmp_path, monkeypatch):
+    """Walk must stop at $HOME to avoid clobbering /Users/ or /. Even if a
+    marker exists above HOME, the walk must not surface it."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    # Marker placed ABOVE the fake home — it should NOT be discovered.
+    (tmp_path / ".git").mkdir()
+    deep = fake_home / "projects" / "foo"
+    deep.mkdir(parents=True)
+
+    assert _find_project_root(deep) == deep
+
+
+def test_find_project_root_inner_marker_wins(tmp_path):
+    """If an inner repo is nested under an umbrella project that also has a
+    marker, the inner one wins — each repo gets its own state."""
+    umbrella = tmp_path / "umbrella"
+    umbrella.mkdir()
+    (umbrella / ".claude").mkdir()
+    inner = umbrella / "repo"
+    inner.mkdir()
+    (inner / ".git").mkdir()
+    deep = inner / "src"
+    deep.mkdir()
+
+    assert _find_project_root(deep) == inner.resolve()
+
+
+def test_state_path_uses_discovered_root(tmp_path):
+    """End-to-end: state file lands under the project root, not at the
+    arbitrary deep cwd where a built-in tool happened to fire."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".git").mkdir()
+    deep = project / "themes" / "art-nouveau-jade" / "fonts"
+    deep.mkdir(parents=True)
+
+    sp = _state_path(deep)
+    assert sp == project.resolve() / ".claude" / "mcp-enforcement-state.json"
 
 
 # ---------------------------------------------------------------------------

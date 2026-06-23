@@ -39,9 +39,13 @@ install path — ``uv tool install`` isolates mcm-engine in its own venv
 that system ``python3`` can't see, but the ``mcm-engine`` binary itself
 is always on PATH after install.
 
-State lives in ``<project>/.claude/mcp-enforcement-state.json``, keyed
-by Claude Code's per-session UUID. The file accumulates one entry per
-distinct session; delete it any time to start fresh.
+State lives in ``<project-root>/.claude/mcp-enforcement-state.json``,
+keyed by Claude Code's per-session UUID. The project root is discovered
+by walking up from the event's ``cwd`` looking for a ``.git`` directory,
+``pyproject.toml``, or an existing ``.claude`` directory; the search
+never ascends past ``$HOME``. If no marker is found, state falls back to
+``<cwd>/.claude/...`` for backwards compatibility. The file accumulates
+one entry per distinct session; delete it any time to start fresh.
 
 Threshold tuning rationale:
   WARN at 8   — gives 8 successive built-in calls before nagging. Most
@@ -134,8 +138,41 @@ _CLAUDE_MCP_TOOL_RE = re.compile(r"^mcp__(.+?)__(.+)$")
 # ---------------------------------------------------------------------------
 
 
+# Files/directories that mark a project root. Inner-most marker wins so each
+# repo gets its own state file even when nested under an umbrella project.
+_PROJECT_MARKERS = (".git", "pyproject.toml", ".claude")
+
+
+def _find_project_root(cwd: Path) -> Path:
+    """Walk up from ``cwd`` looking for a project-root marker. Stop at
+    ``$HOME`` and at the filesystem root. Return the original ``cwd`` if
+    no marker is found within range — preserves backwards compatibility
+    with callers and tests that pass an arbitrary directory.
+    """
+    try:
+        start = cwd.resolve()
+    except (OSError, RuntimeError):
+        return cwd
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
+
+    cur = start
+    while True:
+        for marker in _PROJECT_MARKERS:
+            if (cur / marker).exists():
+                return cur
+        if home is not None and cur == home:
+            return cwd
+        parent = cur.parent
+        if parent == cur:
+            return cwd
+        cur = parent
+
+
 def _state_path(cwd: Path) -> Path:
-    return cwd / ".claude" / "mcp-enforcement-state.json"
+    return _find_project_root(cwd) / ".claude" / "mcp-enforcement-state.json"
 
 
 def _read_state(path: Path) -> dict[str, Any]:
