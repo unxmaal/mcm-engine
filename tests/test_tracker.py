@@ -364,3 +364,106 @@ class TestNudgeEscalation:
         assert "rules_check" in t.pending_nudges
         # store_reminder should NOT be pending (was resolved)
         assert "store_reminder" not in t.pending_nudges or t.ignored_counts.get("store_reminder", 0) == 0
+
+
+class TestPeriodicToolNudges:
+    """Per-tool deficit counters: a nudge that names one specific tool and
+    can only be cleared by calling that tool."""
+
+    def _quiet(self, **overrides):
+        """A config with every aggregate nudge suppressed, so tests isolate
+        the periodic machinery."""
+        base = dict(
+            store_reminder_turns=1000,
+            checkpoint_turns=1000,
+            mandatory_stop_turns=1000,
+            rules_check_interval=0,
+        )
+        base.update(overrides)
+        return NudgeConfig(**base)
+
+    def test_default_config_enables_link_and_negative(self):
+        cfg = NudgeConfig()
+        assert "link_knowledge" in cfg.periodic_tools
+        assert "add_negative" in cfg.periodic_tools
+
+    def test_counter_initialised_from_config(self):
+        t = SessionTracker(self._quiet(periodic_tools={"link_knowledge": 3}))
+        assert t.calls_since == {"link_knowledge": 0}
+
+    def test_periodic_nudge_fires_for_specific_tool(self):
+        t = SessionTracker(self._quiet(periodic_tools={"link_knowledge": 3}))
+        for _ in range(3):
+            t.record_call("search")
+        nudge = t.get_nudge()
+        assert nudge is not None
+        assert "PERIODIC" in nudge
+        assert "link_knowledge" in nudge
+
+    def test_no_nudge_before_threshold(self):
+        t = SessionTracker(self._quiet(periodic_tools={"link_knowledge": 5}))
+        for _ in range(4):
+            t.record_call("search")
+        assert t.get_nudge() is None
+
+    def test_calling_tool_resets_its_counter(self):
+        t = SessionTracker(self._quiet(periodic_tools={"link_knowledge": 3}))
+        for _ in range(3):
+            t.record_call("search")
+        assert "PERIODIC" in t.get_nudge()
+        t.record_call("link_knowledge")
+        assert t.calls_since["link_knowledge"] == 0
+        assert t.get_nudge() is None
+
+    def test_each_tool_counts_independently(self):
+        t = SessionTracker(self._quiet(
+            periodic_tools={"link_knowledge": 3, "add_negative": 100},
+        ))
+        for _ in range(3):
+            t.record_call("search")
+        nudge = t.get_nudge()
+        assert "link_knowledge" in nudge
+        assert "add_negative" not in nudge
+
+    def test_periodic_escalates_to_block(self):
+        t = SessionTracker(self._quiet(
+            periodic_tools={"link_knowledge": 3},
+            nudge_escalation_threshold=2,
+        ))
+        for _ in range(3):
+            t.record_call("search")
+        assert "PERIODIC" in t.get_nudge()  # fires, now pending
+        t.record_call("search")  # ignored = 1
+        t.get_nudge()
+        # 2nd ignore hits threshold → block, naming the specific tool
+        with pytest.raises(MandatoryStopError, match="ESCALATED BLOCK.*link_knowledge"):
+            t.record_call("search")
+
+    def test_calling_tool_clears_escalation(self):
+        t = SessionTracker(self._quiet(
+            periodic_tools={"link_knowledge": 3},
+            nudge_escalation_threshold=2,
+        ))
+        for _ in range(3):
+            t.record_call("search")
+        t.get_nudge()
+        t.record_call("search")  # ignored = 1
+        t.record_call("link_knowledge")  # resolves
+        assert "periodic:link_knowledge" not in t.pending_nudges
+        assert "periodic:link_knowledge" not in t.ignored_counts
+        assert t.calls_since["link_knowledge"] == 0
+
+    def test_called_this_session_tracked(self):
+        t = SessionTracker(self._quiet(periodic_tools={"link_knowledge": 3}))
+        t.record_call("search")
+        t.record_call("link_knowledge")
+        assert "search" in t.called_this_session
+        assert "link_knowledge" in t.called_this_session
+
+    def test_reset_all_clears_periodic_state(self):
+        t = SessionTracker(self._quiet(periodic_tools={"link_knowledge": 3}))
+        for _ in range(5):
+            t.record_call("search")
+        t.reset_all()
+        assert all(v == 0 for v in t.calls_since.values())
+        assert t.called_this_session == set()

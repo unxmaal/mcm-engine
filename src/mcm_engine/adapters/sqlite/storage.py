@@ -202,6 +202,35 @@ class SqliteStorage:
         except sqlite3.OperationalError:
             return None
 
+    def list_unlinked_knowledge(
+        self, limit: int = 5, *, caller: Optional[str] = None
+    ) -> list[KnowledgeRow]:
+        """Most-recent knowledge rows that participate in no relation (neither
+        source nor target). These are `link_knowledge` candidates surfaced at
+        session end. `caller` accepted as no-op pass-through (MCM2-05)."""
+        rows = self._db.execute(
+            "SELECT k.* FROM knowledge k WHERE NOT EXISTS ("
+            "  SELECT 1 FROM relations r WHERE "
+            "  (r.source_type = 'knowledge' AND r.source_id = k.id) OR "
+            "  (r.target_type = 'knowledge' AND r.target_id = k.id)) "
+            "ORDER BY k.created_at DESC, k.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [_knowledge_from_row(r) for r in rows]
+
+    def list_promotable_knowledge(
+        self, min_hits: int = 5, limit: int = 5, *, caller: Optional[str] = None
+    ) -> list[KnowledgeRow]:
+        """Knowledge rows hit at least `min_hits` times, most-hit first. These
+        are `promote_to_rule` candidates: repeatedly-useful findings that have
+        earned a place as a rule. `caller` accepted as no-op pass-through."""
+        rows = self._db.execute(
+            "SELECT * FROM knowledge WHERE hit_count >= ? "
+            "ORDER BY hit_count DESC, id DESC LIMIT ?",
+            (min_hits, limit),
+        ).fetchall()
+        return [_knowledge_from_row(r) for r in rows]
+
     def insert_knowledge(self, row: KnowledgeRow) -> int:
         if row.id:
             cur = self._db.execute_write(
