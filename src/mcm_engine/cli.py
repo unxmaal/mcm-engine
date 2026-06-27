@@ -105,6 +105,14 @@ def cmd_hook(args):
     sys.exit(hook_main())
 
 
+def cmd_session_start(args):
+    """Run the SessionStart hook. Reads a SessionStart event from stdin and
+    prints resume context as additionalContext JSON. Always exits 0 (a hook
+    error must never block a session from starting)."""
+    from .hooks.session_start import main as ss_main
+    sys.exit(ss_main())
+
+
 def cmd_ingest(args):
     """Surface candidates from an external source for agent evaluation.
 
@@ -356,6 +364,14 @@ def main():
              "Reads one event from stdin; exits 0 (allow) or 2 (block).",
     )
     hook_parser.set_defaults(func=cmd_hook)
+
+    # session-start (SessionStart context-injection hook)
+    ss_parser = subparsers.add_parser(
+        "session-start",
+        help="SessionStart hook for Claude Code. Reads one event from stdin "
+             "and prints resume context as additionalContext JSON. Always exits 0.",
+    )
+    ss_parser.set_defaults(func=cmd_session_start)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(

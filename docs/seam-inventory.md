@@ -494,3 +494,20 @@ The remaining concerns split off to other interfaces:
   `schema.py` *before* the storage interface is finalized — so the
   embedded SQLite reference and the Postgres adapter agree on the rules
   table shape.
+
+## Addendum — session-end candidate queries (per-tool-nudge feature)
+
+`adapters/sqlite/storage.py` gained two read-only SQL sites (count 42 → 44)
+backing the session-end suggestion surface in `tools/session.py::session_handoff`:
+
+- `list_unlinked_knowledge(limit)` — `SELECT ... FROM knowledge WHERE NOT EXISTS
+  (relation referencing this id)` ordered by recency. Powers the
+  `link_knowledge` suggestions.
+- `list_promotable_knowledge(min_hits, limit)` — `SELECT ... FROM knowledge
+  WHERE hit_count >= ?` ordered by hits. Powers the `promote_to_rule`
+  suggestions.
+
+These are deliberately NOT on the `StorageBackend` Protocol (no contract-version
+bump): `session_handoff` calls them best-effort inside `try/except`, per the
+"adapters declare honest capabilities, callers degrade gracefully" rule. A
+backend lacking them simply surfaces no suggestions.

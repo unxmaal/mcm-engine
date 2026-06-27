@@ -25,6 +25,7 @@ from mcm_engine.hooks.mcp_enforcement import (
     STATE_TTL_SECONDS,
     WARN_THRESHOLD,
     _decide,
+    _events_path,
     _find_project_root,
     _is_compliance_mcp_tool,
     _normalize_builtin_tool,
@@ -33,6 +34,13 @@ from mcm_engine.hooks.mcp_enforcement import (
     _state_path,
     main,
 )
+
+
+def _read_events(path):
+    """Parse the JSONL event log into a list of dicts (empty if absent)."""
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -122,21 +130,24 @@ def test_edit_at_warn_threshold_emits_warning_but_allows():
 
 
 def test_edit_at_block_threshold_is_blocked():
-    s = {"builtin_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
+    s = {"builtin_calls": BLOCK_THRESHOLD - 1,
+         "mutator_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
     exit_code, msg = _decide("Edit", s)
     assert exit_code == 2
     assert "BLOCKED" in msg
-    assert s["builtin_calls"] == BLOCK_THRESHOLD
+    assert s["mutator_calls"] == BLOCK_THRESHOLD
 
 
 def test_write_blocked_same_as_edit():
-    s = {"builtin_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
+    s = {"builtin_calls": BLOCK_THRESHOLD - 1,
+         "mutator_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
     exit_code, _ = _decide("Write", s)
     assert exit_code == 2
 
 
 def test_notebook_edit_blocked_same_as_edit():
-    s = {"builtin_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
+    s = {"builtin_calls": BLOCK_THRESHOLD - 1,
+         "mutator_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
     exit_code, _ = _decide("NotebookEdit", s)
     assert exit_code == 2
 
@@ -485,14 +496,16 @@ def test_bare_compliance_name_recognized(bare_tool):
 def test_opencode_apply_patch_blocked_at_threshold():
     """apply_patch is opencode-only and mutates files — it must be subject
     to the block, same as edit/write."""
-    s = {"builtin_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
+    s = {"builtin_calls": BLOCK_THRESHOLD - 1,
+         "mutator_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
     exit_code, msg = _decide("apply_patch", s)
     assert exit_code == 2
     assert "BLOCKED" in msg
 
 
 def test_opencode_lowercase_edit_blocked_at_threshold():
-    s = {"builtin_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
+    s = {"builtin_calls": BLOCK_THRESHOLD - 1,
+         "mutator_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 0.0}
     exit_code, _ = _decide("edit", s)
     assert exit_code == 2
 
@@ -531,7 +544,8 @@ def test_mcm_engine_hook_subcommand_propagates_block_exit(tmp_path, monkeypatch)
     sp = _state_path(tmp_path)
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps({
-        "blocked-session": {"builtin_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 9e9},
+        "blocked-session": {"builtin_calls": BLOCK_THRESHOLD - 1,
+                            "mutator_calls": BLOCK_THRESHOLD - 1, "last_reset_at": 9e9},
     }), encoding="utf-8")
 
     event = json.dumps({
@@ -545,3 +559,95 @@ def test_mcm_engine_hook_subcommand_propagates_block_exit(tmp_path, monkeypatch)
     with pytest.raises(SystemExit) as exc:
         cli_main()
     assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# Mutator-only block: Bash inflates the warn budget but must NOT drive the
+# block. Only file mutators (edit/write/notebookedit/apply_patch) can block.
+# ---------------------------------------------------------------------------
+
+
+def test_bash_increments_total_not_mutator_count():
+    s = _empty_state()
+    _decide("Bash", s)
+    assert s["builtin_calls"] == 1
+    assert s.get("mutator_calls", 0) == 0
+
+
+def test_edit_increments_both_counters():
+    s = _empty_state()
+    _decide("Edit", s)
+    assert s["builtin_calls"] == 1
+    assert s["mutator_calls"] == 1
+
+
+def test_bash_inflation_does_not_block_a_later_edit():
+    # Read-only Bash drove the total high, but mutator_calls is low — a
+    # subsequent Edit must NOT block. This is the real false-block this
+    # change fixes.
+    s = {"builtin_calls": 100, "mutator_calls": 3, "last_reset_at": 0.0}
+    exit_code, _ = _decide("Edit", s)
+    assert exit_code == 0
+    assert s["mutator_calls"] == 4
+
+
+def test_block_is_driven_by_mutator_count_only():
+    s = _empty_state()
+    for _ in range(BLOCK_THRESHOLD - 1):
+        rc, _ = _decide("Edit", s)
+        assert rc == 0
+    rc, msg = _decide("Edit", s)
+    assert rc == 2
+    assert "BLOCKED" in msg
+    assert s["mutator_calls"] == BLOCK_THRESHOLD
+
+
+def test_many_bash_then_edit_not_blocked(tmp_path):
+    """Regression for the real false-block: a long run of read-only Bash
+    followed by a single Edit must be allowed. Under the old total-counter
+    behavior this blocked at the 20th built-in call."""
+    for _ in range(BLOCK_THRESHOLD + 10):
+        _invoke("Bash", cwd=tmp_path, session_id="bashy")
+    rc, _ = _invoke("Edit", cwd=tmp_path, session_id="bashy")
+    assert rc == 0
+
+
+def test_compliance_read_resets_both_counters():
+    s = {"builtin_calls": 30, "mutator_calls": 15, "last_reset_at": 0.0}
+    _decide("mcp__mcm-engine__search", s)
+    assert s["builtin_calls"] == 0
+    assert s["mutator_calls"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Event logging: warn + block events append to a JSONL diagnostic log so the
+# thresholds can be tuned from real data rather than guesswork.
+# ---------------------------------------------------------------------------
+
+
+def test_block_event_is_logged(tmp_path):
+    for _ in range(BLOCK_THRESHOLD):
+        _invoke("Edit", cwd=tmp_path, session_id="blk")
+    events = _read_events(_events_path(tmp_path))
+    blocks = [e for e in events if e.get("action") == "block"]
+    assert len(blocks) >= 1
+    assert blocks[-1]["tool"].lower() == "edit"
+    assert blocks[-1]["mutator_calls"] == BLOCK_THRESHOLD
+    assert blocks[-1]["session_id"] == "blk"
+
+
+def test_warn_event_is_logged(tmp_path):
+    for _ in range(WARN_THRESHOLD):
+        _invoke("Edit", cwd=tmp_path, session_id="wrn")
+    events = _read_events(_events_path(tmp_path))
+    assert any(e.get("action") == "warn" for e in events)
+
+
+def test_silent_allow_is_not_logged(tmp_path):
+    _invoke("Edit", cwd=tmp_path, session_id="silent")  # 1 edit, below warn
+    assert _read_events(_events_path(tmp_path)) == []
+
+
+def test_compliance_read_is_not_logged(tmp_path):
+    _invoke("mcp__mcm-engine__search", cwd=tmp_path, session_id="cr")
+    assert _read_events(_events_path(tmp_path)) == []

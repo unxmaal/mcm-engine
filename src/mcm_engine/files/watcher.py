@@ -26,6 +26,7 @@ from watchdog.events import (
 from watchdog.observers import Observer
 
 from ..backends import EntityType, RuleRow, StorageBackend
+from ..rules_links import build_wikilink_relations
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ class RulesWatcher:
 
         Returns a small dict of counts for diagnostics.
         """
-        counts = {"upserted": 0, "archived": 0, "unchanged": 0}
+        counts = {"upserted": 0, "archived": 0, "unchanged": 0, "links": 0}
         if not self._rules_path.exists():
             return counts
 
@@ -228,6 +229,10 @@ class RulesWatcher:
             if row.file_path and row.file_path not in seen_paths and not row.archived:
                 self._storage.soft_delete_rule(row.id)
                 counts["archived"] += 1
+
+        # Build [[slug]] wikilink relations now that all rows are current.
+        # Shared with the sync_rules tool so both paths behave identically.
+        counts["links"] = build_wikilink_relations(self._storage, self._project_root)
         return counts
 
     @property

@@ -175,6 +175,24 @@ def _state_path(cwd: Path) -> Path:
     return _find_project_root(cwd) / ".claude" / "mcp-enforcement-state.json"
 
 
+def _events_path(cwd: Path) -> Path:
+    """Append-only JSONL diagnostic log of warn/block events, alongside the
+    state file. Lets thresholds be tuned from real block-rate data rather
+    than guesswork. One line per warn/block; silent allows aren't logged."""
+    return _find_project_root(cwd) / ".claude" / "mcp-enforcement-events.jsonl"
+
+
+def _append_event(path: Path, record: dict[str, Any]) -> None:
+    """Append one JSON record. Best-effort: a logging failure must never
+    break the user's tool call."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
 def _read_state(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -255,6 +273,7 @@ def _decide(
     """
     if _is_compliance_mcp_tool(tool_name):
         session_state["builtin_calls"] = 0
+        session_state["mutator_calls"] = 0
         session_state["last_reset_at"] = time.time()
         return 0, ""
 
@@ -262,24 +281,34 @@ def _decide(
     if normalized is None:
         return 0, ""
 
+    # `builtin_calls` is the total (mutators + bash), and drives the warning.
+    # `mutator_calls` counts only file mutators, and is the ONLY thing that
+    # drives the block. Read-only Bash inflates the total (so a bash-heavy
+    # stretch still gets nudged) but must never push an edit into a block —
+    # bash IS looking, not leaping.
     session_state["builtin_calls"] = session_state.get("builtin_calls", 0) + 1
-    n = session_state["builtin_calls"]
+    is_mutator = normalized in BLOCKING_BUILTIN_TOOLS
+    if is_mutator:
+        session_state["mutator_calls"] = session_state.get("mutator_calls", 0) + 1
 
-    if n >= BLOCK_THRESHOLD and normalized in BLOCKING_BUILTIN_TOOLS:
+    total = session_state["builtin_calls"]
+    mutators = session_state.get("mutator_calls", 0)
+
+    if is_mutator and mutators >= BLOCK_THRESHOLD:
         msg = (
-            f"[mcm-engine] BLOCKED: {n} built-in tool calls in this session "
-            f"without a compliance MCP read. Call one of "
+            f"[mcm-engine] BLOCKED: {mutators} file edits without a compliance "
+            f"MCP read. Call one of "
             f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))} on the mcm-engine "
             f"MCP server before continuing — the DB-as-cache contract "
             f"requires you to look before you leap."
         )
         return 2, msg
 
-    if n >= WARN_THRESHOLD:
+    if total >= WARN_THRESHOLD:
         msg = (
-            f"[mcm-engine] {n}/{BLOCK_THRESHOLD} built-in calls without an "
-            f"MCP read. At {BLOCK_THRESHOLD}, file-mutating tools will be "
-            f"BLOCKED. Call search / report_error / sync_rules / "
+            f"[mcm-engine] {total}/{BLOCK_THRESHOLD} built-in calls without an "
+            f"MCP read ({mutators} of them edits; mutators BLOCK at "
+            f"{BLOCK_THRESHOLD}). Call search / report_error / sync_rules / "
             f"session_start on the mcm-engine MCP to reset the counter."
         )
         return 0, msg
@@ -328,6 +357,19 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         # State write failures shouldn't block the user's tool call.
         pass
+
+    # Diagnostic event log: record warns + blocks (not silent allows or
+    # compliance resets) so the thresholds can be tuned from real data.
+    action = "block" if exit_code == 2 else ("warn" if message else "")
+    if action:
+        _append_event(_events_path(cwd), {
+            "ts": time.time(),
+            "session_id": session_id,
+            "tool": tool_name,
+            "action": action,
+            "builtin_calls": s.get("builtin_calls", 0),
+            "mutator_calls": s.get("mutator_calls", 0),
+        })
 
     if message:
         print(message, file=sys.stderr)

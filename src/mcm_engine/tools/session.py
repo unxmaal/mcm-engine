@@ -23,6 +23,47 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
     return result
 
 
+def _handoff_suggestions(storage, tracker: SessionTracker) -> str:
+    """Build the end-of-session "before you go" section: concrete candidates
+    for the relationship-building tools that aggregate nudges never surface.
+
+    Non-blocking by design — these are suggestions, not a gate. Every query
+    is best-effort: a storage backend that doesn't implement the candidate
+    methods simply yields no suggestions (honest-capabilities contract).
+    """
+    lines: list[str] = []
+
+    try:
+        unlinked = storage.list_unlinked_knowledge(limit=5)
+    except Exception:
+        unlinked = []
+    if unlinked:
+        lines.append(
+            "Unlinked knowledge — connect related items with `link_knowledge`:"
+        )
+        for r in unlinked:
+            lines.append(f"  #{r.id} [{r.kind}] {r.topic}")
+
+    try:
+        promotable = storage.list_promotable_knowledge(min_hits=5, limit=3)
+    except Exception:
+        promotable = []
+    if promotable:
+        lines.append(
+            "Frequently-hit knowledge — consider `promote_to_rule`:"
+        )
+        for r in promotable:
+            lines.append(f"  #{r.id} [{r.hit_count} hits] {r.topic}")
+
+    if not lines:
+        return ""
+    lines.append(
+        "Act on any that apply, or skip with 'nothing applicable' — these are "
+        "suggestions, not blockers."
+    )
+    return "\n".join(lines)
+
+
 _ENTITY_BY_NAME = {
     "knowledge": (EntityType.KNOWLEDGE, "Total knowledge"),
     "negative_knowledge": (EntityType.NEGATIVE, "Negative knowledge"),
@@ -161,6 +202,8 @@ def register_session_tools(
     ) -> str:
         """Snapshot session state for the next session to pick up."""
         tracker.record_call("session_handoff")
+        # Compute suggestions BEFORE reset_all clears session tracking.
+        suggestions = _handoff_suggestions(storage, tracker)
         tracker.reset_all()
 
         knowledge_count = storage.count_recent_knowledge(since_days=1)
@@ -196,7 +239,10 @@ def register_session_tools(
             # Older DBs may not have the snapshots table — non-fatal.
             pass
 
-        return "Session handoff recorded. Counters reset."
+        msg = "Session handoff recorded. Counters reset."
+        if suggestions:
+            msg += "\n\n--- Before you go ---\n" + suggestions
+        return msg
 
     @mcp.tool()
     def session_summary() -> str:

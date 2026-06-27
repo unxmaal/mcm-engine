@@ -47,6 +47,20 @@ class SessionTracker:
         }),
     }
 
+    # Targeted guidance for per-tool deficit nudges. Generic fallback below.
+    PERIODIC_HINTS: dict[str, str] = {
+        "link_knowledge": (
+            "Connect related items you've stored — `link_knowledge(source, target)` "
+            "builds the graph `get_related` traverses. The KB has many entries and "
+            "almost no links."
+        ),
+        "add_negative": (
+            "Hit a dead end or anti-pattern? `add_negative` records it so it's never "
+            "repeated. If nothing actually failed, store a finding with `add_knowledge` "
+            "instead."
+        ),
+    }
+
     def __init__(self, config: NudgeConfig | None = None) -> None:
         self.config = config or NudgeConfig()
         self.turn_count: int = 0
@@ -58,6 +72,14 @@ class SessionTracker:
         # Nudge escalation state
         self.pending_nudges: set[str] = set()
         self.ignored_counts: dict[str, int] = {}
+        # Per-tool deficit counters. calls_since[tool] counts tool calls since
+        # that specific tool last fired; it resets to 0 when the tool fires.
+        self.calls_since: dict[str, int] = {
+            tool: 0 for tool in self.config.periodic_tools
+        }
+        # Every tool called at least once this session — used by the
+        # session-end gate to surface what was never touched.
+        self.called_this_session: set[str] = set()
 
     def record_call(self, tool_name: str, topic: str | None = None) -> None:
         """Record a tool invocation. Call this at the start of every tool.
@@ -73,11 +95,18 @@ class SessionTracker:
             key = topic.lower().strip()
             self.topic_freq[key] = self.topic_freq.get(key, 0) + 1
 
+        self.called_this_session.add(tool_name)
+        # Per-tool deficit counters: every tracked tool's counter advances by
+        # one; the one that just fired resets to zero.
+        for t in self.calls_since:
+            self.calls_since[t] += 1
+        if tool_name in self.calls_since:
+            self.calls_since[tool_name] = 0
+
         # Check which pending nudges this tool resolves
         resolved = set()
         for nudge_type in list(self.pending_nudges):
-            resolving_tools = self.RESOLVES.get(nudge_type, frozenset())
-            if tool_name in resolving_tools:
+            if tool_name in self._resolving_tools(nudge_type):
                 resolved.add(nudge_type)
         # Clear resolved nudges and their ignored counts
         for nudge_type in resolved:
@@ -99,12 +128,29 @@ class SessionTracker:
             threshold = self.config.nudge_escalation_threshold
             for nudge_type, count in self.ignored_counts.items():
                 if count >= threshold:
-                    resolving = self.RESOLVES.get(nudge_type, frozenset())
+                    if self._is_advisory(nudge_type):
+                        continue
+                    resolving = self._resolving_tools(nudge_type)
                     raise MandatoryStopError(
                         f"ESCALATED BLOCK: '{nudge_type}' nudge ignored {count} times. "
                         f"You MUST call one of: {', '.join(sorted(resolving))} "
                         "before any other tool."
                     )
+
+    def _resolving_tools(self, nudge_type: str) -> frozenset[str]:
+        """Tools that clear a nudge. A periodic nudge (``periodic:<tool>``) is
+        cleared only by that exact tool; all others use the RESOLVES table."""
+        if nudge_type.startswith("periodic:"):
+            return frozenset({nudge_type.split(":", 1)[1]})
+        return self.RESOLVES.get(nudge_type, frozenset())
+
+    def _is_advisory(self, nudge_type: str) -> bool:
+        """True for periodic nudges whose tool is advisory-only — they fire
+        and accrue ignores but never escalate to a block."""
+        if nudge_type.startswith("periodic:"):
+            tool = nudge_type.split(":", 1)[1]
+            return tool in self.config.advisory_periodic_tools
+        return False
 
     def record_store(self) -> None:
         """Record that knowledge was stored. Resets the store reminder counter."""
@@ -118,6 +164,9 @@ class SessionTracker:
         self.topic_freq.clear()
         self.pending_nudges.clear()
         self.ignored_counts.clear()
+        for t in self.calls_since:
+            self.calls_since[t] = 0
+        self.called_this_session.clear()
 
     def elapsed_seconds(self) -> int:
         """Seconds since session start."""
@@ -213,6 +262,19 @@ class SessionTracker:
                 "(4) Should you delegate?"
             )
             fired.append("rules_check")
+
+        # Per-tool deficit nudges — each names the specific missing tool so the
+        # agent can't satisfy it by calling some other store tool.
+        for tool, threshold in self.config.periodic_tools.items():
+            if self.calls_since.get(tool, 0) >= threshold:
+                hint = self.PERIODIC_HINTS.get(
+                    tool, f"Call `{tool}` to reset this counter."
+                )
+                messages.append(
+                    f"PERIODIC: {self.calls_since[tool]} tool calls without "
+                    f"`{tool}`. {hint}"
+                )
+                fired.append(f"periodic:{tool}")
 
         # Plugin nudges
         for fn in self._plugin_nudge_fns:

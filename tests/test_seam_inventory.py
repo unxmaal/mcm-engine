@@ -41,7 +41,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "tools/session.py":    0,   # MCM2-02 rewire complete
     # MCM2-02 embedded SQLite adapter — SQL extracted out of tools into the
     # repository. These files are the new authoritative home for SQL.
-    "adapters/sqlite/storage.py":  42,  # +7 id-preserving inserts, +4 iter, baseline 31
+    "adapters/sqlite/storage.py":  44,  # +7 id-preserving inserts, +4 iter, +2 handoff candidate queries, baseline 31
     "adapters/sqlite/search.py":   5,   # +2 for MCM2-07 search_plugin (FTS + LIKE)
     "adapters/sqlite/counters.py": 4,
     # MCM2-08 Postgres adapter — first non-embedded reference. SQL count

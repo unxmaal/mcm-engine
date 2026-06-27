@@ -16,8 +16,11 @@ from mcp.server.fastmcp import FastMCP
 from ..backends import EntityType, RuleRow
 from ..db import log
 from ..files.watcher import compute_content_hash
+from ..rules_links import build_wikilink_relations, extract_wikilinks
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
+
+__all__ = ["extract_wikilinks", "register_rules_tools"]
 
 
 def _slugify(text: str) -> str:
@@ -360,8 +363,14 @@ def register_rules_tools(
                 storage.soft_delete_rule(r.id)
                 archived += 1
 
+        # Turn [[slug]] wikilinks into rule->rule relations. Shared with the
+        # watcher's sync_once so the stdio-startup path and this tool stay in
+        # lockstep. Additive + idempotent.
+        links_created = build_wikilink_relations(storage, project_root)
+
         return _with_nudge(
-            f"Sync complete: {indexed} new, {updated} updated, {archived} orphans archived.",
+            f"Sync complete: {indexed} new, {updated} updated, "
+            f"{archived} orphans archived, {links_created} links created.",
             tracker,
         )
 

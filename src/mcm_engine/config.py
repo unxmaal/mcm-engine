@@ -26,6 +26,19 @@ class NudgeConfig:
     # Nudge escalation: after this many ignored nudges of the same type,
     # escalate to MandatoryStopError blocking.
     nudge_escalation_threshold: int = 3
+    # Per-tool deficit counters: {tool_name: max_calls_without_it}. When a
+    # tracked tool hasn't fired in N tool calls, a targeted nudge names that
+    # SPECIFIC tool — unlike store_reminder, which any store tool clears. These
+    # escalate to a block through nudge_escalation_threshold like any nudge.
+    # On by default for the tools that the aggregate counters never surface.
+    periodic_tools: dict[str, int] = field(default_factory=lambda: {
+        "link_knowledge": 25,
+        "add_negative": 40,
+    })
+    # Periodic tools that NUDGE but never escalate to a hard block. Forcing
+    # these manufactures junk (e.g. an invented add_negative when nothing
+    # actually failed), so they stay advisory regardless of escalation.
+    advisory_periodic_tools: list[str] = field(default_factory=lambda: ["add_negative"])
 
 
 @dataclass
