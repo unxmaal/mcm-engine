@@ -467,3 +467,50 @@ class TestPeriodicToolNudges:
         t.reset_all()
         assert all(v == 0 for v in t.calls_since.values())
         assert t.called_this_session == set()
+
+
+class TestAdvisoryPeriodicTools:
+    """Some periodic tools (add_negative) should nudge but never hard-block —
+    forcing them manufactures junk entries when nothing actually failed."""
+
+    def _quiet(self, **overrides):
+        base = dict(
+            store_reminder_turns=1000,
+            checkpoint_turns=1000,
+            mandatory_stop_turns=1000,
+            rules_check_interval=0,
+        )
+        base.update(overrides)
+        return NudgeConfig(**base)
+
+    def test_default_marks_add_negative_advisory(self):
+        cfg = NudgeConfig()
+        assert "add_negative" in cfg.advisory_periodic_tools
+
+    def test_advisory_tool_nudges_but_never_blocks(self):
+        t = SessionTracker(self._quiet(
+            periodic_tools={"add_negative": 3},
+            advisory_periodic_tools=["add_negative"],
+            nudge_escalation_threshold=2,
+        ))
+        for _ in range(3):
+            t.record_call("search")
+        assert "PERIODIC" in t.get_nudge()  # the nudge still fires
+        # Ignore it well past the escalation threshold — must NOT raise.
+        for _ in range(10):
+            t.record_call("search")
+            t.get_nudge()
+
+    def test_non_advisory_periodic_tool_still_escalates(self):
+        t = SessionTracker(self._quiet(
+            periodic_tools={"link_knowledge": 3},
+            advisory_periodic_tools=["add_negative"],
+            nudge_escalation_threshold=2,
+        ))
+        for _ in range(3):
+            t.record_call("search")
+        t.get_nudge()
+        t.record_call("search")
+        t.get_nudge()
+        with pytest.raises(MandatoryStopError, match="link_knowledge"):
+            t.record_call("search")

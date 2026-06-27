@@ -35,6 +35,10 @@ class NudgeConfig:
         "link_knowledge": 25,
         "add_negative": 40,
     })
+    # Periodic tools that NUDGE but never escalate to a hard block. Forcing
+    # these manufactures junk (e.g. an invented add_negative when nothing
+    # actually failed), so they stay advisory regardless of escalation.
+    advisory_periodic_tools: list[str] = field(default_factory=lambda: ["add_negative"])
 
 
 @dataclass

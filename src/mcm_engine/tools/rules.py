@@ -13,11 +13,14 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from ..backends import EntityType, RelationRow, RuleRow
+from ..backends import EntityType, RuleRow
 from ..db import log
 from ..files.watcher import compute_content_hash
+from ..rules_links import build_wikilink_relations, extract_wikilinks
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
+
+__all__ = ["extract_wikilinks", "register_rules_tools"]
 
 
 def _slugify(text: str) -> str:
@@ -27,16 +30,6 @@ def _slugify(text: str) -> str:
     text = re.sub(r"[\s_-]+", "-", text)
     text = text.strip("-")
     return text or "untitled"
-
-
-_WIKILINK_RE = re.compile(r"\[\[\s*([^\[\]]+?)\s*\]\]")
-
-
-def extract_wikilinks(text: str) -> set[str]:
-    """Return the set of ``[[slug]]`` targets referenced in ``text``, with
-    inner whitespace trimmed. Single brackets are ignored. The slug is a
-    rule's filename stem — the identity sync_rules resolves links against."""
-    return {m.group(1).strip() for m in _WIKILINK_RE.finditer(text)}
 
 
 def _parse_rule_file(path: Path) -> dict:
@@ -91,8 +84,6 @@ def _parse_rule_file(path: Path) -> dict:
 
     if desc_lines:
         result["description"] = " ".join(desc_lines)
-
-    result["links"] = extract_wikilinks(content)
 
     return result
 
@@ -318,12 +309,6 @@ def register_rules_tools(
         updated = 0
         archived = 0
 
-        # slug (filename stem) -> rule id, for resolving [[wikilinks]] in a
-        # second pass once every rule's id is known. processed holds
-        # (rule_id, link_slugs) for each file with a title.
-        slug_to_id: dict[str, int] = {}
-        processed: list[tuple[int, set[str]]] = []
-
         for md_file in md_files:
             try:
                 rel_path = str(md_file.relative_to(project_root))
@@ -353,9 +338,8 @@ def register_rules_tools(
                 if existing.archived:
                     storage.restore_rule(existing.id)
                 updated += 1
-                rule_id = existing.id
             else:
-                rule_id = storage.insert_rule(RuleRow(
+                storage.insert_rule(RuleRow(
                     id=0,
                     title=title,
                     keywords=keywords,
@@ -365,9 +349,6 @@ def register_rules_tools(
                     content_hash=content_hash,
                 ))
                 indexed += 1
-
-            slug_to_id[md_file.stem] = rule_id
-            processed.append((rule_id, parsed.get("links") or set()))
 
         # Soft-delete orphans (rules whose backing files are gone). Skip
         # rows that are already archived — re-archiving inflates the count,
@@ -382,24 +363,10 @@ def register_rules_tools(
                 storage.soft_delete_rule(r.id)
                 archived += 1
 
-        # Second pass: turn [[slug]] wikilinks into rule->rule relations now
-        # that every slug is resolvable. Additive and idempotent — the
-        # relations UNIQUE constraint makes re-inserts no-ops. (Removing a
-        # wikilink does not yet retract its relation; reconcile is a follow-up.)
-        links_created = 0
-        for rule_id, links in processed:
-            for slug in links:
-                target_id = slug_to_id.get(slug)
-                if target_id is None or target_id == rule_id:
-                    continue
-                created = storage.insert_relation(RelationRow(
-                    id=0,
-                    source_type=EntityType.RULE, source_id=rule_id,
-                    target_type=EntityType.RULE, target_id=target_id,
-                    relation="references",
-                ))
-                if created is not None:
-                    links_created += 1
+        # Turn [[slug]] wikilinks into rule->rule relations. Shared with the
+        # watcher's sync_once so the stdio-startup path and this tool stay in
+        # lockstep. Additive + idempotent.
+        links_created = build_wikilink_relations(storage, project_root)
 
         return _with_nudge(
             f"Sync complete: {indexed} new, {updated} updated, "

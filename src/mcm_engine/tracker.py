@@ -128,6 +128,8 @@ class SessionTracker:
             threshold = self.config.nudge_escalation_threshold
             for nudge_type, count in self.ignored_counts.items():
                 if count >= threshold:
+                    if self._is_advisory(nudge_type):
+                        continue
                     resolving = self._resolving_tools(nudge_type)
                     raise MandatoryStopError(
                         f"ESCALATED BLOCK: '{nudge_type}' nudge ignored {count} times. "
@@ -141,6 +143,14 @@ class SessionTracker:
         if nudge_type.startswith("periodic:"):
             return frozenset({nudge_type.split(":", 1)[1]})
         return self.RESOLVES.get(nudge_type, frozenset())
+
+    def _is_advisory(self, nudge_type: str) -> bool:
+        """True for periodic nudges whose tool is advisory-only — they fire
+        and accrue ignores but never escalate to a block."""
+        if nudge_type.startswith("periodic:"):
+            tool = nudge_type.split(":", 1)[1]
+            return tool in self.config.advisory_periodic_tools
+        return False
 
     def record_store(self) -> None:
         """Record that knowledge was stored. Resets the store reminder counter."""
