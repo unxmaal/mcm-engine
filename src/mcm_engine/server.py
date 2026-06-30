@@ -100,6 +100,17 @@ class MCMServer:
 
         self.ctx: Context = build_context(config, registry=registry)
 
+        # Apply the storage adapter's DDL on first boot. SQLite's
+        # legacy path runs migrate_core(self.db) above; non-embedded
+        # adapters carry their own ensure_schema(). Idempotent — every
+        # statement is gated by IF NOT EXISTS / DO-block guards.
+        ensure_schema = getattr(self.ctx.storage, "ensure_schema", None)
+        if callable(ensure_schema):
+            try:
+                ensure_schema()
+            except Exception as e:
+                log(f"ensure_schema failed: {type(e).__name__}: {e}")
+
         # Tracker
         self.tracker = SessionTracker(config.nudges)
 

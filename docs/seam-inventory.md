@@ -511,3 +511,34 @@ These are deliberately NOT on the `StorageBackend` Protocol (no contract-version
 bump): `session_handoff` calls them best-effort inside `try/except`, per the
 "adapters declare honest capabilities, callers degrade gracefully" rule. A
 backend lacking them simply surfaces no suggestions.
+
+
+## LODESTONE additive surface (POC)
+
+`src/mcm_engine/tokens.py` — 4 sites
+- `mint_token` — `INSERT INTO tokens (token_hash, principal) VALUES (?, ?)`
+- `validate_token` — `SELECT id, principal FROM tokens WHERE token_hash = ?
+  AND revoked_at IS NULL`
+- `validate_token` — `UPDATE tokens SET last_used_at = now() WHERE id = ?`
+- `revoke_token` — `UPDATE tokens SET revoked_at = now() WHERE token_hash = ?
+  AND revoked_at IS NULL`
+
+`src/mcm_engine/transport.py` — 1 site
+- `_make_claims_endpoint` — `INSERT INTO knowledge (topic, kind, summary,
+  detail, tags, project, subject_keys, governance_tags, scope, status,
+  provenance) VALUES (...) RETURNING id`. The `/v1/claims` REST shim the
+  sieve POSTs to after the regex pass clears.
+
+`src/mcm_engine/tools/knowledge.py` — 3 sites (LODESTONE additions only;
+the rest of the file is rewired through `ctx.storage`)
+- `kb_recall` — `SELECT id, topic FROM knowledge WHERE id = ?`
+- `kb_recall` — `INSERT INTO recall_log (claim_id, principal, reason)
+  VALUES (?, ?, ?)`
+- `kb_recall` — `DELETE FROM knowledge WHERE id = ?`
+
+These three files are the only places LODESTONE-specific SQL lives. Tokens
+and `/v1/claims` are HTTP-transport concerns; `kb_recall` is an MCP tool.
+The Claim-shaped columns on `knowledge` (subject_keys, governance_tags,
+scope, status, provenance) are populated through normal `insert_knowledge`
+machinery from the adapter; only the `/v1/claims` shim writes them directly,
+since the existing `insert_knowledge` doesn't take them as parameters.

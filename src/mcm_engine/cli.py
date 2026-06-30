@@ -105,6 +105,46 @@ def cmd_hook(args):
     sys.exit(hook_main())
 
 
+def cmd_mint_token(args):
+    """Mint a bearer token for the HTTP/streamable-HTTP transport.
+
+    Writes one row to the tokens table and prints the plaintext token
+    to stdout exactly once. The plaintext is not recoverable from the
+    database; the operator captures it here, hands it to the
+    consumer, then discards their local copy.
+    """
+    from . import tokens as token_mod
+
+    config_path = Path(args.config) if args.config else None
+    project_root = Path(args.project_root) if args.project_root else None
+    config = load_config(config_path=config_path, project_root=project_root)
+
+    if config.backends.storage != "postgres":
+        print(
+            f"mint-token requires the postgres storage backend "
+            f"(found {config.backends.storage!r}). Set MCM_BACKENDS_STORAGE=postgres.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    server = MCMServer(config, project_root=project_root or Path.cwd())
+    try:
+        minted = token_mod.mint_token(
+            server.ctx.storage._conn, principal=args.principal
+        )
+    except ValueError as e:
+        print(f"mint-token: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    print(minted.plaintext)
+    print(
+        f"# minted for principal={minted.principal!r}. "
+        f"Show this token once; revoke via UPDATE tokens SET revoked_at = now() "
+        f"WHERE token_hash matches.",
+        file=sys.stderr,
+    )
+
+
 def cmd_session_start(args):
     """Run the SessionStart hook. Reads a SessionStart event from stdin and
     prints resume context as additionalContext JSON. Always exits 0 (a hook
@@ -356,6 +396,20 @@ def main():
              "truncating the destination if a clean slate is required.",
     )
     migrate_parser.set_defaults(func=cmd_migrate)
+
+    # mint-token (LODESTONE bearer token)
+    mint_parser = subparsers.add_parser(
+        "mint-token",
+        help="Mint a bearer token for the HTTP/streamable-HTTP transport "
+             "(requires postgres storage). Prints the plaintext token once.",
+    )
+    mint_parser.add_argument(
+        "--principal", required=True,
+        help="Logical owner of the token (free-form, e.g., 'paul', 'sieve', 'ci').",
+    )
+    mint_parser.add_argument("--config", help="Path to mcm-engine.yaml")
+    mint_parser.add_argument("--project-root", help="Project root directory")
+    mint_parser.set_defaults(func=cmd_mint_token)
 
     # hook (PreToolUse enforcement)
     hook_parser = subparsers.add_parser(

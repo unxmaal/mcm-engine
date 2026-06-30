@@ -35,7 +35,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "schema.py":           36,  # +3 for v6→v7 watcher-cascade column ALTERs
     "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
-    "tools/knowledge.py":  0,   # MCM2-02 rewire complete — uses ctx adapters
+    "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
     "tools/rules.py":      0,   # MCM2-02 rewire complete
     "tools/relations.py":  0,   # MCM2-02 rewire complete
     "tools/session.py":    0,   # MCM2-02 rewire complete
@@ -54,6 +54,11 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
     # plugin search via ILIKE).
     "adapters/postgres/search.py": 4,
+    # LODESTONE additive surface (see lodestone-lite-plan.md).
+    # tokens.py: mint INSERT, validate SELECT + UPDATE-touch, revoke UPDATE.
+    "tokens.py": 4,
+    # transport.py: /v1/claims INSERT into knowledge.
+    "transport.py": 1,
 }
 
 
