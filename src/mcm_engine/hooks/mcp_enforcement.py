@@ -4,8 +4,9 @@ Why this exists: the in-process MCP nudge system (`mcm_engine.tracker`)
 only sees MCP tool calls. The model can call file-mutating built-ins
 all day without ever calling `search` or `report_error`, silently
 bypassing the MCP-first protocol. This hook fires on every built-in
-tool call AND every compliance MCP read, tracks the budget, warns at 8
-unanswered built-in calls, and blocks file-mutating tools at 20.
+tool call AND every compliance MCP read, tracks the budget, warns
+after 3 unanswered built-in calls, and blocks file-mutating tools at
+6.
 
 Supports both major agent harnesses:
   - Claude Code: capitalized built-in names (Edit, Write, NotebookEdit,
@@ -48,15 +49,18 @@ never ascends past ``$HOME``. If no marker is found, state falls back to
 one entry per distinct session; delete it any time to start fresh.
 
 Threshold tuning rationale:
-  WARN at 8   — gives 8 successive built-in calls before nagging. Most
-                small tasks finish under that budget without any need
-                for an MCP read.
-  BLOCK at 20 — at 20 unanswered built-in calls, the model has clearly
-                drifted into "code first, look later" territory. Block
-                forces it back to the MCP layer.
+  WARN at 3   — three successive built-in calls without an MCP read
+                already means the agent has likely drifted past at
+                least one moment where the KB should have been
+                consulted. The warn is a directive ("look NOW"), not
+                a runway counter ("you have N calls left"); a tight
+                threshold reinforces that framing.
+  BLOCK at 6  — at six file-mutating calls without a single look-first
+                call, the project contract is materially violated.
+                Block, in language that names the violation.
   Bash exempt from BLOCK — bash-heavy sessions (lots of git, grep, ls)
-                are common and legitimate. Bash counts toward the
-                threshold but isn't itself blocked.
+                are common and legitimate. Bash counts toward the warn
+                threshold but never triggers the block.
 
 Compliance MCP tools that RESET the counter:
   - search           — the canonical "look first" call.
@@ -81,8 +85,8 @@ from pathlib import Path
 from typing import Any
 
 
-WARN_THRESHOLD = 8
-BLOCK_THRESHOLD = 20
+WARN_THRESHOLD = 3
+BLOCK_THRESHOLD = 6
 
 # Drop per-session counter entries whose last_reset_at is older than this.
 # Each Claude Code session gets a fresh UUID, so without pruning the state
@@ -296,20 +300,40 @@ def _decide(
 
     if is_mutator and mutators >= BLOCK_THRESHOLD:
         msg = (
-            f"[mcm-engine] BLOCKED: {mutators} file edits without a compliance "
-            f"MCP read. Call one of "
-            f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))} on the mcm-engine "
-            f"MCP server before continuing — the DB-as-cache contract "
-            f"requires you to look before you leap."
+            "[mcm-engine] BLOCKED — project MCP-first contract violated.\n"
+            f"You have performed {mutators} file edits this session without "
+            "a single look-first MCP read. The contract is non-negotiable: "
+            "the knowledge base is authoritative for everything not in your "
+            "pretrained weights (Corning systems, accounts, conventions, "
+            "people, history). Acting without checking it is acting on "
+            "guesses.\n"
+            "\n"
+            "Required next action (BEFORE any further Edit/Write/NotebookEdit): "
+            "call `mcp__knowledge__search` with a query relevant to what you "
+            "are about to edit. If nothing matches, say so in your reply "
+            "and proceed with the caveat. Then continue.\n"
+            "\n"
+            "Reset tools: "
+            f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
         )
         return 2, msg
 
     if total >= WARN_THRESHOLD:
         msg = (
-            f"[mcm-engine] {total}/{BLOCK_THRESHOLD} built-in calls without an "
-            f"MCP read ({mutators} of them edits; mutators BLOCK at "
-            f"{BLOCK_THRESHOLD}). Call search / report_error / sync_rules / "
-            f"session_start on the mcm-engine MCP to reset the counter."
+            "[mcm-engine] STOP. Project contract requires a knowledge-base "
+            "search before further work.\n"
+            f"You have made {total} built-in tool calls "
+            f"({mutators} edits) this session with no look-first MCP read. "
+            "This is not a runway counter — it is a directive. The next "
+            "action should be `mcp__knowledge__search` with a query matching "
+            "the topic at hand, NOT another Edit/Write/Bash. If the search "
+            "returns nothing relevant, say so explicitly in your reply and "
+            "then continue. Confidently asserting Corning-specific facts "
+            "from pretrained memory is the failure mode this hook exists to "
+            "catch.\n"
+            "\n"
+            f"Mutator block fires at {BLOCK_THRESHOLD} edits. Reset tools: "
+            f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
         )
         return 0, msg
 
