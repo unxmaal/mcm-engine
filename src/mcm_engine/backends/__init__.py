@@ -163,6 +163,33 @@ class RuleRow:
     archived_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Issue #10 provenance additions (v8 schema): full rule body plus
+    # actor attribution. `content` is the full markdown body (the row's
+    # `description` remains the first-500-char leading-text FTS signal).
+    content: Optional[str] = None
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+@dataclass
+class RuleEventRow:
+    """One append-only audit row per state change on a rule (issue #10).
+
+    `rule_id` is deliberately NOT a foreign key on either backend — events
+    outlive the rule they describe, so a hard-deleted rule leaves its
+    history intact. `actor` is `'nobody'` when a write is unattributed.
+    """
+
+    id: int
+    rule_id: int
+    event_type: str
+    actor: str = "nobody"
+    at: Optional[datetime] = None
+    content_hash: Optional[str] = None
+    source_repo: Optional[str] = None
+    source_ref: Optional[str] = None
+    source_commit: Optional[str] = None
+    note: Optional[str] = None
 
 
 @dataclass
@@ -286,6 +313,32 @@ class StorageBackend(Protocol):
     ) -> list[RuleRow]: ...
     def soft_delete_rule(self, rule_id: int) -> None: ...
     def restore_rule(self, rule_id: int) -> None: ...
+
+    # ---- Rule provenance / audit log (issue #10) ----
+    #
+    # Events are emitted by the *tool layer* (add_rule / sync_rules /
+    # reinforce_rule / promote_to_rule), never implicitly by the write
+    # methods above. Keeping emission in the tools means bulk paths that
+    # call insert_rule directly — the migrate CLI, the files watcher — do
+    # NOT invent history, which honours issue #10's "no backfilled events"
+    # rule for free.
+    def insert_rule_event(
+        self,
+        rule_id: int,
+        event_type: str,
+        actor: str,
+        *,
+        content_hash: Optional[str] = None,
+        source_repo: Optional[str] = None,
+        source_ref: Optional[str] = None,
+        source_commit: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> int: ...
+
+    def list_rule_events(
+        self, rule_id: int, *, limit: Optional[int] = None,
+        caller: Optional[str] = None,
+    ) -> list[RuleEventRow]: ...
 
     # ---- Relations ----
     def insert_relation(self, row: RelationRow) -> Optional[int]:

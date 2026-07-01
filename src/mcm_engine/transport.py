@@ -33,6 +33,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import tokens as _tokens
+from .principal import reset_principal as _reset_principal
+from .principal import set_principal as _set_principal
 
 
 def _liveness(_request: Request) -> JSONResponse:
@@ -134,7 +136,13 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
                 {"error": "invalid or revoked token"}, status_code=401
             )
         request.state.principal = principal
-        return await call_next(request)
+        # Bind for rule-provenance actor resolution (issue #10) so tool
+        # handlers can attribute writes without the request object.
+        token = _set_principal(principal)
+        try:
+            return await call_next(request)
+        finally:
+            _reset_principal(token)
 
 
 def _make_claims_endpoint(server: Any):

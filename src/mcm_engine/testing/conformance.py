@@ -182,6 +182,55 @@ class StorageConformance:
         titles = sorted(r.title for r in rules)
         assert titles == ["A", "C"]
 
+    def test_insert_rule_persists_content_and_attribution(self, storage):
+        """v8: full body + created_by/updated_by round-trip (issue #10)."""
+        new_id = storage.insert_rule(RuleRow(
+            id=0, title="prov", keywords="kw",
+            content="the full markdown body of the rule",
+            created_by="alice", updated_by="alice",
+        ))
+        fetched = storage.find_rule_by_title("prov")
+        assert fetched.id == new_id
+        assert fetched.content == "the full markdown body of the rule"
+        assert fetched.created_by == "alice"
+        assert fetched.updated_by == "alice"
+
+    # ---- Rule events (audit log) ---------------------------------------
+
+    def test_insert_and_list_rule_events(self, storage):
+        rid = storage.insert_rule(RuleRow(id=0, title="ev", keywords="kw"))
+        eid = storage.insert_rule_event(
+            rid, "created", "alice",
+            content_hash="abc", source_repo="r", source_ref="main",
+            source_commit="deadbeef", note="n",
+        )
+        assert eid
+        events = storage.list_rule_events(rid)
+        assert len(events) == 1
+        e = events[0]
+        assert e.rule_id == rid
+        assert e.event_type == "created"
+        assert e.actor == "alice"
+        assert e.content_hash == "abc"
+        assert e.source_repo == "r"
+        assert e.source_ref == "main"
+        assert e.source_commit == "deadbeef"
+        assert e.note == "n"
+        assert e.at is not None
+
+    def test_rule_event_actor_defaults_to_nobody(self, storage):
+        rid = storage.insert_rule(RuleRow(id=0, title="ev2", keywords="kw"))
+        storage.insert_rule_event(rid, "created", "")
+        events = storage.list_rule_events(rid)
+        assert events[0].actor == "nobody"
+
+    def test_list_rule_events_respects_limit(self, storage):
+        rid = storage.insert_rule(RuleRow(id=0, title="ev3", keywords="kw"))
+        for _ in range(3):
+            storage.insert_rule_event(rid, "reinforced", "bob")
+        assert len(storage.list_rule_events(rid, limit=2)) == 2
+        assert len(storage.list_rule_events(rid)) == 3
+
     # ---- Relations ------------------------------------------------------
 
     def test_insert_relation_and_list_outgoing_incoming(self, storage):

@@ -32,7 +32,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # Original v1 surface — tools still hold their SQL directly until the
     # tool-side refactor lands (a follow-up step of MCM2-02).
     "db.py":               7,
-    "schema.py":           36,  # +3 for v6→v7 watcher-cascade column ALTERs
+    "schema.py":           48,  # +12 for issue #10 v7→v8 provenance migration (content/created_by/updated_by ALTERs, rules_fts drop/create/rebuild, 3 trigger recreates, rule_events table + index)
     "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
     "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
@@ -41,14 +41,14 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "tools/session.py":    0,   # MCM2-02 rewire complete
     # MCM2-02 embedded SQLite adapter — SQL extracted out of tools into the
     # repository. These files are the new authoritative home for SQL.
-    "adapters/sqlite/storage.py":  44,  # +7 id-preserving inserts, +4 iter, +2 handoff candidate queries, baseline 31
+    "adapters/sqlite/storage.py":  46,  # +7 id-preserving inserts, +4 iter, +2 handoff candidate queries, baseline 31, +2 issue #10 rule_events (insert + list)
     "adapters/sqlite/search.py":   5,   # +2 for MCM2-07 search_plugin (FTS + LIKE)
     "adapters/sqlite/counters.py": 4,
     # MCM2-08 Postgres adapter — first non-embedded reference. SQL count
     # matches SqliteStorage's contract surface minus the FTS-table reads
     # (Postgres folds FTS into the same row via tsvector generated columns).
     # +7 MCM2-11 id-preserving inserts, +4 iter, +1 bump_sequences.
-    "adapters/postgres/storage.py": 45,
+    "adapters/postgres/storage.py": 47,  # +2 issue #10 rule_events (insert + list)
     # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
     "adapters/postgres/counters.py": 5,
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,

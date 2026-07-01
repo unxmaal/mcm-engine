@@ -26,7 +26,7 @@ htmlcov/
 *.db-shm
 *.db-wal
 *.log
-.claude/mcp-enforcement-state.json
+.claude/mcp-enforcement*
 
 # OS
 .DS_Store
@@ -34,3 +34,5 @@ Thumbs.db
 
 # Terraform
 terraform/aws/.terraform/
+
+

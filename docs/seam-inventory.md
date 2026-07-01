@@ -153,6 +153,10 @@ The entire file is SQL. Notable sections:
   DROP TRIGGER, DROP TABLE, CREATE VIRTUAL TABLE, INSERT INTO {fts}('rebuild')
   + 12 CREATE TRIGGER. The `_MIGRATIONS` list-of-callables pattern (line 407)
   is engine-side, not adapter-side.
+- **Migration v7→v8** (issue #10): adds `rules.content` / `created_by` /
+  `updated_by`, drops+recreates `rules_fts` with the `content` column and
+  its three sync triggers, and creates the append-only `rule_events` audit
+  table (+ index). SQL-site count for `schema.py`: 36 → 48.
 - **`migrate_core`** (lines 417-455): INSERT/SELECT/UPDATE on
   `_mcm_versions`. Idempotent boot path.
 - **`migrate_plugin`** (lines 458-478): same shape for plugin schemas.
@@ -511,6 +515,23 @@ These are deliberately NOT on the `StorageBackend` Protocol (no contract-version
 bump): `session_handoff` calls them best-effort inside `try/except`, per the
 "adapters declare honest capabilities, callers degrade gracefully" rule. A
 backend lacking them simply surfaces no suggestions.
+
+## Addendum — rule provenance events (issue #10)
+
+Both storage adapters gained two SQL sites for the append-only `rule_events`
+audit log (`adapters/sqlite/storage.py`: 44 → 46; `adapters/postgres/storage.py`:
+45 → 47):
+
+- `insert_rule_event(rule_id, event_type, actor, ...)` — `INSERT INTO rule_events
+  (...) VALUES (...)`. Emitted from the tool layer (`add_rule` / `sync_rules` /
+  `reinforce_rule` / `promote_to_rule`), so bulk paths (migrate CLI, watcher)
+  that call `insert_rule` directly do not invent history.
+- `list_rule_events(rule_id, limit=None)` — `SELECT ... FROM rule_events WHERE
+  rule_id = ? ORDER BY at DESC`. `rule_id` is intentionally not a foreign key —
+  events outlive their rule.
+
+These ARE on the `StorageBackend` Protocol (additive methods, no
+CONTRACT_VERSION bump — same precedent as the Phase 1 `iter_*` additions).
 
 
 ## LODESTONE additive surface (POC)

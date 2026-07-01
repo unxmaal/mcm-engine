@@ -18,6 +18,7 @@ from ...backends import (
     KnowledgeRow,
     NegativeRow,
     RelationRow,
+    RuleEventRow,
     RuleRow,
     SessionRow,
     SnapshotRow,
@@ -110,6 +111,24 @@ def _rule_from_row(r: sqlite3.Row) -> RuleRow:
         archived_at=_parse_dt(r["archived_at"]),
         created_at=_parse_dt(r["created_at"]),
         updated_at=_parse_dt(r["updated_at"]),
+        content=r["content"],
+        created_by=r["created_by"],
+        updated_by=r["updated_by"],
+    )
+
+
+def _rule_event_from_row(r: sqlite3.Row) -> RuleEventRow:
+    return RuleEventRow(
+        id=r["id"],
+        rule_id=r["rule_id"],
+        event_type=r["event_type"],
+        actor=r["actor"],
+        at=_parse_dt(r["at"]),
+        content_hash=r["content_hash"],
+        source_repo=r["source_repo"],
+        source_ref=r["source_ref"],
+        source_commit=r["source_commit"],
+        note=r["note"],
     )
 
 
@@ -329,18 +348,22 @@ class SqliteStorage:
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO rules "
-                "(id, title, keywords, file_path, description, category, content_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, title, keywords, file_path, description, category, content_hash, "
+                " content, created_by, updated_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.title, row.keywords, row.file_path, row.description,
-                 row.category, row.content_hash),
+                 row.category, row.content_hash, row.content, row.created_by,
+                 row.updated_by),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO rules "
-                "(title, keywords, file_path, description, category, content_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(title, keywords, file_path, description, category, content_hash, "
+                " content, created_by, updated_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.title, row.keywords, row.file_path, row.description,
-                 row.category, row.content_hash),
+                 row.category, row.content_hash, row.content, row.created_by,
+                 row.updated_by),
             )
         self._db.commit()
         return cur.lastrowid
@@ -349,7 +372,7 @@ class SqliteStorage:
         if not fields:
             return
         allowed = {"title", "keywords", "file_path", "description", "category",
-                   "content_hash"}
+                   "content_hash", "content", "created_by", "updated_by"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"unknown rule fields: {sorted(bad)}")
@@ -384,6 +407,44 @@ class SqliteStorage:
             (rule_id,),
         )
         self._db.commit()
+
+    def insert_rule_event(
+        self,
+        rule_id: int,
+        event_type: str,
+        actor: str,
+        *,
+        content_hash: Optional[str] = None,
+        source_repo: Optional[str] = None,
+        source_ref: Optional[str] = None,
+        source_commit: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> int:
+        cur = self._db.execute_write(
+            "INSERT INTO rule_events "
+            "(rule_id, event_type, actor, content_hash, source_repo, source_ref, "
+            " source_commit, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (rule_id, event_type, actor or "nobody", content_hash, source_repo,
+             source_ref, source_commit, note),
+        )
+        self._db.commit()
+        return cur.lastrowid
+
+    def list_rule_events(
+        self, rule_id: int, *, limit: Optional[int] = None,
+        caller: Optional[str] = None,
+    ) -> list[RuleEventRow]:
+        sql = (
+            "SELECT * FROM rule_events WHERE rule_id = ? "
+            "ORDER BY at DESC, id DESC"
+        )
+        params: tuple[Any, ...] = (rule_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (rule_id, limit)
+        rows = self._db.execute(sql, params).fetchall()
+        return [_rule_event_from_row(r) for r in rows]
 
     # ---- Relations ----
 
