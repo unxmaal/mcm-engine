@@ -273,7 +273,9 @@ def build_asgi_app(server: Any, *, transport: str = "sse") -> Starlette:
         Middleware(BearerTokenMiddleware, server=server),
     ]
 
-    inner_lifespan = getattr(mcp_app, "lifespan", None)
+    inner_lifespan = getattr(mcp_app, "lifespan", None) or getattr(
+        getattr(mcp_app, "router", None), "lifespan_context", None
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(app):

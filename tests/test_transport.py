@@ -10,7 +10,9 @@ binding a port.
 """
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -84,3 +86,79 @@ def test_streamable_http_transport_mounts(server):
     client = TestClient(app)
     response = client.get("/healthz")
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Inner-lifespan resolution. Some FastMCP transports (streamable-http) expose
+# `lifespan = None` on the sub-app and keep the real lifespan on
+# `router.lifespan_context`. build_asgi_app must run that inner lifespan, or
+# the transport's session-manager task group never starts and requests fail
+# at runtime ("task group is not initialized"). These fakes drive only the
+# outer Starlette lifespan (via `with TestClient(app)`), so the mounted app's
+# ASGI __call__ is never invoked.
+# ---------------------------------------------------------------------------
+
+
+class _FakeMCPApp:
+    """Minimal ASGI-shaped stand-in for a FastMCP transport sub-app."""
+
+    def __init__(self, *, lifespan, lifespan_context):
+        self.lifespan = lifespan
+        self.router = SimpleNamespace(lifespan_context=lifespan_context)
+
+    async def __call__(self, scope, receive, send):  # pragma: no cover
+        pass
+
+
+def _record_lifespan(log, tag):
+    @contextlib.asynccontextmanager
+    async def _cm(app):
+        log.append(f"{tag}:start")
+        yield
+        log.append(f"{tag}:stop")
+
+    return _cm
+
+
+def test_inner_lifespan_falls_back_to_router_lifespan_context(server, monkeypatch):
+    """When mcp_app.lifespan is None, the wrapper must run the inner lifespan
+    found on router.lifespan_context (the streamable-http shape)."""
+    log: list[str] = []
+    fake = _FakeMCPApp(lifespan=None, lifespan_context=_record_lifespan(log, "inner"))
+    monkeypatch.setattr(server.mcp, "sse_app", lambda: fake)
+
+    app = build_asgi_app(server, transport="sse")
+    with TestClient(app):
+        pass
+
+    assert log == ["inner:start", "inner:stop"], (
+        "router.lifespan_context fallback did not run — the inner MCP lifespan "
+        "was skipped"
+    )
+
+
+def test_inner_lifespan_prefers_direct_lifespan_attr(server, monkeypatch):
+    """When mcp_app.lifespan is set, it wins over router.lifespan_context."""
+    log: list[str] = []
+    fake = _FakeMCPApp(
+        lifespan=_record_lifespan(log, "direct"),
+        lifespan_context=_record_lifespan(log, "router"),
+    )
+    monkeypatch.setattr(server.mcp, "sse_app", lambda: fake)
+
+    app = build_asgi_app(server, transport="sse")
+    with TestClient(app):
+        pass
+
+    assert log == ["direct:start", "direct:stop"]
+
+
+def test_lifespan_noop_safe_when_no_inner_lifespan(server, monkeypatch):
+    """With neither lifespan nor router.lifespan_context, startup/shutdown
+    still succeed (the wrapper just yields)."""
+    fake = _FakeMCPApp(lifespan=None, lifespan_context=None)
+    monkeypatch.setattr(server.mcp, "sse_app", lambda: fake)
+
+    app = build_asgi_app(server, transport="sse")
+    with TestClient(app):
+        pass  # entering + exiting the lifespan must not raise
