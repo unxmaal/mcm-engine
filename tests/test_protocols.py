@@ -145,6 +145,8 @@ def test_storage_backend_is_a_protocol(StorageBackend):
     "list_rules_with_file_paths",
     "soft_delete_rule",
     "restore_rule",
+    "insert_rule_event",
+    "list_rule_events",
     # Relations
     "insert_relation",
     "list_outgoing_relations",

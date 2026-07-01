@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from ..backends import EntityType, RuleRow
 from ..db import log
 from ..files.watcher import compute_content_hash
+from ..principal import resolve_actor
 from ..rules_links import build_wikilink_relations, extract_wikilinks
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
@@ -43,7 +44,12 @@ def _parse_rule_file(path: Path) -> dict:
     except (OSError, UnicodeDecodeError):
         return {}
 
-    result: dict[str, str] = {"content_hash": compute_content_hash(content)}
+    # `content` holds the full markdown body (issue #10) — distinct from
+    # `description`, which stays the leading-paragraph FTS signal below.
+    result: dict[str, str] = {
+        "content_hash": compute_content_hash(content),
+        "content": content,
+    }
     lines = content.split("\n")
 
     for line in lines:
@@ -131,20 +137,44 @@ def register_rules_tools(
         content: str = "",
         category: str = "",
         file_path: str = "",
+        actor: str = "",
+        source_repo: str = "",
+        source_ref: str = "",
+        source_commit: str = "",
     ) -> str:
-        """Create or index a rule file."""
+        """Create or index a rule file. `actor` (falling back to MCM_ACTOR,
+        then the transport principal, then 'nobody') is recorded as the
+        author on the row and in the rule_events audit log (issue #10)."""
         tracker.record_call("add_rule", topic=title)
         tracker.record_store()
+        who = resolve_actor(actor)
 
         existing = storage.find_rule_by_title(title)
         if existing is not None:
-            storage.update_rule(
-                existing.id,
-                keywords=keywords,
-                description=(content[:500] if content else ""),
-                category=category,
-                file_path=file_path or existing.file_path,
-            )
+            fields: dict = {
+                "keywords": keywords,
+                "description": (content[:500] if content else ""),
+                "category": category,
+                "file_path": file_path or existing.file_path,
+                "updated_by": who,
+            }
+            # Only touch the full body when the caller supplied one, so a
+            # keyword-only re-index doesn't wipe stored content. A material
+            # change (new body != stored body) emits an `updated` event;
+            # re-adding identical content is an idempotent no-op event-wise.
+            material = bool(content) and content != (existing.content or "")
+            if content:
+                fields["content"] = content
+                fields["content_hash"] = compute_content_hash(content)
+            storage.update_rule(existing.id, **fields)
+            if material:
+                storage.insert_rule_event(
+                    existing.id, "updated", who,
+                    content_hash=fields.get("content_hash"),
+                    source_repo=source_repo or None,
+                    source_ref=source_ref or None,
+                    source_commit=source_commit or None,
+                )
             return _with_nudge(
                 f"Updated existing rule: {title} (id={existing.id})",
                 tracker, title,
@@ -185,7 +215,7 @@ def register_rules_tools(
             content_hash = compute_content_hash(file_content)
 
         description = content[:500] if content else ""
-        storage.insert_rule(RuleRow(
+        rule_id = storage.insert_rule(RuleRow(
             id=0,
             title=title,
             keywords=keywords,
@@ -193,7 +223,17 @@ def register_rules_tools(
             description=description or None,
             category=category or None,
             content_hash=content_hash,
+            content=content or None,
+            created_by=who,
+            updated_by=who,
         ))
+        storage.insert_rule_event(
+            rule_id, "created", who,
+            content_hash=content_hash,
+            source_repo=source_repo or None,
+            source_ref=source_ref or None,
+            source_commit=source_commit or None,
+        )
 
         msg = f"Rule added: {title}"
         if actual_path:
@@ -231,9 +271,11 @@ def register_rules_tools(
         title: str,
         category: str = "",
         keywords: str = "",
+        actor: str = "",
     ) -> str:
         """Promote a DB entry to a persistent rule file."""
         tracker.record_call("promote_to_rule", topic=title)
+        who = resolve_actor(actor)
 
         try:
             etype = EntityType(source_type)
@@ -279,18 +321,39 @@ def register_rules_tools(
                 f"Cannot promote source_type '{source_type}' to a rule.", tracker,
             )
 
-        return add_rule(
+        result = add_rule(
             title=title,
             keywords=keywords,
             content=content,
             category=category,
+            actor=who,
         )
+        # add_rule already emitted `created`; add the `promoted` event so
+        # the audit trail records the DB origin.
+        promoted = storage.find_rule_by_title(title)
+        if promoted is not None:
+            storage.insert_rule_event(
+                promoted.id, "promoted", who,
+                note=f"{source_type}:{source_id}",
+            )
+        return result
 
     @mcp.tool()
-    def sync_rules() -> str:
+    def sync_rules(
+        actor: str = "",
+        source_repo: str = "",
+        source_ref: str = "",
+        source_commit: str = "",
+    ) -> str:
         """Re-index all .md files. Upserts DB entries; archives orphans
-        (soft-delete) for files that no longer exist."""
+        (soft-delete) for files that no longer exist. Every state change
+        emits a rule_events row attributed to `actor` (issue #10), with
+        source_repo/ref/commit propagated to each event."""
         tracker.record_call("sync_rules")
+        who = resolve_actor(actor)
+        src_repo = source_repo or None
+        src_ref = source_ref or None
+        src_commit = source_commit or None
 
         md_files: list[Path] = []
         missing_paths: list[str] = []
@@ -322,6 +385,7 @@ def register_rules_tools(
             keywords = parsed.get("keywords", "")
             category = parsed.get("category", "")
             description = parsed.get("description", "")
+            content = parsed.get("content")
             content_hash = parsed.get("content_hash")
 
             existing = storage.find_rule_by_file_path(rel_path)
@@ -333,13 +397,29 @@ def register_rules_tools(
                     description=description,
                     category=category,
                     content_hash=content_hash,
+                    content=content,
+                    updated_by=who,
                 )
                 # Files-win: a reappeared file un-archives its row.
                 if existing.archived:
                     storage.restore_rule(existing.id)
+                    storage.insert_rule_event(
+                        existing.id, "restored", who,
+                        content_hash=content_hash, source_repo=src_repo,
+                        source_ref=src_ref, source_commit=src_commit,
+                    )
+                # A changed body (content_hash differs from the stored one)
+                # is a material update worth an event; an unchanged re-sync
+                # is not.
+                if content_hash and content_hash != existing.content_hash:
+                    storage.insert_rule_event(
+                        existing.id, "updated", who,
+                        content_hash=content_hash, source_repo=src_repo,
+                        source_ref=src_ref, source_commit=src_commit,
+                    )
                 updated += 1
             else:
-                storage.insert_rule(RuleRow(
+                rid = storage.insert_rule(RuleRow(
                     id=0,
                     title=title,
                     keywords=keywords,
@@ -347,7 +427,15 @@ def register_rules_tools(
                     description=description or None,
                     category=category or None,
                     content_hash=content_hash,
+                    content=content,
+                    created_by=who,
+                    updated_by=who,
                 ))
+                storage.insert_rule_event(
+                    rid, "created", who,
+                    content_hash=content_hash, source_repo=src_repo,
+                    source_ref=src_ref, source_commit=src_commit,
+                )
                 indexed += 1
 
         # Soft-delete orphans (rules whose backing files are gone). Skip
@@ -361,6 +449,11 @@ def register_rules_tools(
             full = Path(fp) if Path(fp).is_absolute() else project_root / fp
             if not full.exists():
                 storage.soft_delete_rule(r.id)
+                storage.insert_rule_event(
+                    r.id, "archived", who,
+                    source_repo=src_repo, source_ref=src_ref,
+                    source_commit=src_commit,
+                )
                 archived += 1
 
         # Turn [[slug]] wikilinks into rule->rule relations. Shared with the
@@ -375,15 +468,20 @@ def register_rules_tools(
         )
 
     @mcp.tool()
-    def reinforce_rule(rule_id: int) -> str:
-        """Deliberately reinforce a rule — signals 'still correct'."""
+    def reinforce_rule(rule_id: int, actor: str = "") -> str:
+        """Deliberately reinforce a rule — signals 'still correct'. Also the
+        upgrade path for a rule first imported by 'nobody': a named actor's
+        reinforcement gives the row a signed-off event even though
+        created_by stays unchanged (issue #10)."""
         tracker.record_call("reinforce_rule")
+        who = resolve_actor(actor)
         row = storage.find_by_id(EntityType.RULE, rule_id)
         if row is None:
             return _with_nudge(f"Rule {rule_id} not found.", tracker)
 
         counters.increment(EntityType.RULE, rule_id, "reinforcement_count")
         counters.increment(EntityType.RULE, rule_id, "last_hit_at")
+        storage.insert_rule_event(rule_id, "reinforced", who)
         snap = counters.get(EntityType.RULE, rule_id)
         count = snap.get("reinforcement_count", 0)
         return _with_nudge(

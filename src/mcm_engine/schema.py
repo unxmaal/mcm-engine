@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 7
+CORE_VERSION = 8
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -149,6 +149,7 @@ END;
 
 -- External rules (file-backed knowledge)
 -- v7: content_hash + archived columns support the watcher cascade (MCM2-23).
+-- v8: content (full body) + created_by/updated_by attribution (issue #10).
 CREATE TABLE IF NOT EXISTS rules (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
@@ -164,11 +165,18 @@ CREATE TABLE IF NOT EXISTS rules (
     archived INTEGER DEFAULT 0,
     archived_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now')),
+    content TEXT,
+    created_by TEXT,
+    updated_by TEXT
 );
 
+-- The FTS column is named `content` to match the rules.content column
+-- (external-content FTS5 reads each column from the like-named base
+-- column). The bare `content` column and the `content='rules'` option
+-- are disambiguated by the `=` — verified against sqlite fts5.
 CREATE VIRTUAL TABLE IF NOT EXISTS rules_fts USING fts5(
-    title, keywords, description, category,
+    title, keywords, description, category, content,
     content='rules',
     content_rowid='id',
     tokenize='porter unicode61'
@@ -176,21 +184,37 @@ CREATE VIRTUAL TABLE IF NOT EXISTS rules_fts USING fts5(
 
 -- Triggers: rules FTS sync
 CREATE TRIGGER IF NOT EXISTS rules_ai AFTER INSERT ON rules BEGIN
-    INSERT INTO rules_fts(rowid, title, keywords, description, category)
-    VALUES (new.id, new.title, new.keywords, new.description, new.category);
+    INSERT INTO rules_fts(rowid, title, keywords, description, category, content)
+    VALUES (new.id, new.title, new.keywords, new.description, new.category, new.content);
 END;
 
 CREATE TRIGGER IF NOT EXISTS rules_ad AFTER DELETE ON rules BEGIN
-    INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category)
-    VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category);
+    INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category, content)
+    VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category, old.content);
 END;
 
 CREATE TRIGGER IF NOT EXISTS rules_au AFTER UPDATE ON rules BEGIN
-    INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category)
-    VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category);
-    INSERT INTO rules_fts(rowid, title, keywords, description, category)
-    VALUES (new.id, new.title, new.keywords, new.description, new.category);
+    INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category, content)
+    VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category, old.content);
+    INSERT INTO rules_fts(rowid, title, keywords, description, category, content)
+    VALUES (new.id, new.title, new.keywords, new.description, new.category, new.content);
 END;
+
+-- Append-only audit log of rule state changes (issue #10). rule_id is
+-- intentionally NOT a foreign key: events outlive the rule they describe.
+CREATE TABLE IF NOT EXISTS rule_events (
+    id INTEGER PRIMARY KEY,
+    rule_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'nobody',
+    at TEXT NOT NULL DEFAULT (datetime('now')),
+    content_hash TEXT,
+    source_repo TEXT,
+    source_ref TEXT,
+    source_commit TEXT,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rule_events_rule_at ON rule_events (rule_id, at DESC);
 
 -- Typed relationships between knowledge entries
 CREATE TABLE IF NOT EXISTS relations (
@@ -427,6 +451,80 @@ def _migrate_v6_to_v7(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v7_to_v8(db: KnowledgeDB) -> None:
+    """v7 -> v8: rule provenance + full content (issue #10).
+
+    Adds rules.content / created_by / updated_by, rebuilds rules_fts with
+    the content column (and its triggers), and creates the append-only
+    rule_events audit table. Existing rules get NULL content/attribution —
+    no backfill; pre-v8 history is honestly unattributed. No rule_events
+    rows are invented for existing rules.
+    """
+    if not _has_column(db, "rules", "content"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN content TEXT")
+        log("Migration v7->v8: added rules.content")
+    if not _has_column(db, "rules", "created_by"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN created_by TEXT")
+        log("Migration v7->v8: added rules.created_by")
+    if not _has_column(db, "rules", "updated_by"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN updated_by TEXT")
+        log("Migration v7->v8: added rules.updated_by")
+
+    # Rebuild rules_fts to include the content column. FTS5 vtables can't
+    # be ALTERed to add a column — drop triggers + vtable, recreate with
+    # content, rebuild from the (now content-bearing) rules table. The
+    # triggers MUST be recreated with the new column list or live
+    # inserts/updates would silently stop indexing content.
+    for suffix in ("ai", "ad", "au"):
+        db.execute_write(f"DROP TRIGGER IF EXISTS rules_{suffix}")
+    db.execute_write("DROP TABLE IF EXISTS rules_fts")
+    db.execute_write(
+        "CREATE VIRTUAL TABLE rules_fts USING fts5("
+        "  title, keywords, description, category, content,"
+        "  content='rules',"
+        "  content_rowid='id',"
+        "  tokenize='porter unicode61'"
+        ")"
+    )
+    db.execute_write("INSERT INTO rules_fts(rules_fts) VALUES('rebuild')")
+    db.execute_write("""CREATE TRIGGER rules_ai AFTER INSERT ON rules BEGIN
+        INSERT INTO rules_fts(rowid, title, keywords, description, category, content)
+        VALUES (new.id, new.title, new.keywords, new.description, new.category, new.content);
+    END""")
+    db.execute_write("""CREATE TRIGGER rules_ad AFTER DELETE ON rules BEGIN
+        INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category, content)
+        VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category, old.content);
+    END""")
+    db.execute_write("""CREATE TRIGGER rules_au AFTER UPDATE ON rules BEGIN
+        INSERT INTO rules_fts(rules_fts, rowid, title, keywords, description, category, content)
+        VALUES ('delete', old.id, old.title, old.keywords, old.description, old.category, old.content);
+        INSERT INTO rules_fts(rowid, title, keywords, description, category, content)
+        VALUES (new.id, new.title, new.keywords, new.description, new.category, new.content);
+    END""")
+    log("Migration v7->v8: rebuilt rules_fts with content column")
+
+    # Append-only audit log. CREATE IF NOT EXISTS is idempotent — already
+    # applied by CORE_SCHEMA on fresh installs.
+    db.execute_write("""CREATE TABLE IF NOT EXISTS rule_events (
+        id INTEGER PRIMARY KEY,
+        rule_id INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT 'nobody',
+        at TEXT NOT NULL DEFAULT (datetime('now')),
+        content_hash TEXT,
+        source_repo TEXT,
+        source_ref TEXT,
+        source_commit TEXT,
+        note TEXT
+    )""")
+    db.execute_write(
+        "CREATE INDEX IF NOT EXISTS idx_rule_events_rule_at "
+        "ON rule_events (rule_id, at DESC)"
+    )
+    log("Migration v7->v8: created rule_events table")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -435,6 +533,7 @@ _MIGRATIONS = [
     (4, 5, _migrate_v4_to_v5),
     (5, 6, _migrate_v5_to_v6),
     (6, 7, _migrate_v6_to_v7),
+    (7, 8, _migrate_v7_to_v8),
 ]
 
 
