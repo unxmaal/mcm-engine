@@ -19,6 +19,7 @@ from ..backends import (
     SearchHit,
     StorageBackend,
 )
+from ..db import log
 from ..scoring import compose_rank, compose_rank_pinned_only
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
@@ -233,9 +234,16 @@ def _scope_block(
     top = scored[:limit]
 
     if bump_counters and etype in (EntityType.KNOWLEDGE, EntityType.RULE):
+        # Hit-count tracking is best-effort telemetry. Under write-lock
+        # contention (concurrent writer, WAL checkpoint) counters.increment's
+        # commit re-raises "database is locked" — that must never take down the
+        # read path. Swallow write failures so search always returns results.
         for _, _, eid in top:
-            counters.increment(etype, eid, "hit_count")
-            counters.increment(etype, eid, "last_hit_at")
+            try:
+                counters.increment(etype, eid, "hit_count")
+                counters.increment(etype, eid, "last_hit_at")
+            except Exception as e:
+                log(f"search: hit-count bump skipped for {etype.name} #{eid} ({e})")
 
     return [formatted for _, formatted, _ in top]
 
