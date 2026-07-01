@@ -164,3 +164,31 @@ def test_archived_knowledge_not_filtered(wired):
     wired["storage"].soft_delete_rule(wired["rule_id"])
     result = wired["search"](query="needle-token", scope="knowledge")
     assert "[KNOWLEDGE/" in result
+
+
+# ---------------------------------------------------------------------------
+# "database is locked" regression — a locked hit-count bump must never take
+# down the read path. The bump is best-effort telemetry; a write-lock from a
+# concurrent writer (or WAL checkpoint) previously propagated out of
+# counters.increment's commit and failed the entire search.
+# ---------------------------------------------------------------------------
+
+
+def test_search_survives_locked_counter_bump(wired, monkeypatch):
+    import sqlite3
+
+    from mcm_engine.adapters.sqlite.counters import SqliteCounters
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(SqliteCounters, "increment", boom)
+
+    # Bumped scopes (KNOWLEDGE, RULE) must still return results, not raise.
+    result = wired["search"](query="needle-token")
+    assert "[KNOWLEDGE/" in result
+    assert "[RULE]" in result
+
+    # And when the query only targets a bumped scope.
+    rules_only = wired["search"](query="needle-token", scope="rules")
+    assert "[RULE]" in rules_only
