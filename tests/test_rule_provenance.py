@@ -204,6 +204,48 @@ def test_promote_emits_promoted_with_note(wired):
     assert promoted[0].actor == "alice"
 
 
+# ---- read_rule DB fallback (issue #10 pod case) -------------------------
+
+
+def test_read_rule_prefers_file_on_disk(wired):
+    wired["mcp"]["add_rule"](title="OnDisk", keywords="kw", content="disk body")
+    row = wired["storage"].find_rule_by_title("OnDisk")
+    out = wired["mcp"]["read_rule"](row.file_path)
+    # The on-disk file carries the generated markdown (title header + body).
+    assert "# OnDisk" in out
+    assert "disk body" in out
+
+
+def test_read_rule_falls_back_to_db_content_when_file_absent(wired):
+    # A row whose backing file does not exist on disk — the pod deployment
+    # case where rules were loaded via add_rule but there's no filesystem.
+    wired["storage"].insert_rule(RuleRow(
+        id=0, title="Ghost", keywords="kw",
+        file_path="rules/ghost-never-written.md",
+        content="the body only lives in the database",
+    ))
+    out = wired["mcp"]["read_rule"]("rules/ghost-never-written.md")
+    assert out.startswith("the body only lives in the database")
+
+
+def test_read_rule_db_fallback_increments_hit_count(wired):
+    rid = wired["storage"].insert_rule(RuleRow(
+        id=0, title="GhostHits", keywords="kw",
+        file_path="rules/ghost-hits.md", content="body",
+    ))
+    wired["mcp"]["read_rule"]("rules/ghost-hits.md")
+    assert wired["storage"].find_by_id(EntityType.RULE, rid).hit_count == 1
+
+
+def test_read_rule_not_found_when_no_file_and_no_content(wired):
+    wired["storage"].insert_rule(RuleRow(
+        id=0, title="Empty", keywords="kw",
+        file_path="rules/empty.md", content=None,
+    ))
+    out = wired["mcp"]["read_rule"]("rules/empty.md")
+    assert "not found" in out.lower()
+
+
 # ---- events outlive their rule (no FK cascade) --------------------------
 
 

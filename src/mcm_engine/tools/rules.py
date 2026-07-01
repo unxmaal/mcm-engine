@@ -244,25 +244,33 @@ def register_rules_tools(
 
     @mcp.tool()
     def read_rule(file_path: str) -> str:
-        """Read a rule file's contents. Increments hit_count for tracking."""
+        """Read a rule's contents. Prefers the file on disk; when the file
+        is absent (e.g. a pod deployment with no filesystem for rules loaded
+        via add_rule), falls back to the full body stored in rules.content
+        (issue #10). Increments hit_count for tracking in either case."""
         tracker.record_call("read_rule", topic=file_path)
 
         fp = Path(file_path)
         full = fp if fp.is_absolute() else project_root / file_path
-        if not full.exists():
-            return _with_nudge(f"Rule file not found: {file_path}", tracker)
-
         row = storage.find_rule_by_file_path(file_path)
-        if row is not None:
+
+        if full.exists():
+            try:
+                content = full.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                return _with_nudge(f"Error reading {file_path}: {e}", tracker)
+            if row is not None:
+                counters.increment(EntityType.RULE, row.id, "hit_count")
+                counters.increment(EntityType.RULE, row.id, "last_hit_at")
+            return _with_nudge(content, tracker, file_path)
+
+        # No file on disk — serve the DB copy of the body if we have one.
+        if row is not None and row.content:
             counters.increment(EntityType.RULE, row.id, "hit_count")
             counters.increment(EntityType.RULE, row.id, "last_hit_at")
+            return _with_nudge(row.content, tracker, file_path)
 
-        try:
-            content = full.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            return _with_nudge(f"Error reading {file_path}: {e}", tracker)
-
-        return _with_nudge(content, tracker, file_path)
+        return _with_nudge(f"Rule file not found: {file_path}", tracker)
 
     @mcp.tool()
     def promote_to_rule(
