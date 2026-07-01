@@ -140,10 +140,12 @@ an isolated venv).
 
 **Behavior:**
 - Counts every `Edit`, `Write`, `NotebookEdit`, `Bash` call.
-- At **8** built-in calls without a compliance MCP read, emits a warning.
-- At **20** built-in calls, BLOCKS `Edit` / `Write` / `NotebookEdit` (Bash is exempt — bash-heavy work is too often legitimate).
+- At **3** built-in calls without a compliance MCP read, emits a warning. The warn is phrased as a directive ("STOP. The next action should be `search`"), not as a runway counter — agents reliably ignore "you have N calls left" framing.
+- At **6** file-mutating calls (`Edit` / `Write` / `NotebookEdit` / `apply_patch`), BLOCKS the call. Bash is exempt from the block — bash-heavy work is too often legitimate — but bash calls still contribute to the warn threshold.
 - A compliance MCP read on ANY server name (`search`, `report_error`, `sync_rules`, `session_start`, `get_resume_context`, `read_rule`) RESETS the counter.
 - Pure-write MCP tools (`add_knowledge`, `add_rule`, `pin_item`, etc.) do NOT reset the counter — recording after the fact doesn't excuse skipping the look-first step.
+
+The tight thresholds (3 / 6) are deliberate. Earlier values (8 / 20) gave the agent enough rope to do a full mini-task — including describing internal systems from pretrained guesswork — before any nudge fired. Three built-ins is roughly "one sub-task in"; six edits without a single look is a clear contract violation. Tune via `WARN_THRESHOLD` / `BLOCK_THRESHOLD` in `src/mcm_engine/hooks/mcp_enforcement.py` if your usage shape differs.
 
 **State**: `<project>/.claude/mcp-enforcement-state.json`, keyed by the
 agent harness's per-session UUID. Entries older than 30 days are pruned
@@ -204,28 +206,57 @@ For opencode users, replace the `mcp__mcm-engine__` prefix with
 `mcm-engine_` throughout (opencode's MCP tool naming convention):
 
 ```markdown
-## MCP-first protocol
+## MCP-first protocol — non-negotiable
 
 This project uses mcm-engine via the `mcm-engine` MCP server (see
-`.mcp.json`). Use the knowledge layer BEFORE editing, NOT after.
+`.mcp.json`). The knowledge base contains everything you do not know
+about this organization: account IDs, identities, permission sets,
+team responsibilities, system topology, repo locations, conventions,
+prior incidents, prior decisions. Pretrained knowledge does not cover
+it. Treat the KB as authoritative and yourself as ignorant until you
+have searched.
 
-Look-first tools (these RESET the enforcement counter):
+### Required before *every* substantive action
+
+Before any of the following, you MUST call `mcp__mcm-engine__search`
+with a query relevant to the topic:
+
+1. Any `Edit` / `Write` / `NotebookEdit`.
+2. Any non-trivial `Bash` — anything beyond `ls`, `cat`, `git status`,
+   `pwd`, or equivalent navigation.
+3. **Any factual claim about this organization's systems, projects,
+   infrastructure, conventions, people, or history.** This is the
+   most-missed rule. If you are about to write a sentence describing
+   how something works here, search first.
+
+If a search returns nothing relevant, say so explicitly:
+*"I checked the knowledge base; nothing matched. Working from
+inference — please verify."* Confidently asserting an
+organization-specific fact from pretrained memory is the failure mode
+this protocol exists to catch.
+
+### Look-first tools (these RESET the enforcement counter)
+
 - `mcp__mcm-engine__search` — first lookup for anything
 - `mcp__mcm-engine__report_error` — before any fix attempt
 - `mcp__mcm-engine__sync_rules` — to confirm current rule set
 - `mcp__mcm-engine__session_start` — at the top of every session
+- `mcp__mcm-engine__get_resume_context` — when picking up prior work
+- `mcp__mcm-engine__read_rule` — when a rule file is named
 
-Write tools (record findings; do NOT reset the counter):
+### Write tools (record findings; do NOT reset the counter)
+
 - `mcp__mcm-engine__add_rule` — immediately after a fix is confirmed
 - `mcp__mcm-engine__add_knowledge` — for non-rule findings
 - `mcp__mcm-engine__add_negative` — for dead ends
 - `mcp__mcm-engine__session_handoff` — before ending
 
-The PreToolUse hook enforces this contract. At 8 built-in tool calls
-(Edit/Write/NotebookEdit/Bash) without a look-first call, you get a
-warning. At 20, Edit/Write/NotebookEdit are BLOCKED until you call one
-of the look-first tools above. Don't fight the hook — calling `search`
-is faster than the block.
+### The hook is a backstop
+
+A PreToolUse hook warns after 3 built-in calls without a look-first
+MCP read and blocks file mutators at 6. A warn means **you have
+already violated the rule** — the correct response is to call `search`
+immediately, not to keep editing until block.
 ```
 
 ## Configuration

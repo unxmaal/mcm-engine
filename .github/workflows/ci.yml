@@ -18,6 +18,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 concurrency:
@@ -160,18 +161,60 @@ jobs:
     runs-on: ubuntu-latest
     needs: embedded
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build image (smoke; not pushed)
-        run: docker build --load -t mcm-engine:ci-${{ github.sha }} .
+      - name: Log in to GHCR
+        # Push on default-branch pushes and tag pushes only; PR builds
+        # stay local to the runner for smoke verification.
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/mcm-engine
+          # Lowercase the owner segment — GHCR requires it.
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          TAGS="${IMAGE}:sha-${GITHUB_SHA::12}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TAGS="${TAGS},${IMAGE}:main"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAGS="${TAGS},${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest"
+          fi
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (and push on main/tags)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Run /healthz against the freshly-built image
+        # On PRs the image is loaded locally with the first tag from
+        # the list; on pushes the image is in GHCR but the local
+        # docker daemon doesn't have it, so pull the sha tag first.
         run: |
-          docker run -d --name mcm-engine-ci -p 18080:8080 \
-            mcm-engine:ci-${{ github.sha }}
+          IMAGE="${{ steps.tags.outputs.image }}:sha-${GITHUB_SHA::12}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            docker pull "$IMAGE"
+          fi
+          docker run -d --name mcm-engine-ci -p 18080:8080 "$IMAGE"
           for i in {1..15}; do
             if curl -sf http://127.0.0.1:18080/healthz; then
               docker stop mcm-engine-ci; exit 0

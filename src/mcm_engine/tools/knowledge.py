@@ -235,3 +235,67 @@ def register_knowledge_tools(
             return _with_nudge(f"{entry_type} entry {entry_id} not found.", tracker)
         storage.set_pinned(etype, entry_id, False)
         return _with_nudge(f"Unpinned {entry_type} #{entry_id}.", tracker)
+
+    @mcp.tool()
+    def kb_recall(
+        claim_id: int,
+        reason: str = "",
+        principal: str = "governance",
+    ) -> str:
+        """Hard-delete a stored claim and append to recall_log.
+
+        LODESTONE additive. The plan-of-record (lodestone-lite-plan.md
+        phase 4) frames recall as a single-store DELETE: the chart's
+        deployment has one Postgres, so a row delete plus an
+        append-only recall_log row is the whole story. No drill, no
+        manifest registry; those are deferred to plan.md.
+
+        Returns "NOT_FOUND" if the claim doesn't exist — never a
+        silent no-op. The recall_log row persists even after the
+        claim is gone.
+        """
+        tracker.record_call("kb_recall")
+
+        # Only the postgres adapter has the recall_log table; soft-
+        # archive (the SQLite adapter's primitive) is the fallback.
+        conn = getattr(storage, "_conn", None)
+        if conn is None or not hasattr(conn, "cursor"):
+            return _with_nudge(
+                "kb_recall requires the postgres storage backend.", tracker,
+            )
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, topic FROM knowledge WHERE id = %s",
+                    (claim_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    conn.rollback()
+                    return _with_nudge(
+                        f"NOT_FOUND: no claim with id={claim_id}.", tracker,
+                    )
+                topic = row["topic"] if hasattr(row, "keys") else row[1]
+
+                cur.execute(
+                    "INSERT INTO recall_log (claim_id, principal, reason) "
+                    "VALUES (%s, %s, %s)",
+                    (claim_id, principal or "governance", reason or None),
+                )
+                cur.execute("DELETE FROM knowledge WHERE id = %s", (claim_id,))
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _with_nudge(
+                f"kb_recall failed: {type(e).__name__}: {e}", tracker,
+            )
+
+        return _with_nudge(
+            f"Recalled claim #{claim_id} ('{topic}'). "
+            f"recall_log row written for principal={principal!r}.",
+            tracker,
+        )

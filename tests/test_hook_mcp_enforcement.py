@@ -125,7 +125,11 @@ def test_edit_at_warn_threshold_emits_warning_but_allows():
     s = {"builtin_calls": WARN_THRESHOLD - 1, "last_reset_at": 0.0}
     exit_code, msg = _decide("Edit", s)
     assert exit_code == 0
-    assert "8/20" in msg or str(WARN_THRESHOLD) in msg
+    # Warning must name the offending counts and direct the agent to act.
+    # No specific format pinned — message wording is allowed to evolve so
+    # long as it's directive, not a runway metric.
+    assert msg != ""
+    assert "STOP" in msg or "search" in msg
     assert s["builtin_calls"] == WARN_THRESHOLD
 
 

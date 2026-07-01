@@ -60,4 +60,15 @@ class TestPostgresStorage(StorageConformance):
         store.ensure_schema()
         # Each test gets a clean slate. The conformance asserts counts.
         store.truncate_all()
-        return store
+        try:
+            yield store
+        finally:
+            # Close the connection explicitly. Read methods on
+            # PostgresStorage do not commit/rollback, so an unclosed
+            # connection sits ``idle in transaction`` and blocks the
+            # next test's TRUNCATE on a table-level lock. Pre-existing
+            # latent race; cheap to neutralize at the fixture boundary.
+            try:
+                store._conn.close()
+            except Exception:
+                pass
