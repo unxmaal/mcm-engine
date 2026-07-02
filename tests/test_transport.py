@@ -162,3 +162,52 @@ def test_lifespan_noop_safe_when_no_inner_lifespan(server, monkeypatch):
     app = build_asgi_app(server, transport="sse")
     with TestClient(app):
         pass  # entering + exiting the lifespan must not raise
+
+
+# ---------------------------------------------------------------------------
+# DNS-rebinding allow-list must track the real bind host (Invalid Host header
+# regression): FastMCP auto-enables a localhost-only allow-list, so serving on
+# a LAN address rejected every non-loopback client with 421 until serve()
+# re-derived the allow-list from the bind host.
+# ---------------------------------------------------------------------------
+from mcm_engine.transport import (  # noqa: E402
+    _configure_transport_security,
+    _host_pattern,
+)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("192.168.8.88", "192.168.8.88:*"),
+        ("192.168.8.88:8080", "192.168.8.88:8080"),
+        ("host.local:*", "host.local:*"),
+        ("[::1]", "[::1]:*"),
+        ("[::1]:8080", "[::1]:8080"),
+        ("  ", None),
+    ],
+)
+def test_host_pattern_normalization(value, expected):
+    assert _host_pattern(value) == expected
+
+
+def test_configure_security_allows_explicit_lan_host(server):
+    _configure_transport_security(server, host="0.0.0.0", allowed_hosts=["192.168.8.88"])
+    ts = server.mcp.settings.transport_security
+    assert ts.enable_dns_rebinding_protection is True
+    assert "192.168.8.88:*" in ts.allowed_hosts
+    # loopback stays allowed; unrelated hosts do not.
+    assert "127.0.0.1:*" in ts.allowed_hosts
+    assert "evil.example.com:*" not in ts.allowed_hosts
+
+
+def test_configure_security_allows_concrete_bind_host(server):
+    _configure_transport_security(server, host="192.168.8.88")
+    ts = server.mcp.settings.transport_security
+    assert "192.168.8.88:*" in ts.allowed_hosts
+
+
+def test_configure_security_can_disable(server):
+    _configure_transport_security(server, host="0.0.0.0", enable=False)
+    ts = server.mcp.settings.transport_security
+    assert ts.enable_dns_rebinding_protection is False

@@ -303,15 +303,128 @@ def build_asgi_app(server: Any, *, transport: str = "sse") -> Starlette:
     return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
 
 
+_LOCALHOST_HOST_PATTERNS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_LOCALHOST_ORIGIN_PATTERNS = [
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+]
+_WILDCARD_BINDS = frozenset({"0.0.0.0", "::", ""})
+
+
+def _host_pattern(value: str) -> str | None:
+    """Normalize an allowed-host entry to a form the MCP transport-security
+    matcher understands. A bare host becomes ``host:*`` (port wildcard); an
+    entry that already carries an explicit port or ``:*`` is left alone."""
+    h = value.strip()
+    if not h:
+        return None
+    # Bracketed IPv6, e.g. "[::1]" or "[::1]:8080".
+    if h.startswith("["):
+        return h if "]:" in h else f"{h}:*"
+    if ":" in h:
+        tail = h.rsplit(":", 1)[1]
+        if tail == "*" or tail.isdigit():
+            return h
+    return f"{h}:*"
+
+
+def _local_ipv4s() -> list[str]:
+    """Best-effort enumeration of this host's LAN IPv4 addresses. Used when
+    binding to a wildcard address so the reachable interface IPs are allowed
+    without the operator having to name them (survives DHCP churn)."""
+    import socket
+
+    ips: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: no packets sent, just routes
+            ips.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except Exception:
+        pass
+    return sorted(i for i in ips if not i.startswith("127."))
+
+
+def _configure_transport_security(
+    server: Any,
+    *,
+    host: str,
+    allowed_hosts: list[str] | None = None,
+    enable: bool = True,
+) -> None:
+    """Align FastMCP's DNS-rebinding allow-list with the address uvicorn
+    actually binds to.
+
+    FastMCP auto-enables DNS-rebinding protection with a localhost-only
+    allow-list whenever its internal ``host`` is localhost — which it always
+    is here, because ``MCMServer`` builds ``FastMCP`` without a host while
+    uvicorn binds wherever ``serve`` is told. The result is that every LAN
+    request (Host: <lan-ip>:<port>) is rejected with ``421 Invalid Host
+    header``. This re-derives the allow-list from the real bind host.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp = getattr(server, "mcp", None)
+    settings = getattr(mcp, "settings", None)
+    if settings is None:
+        return
+
+    if not enable:
+        settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+        return
+
+    hosts = list(_LOCALHOST_HOST_PATTERNS)
+    origins = list(_LOCALHOST_ORIGIN_PATTERNS)
+
+    extra: list[str] = list(allowed_hosts or [])
+    if host in _WILDCARD_BINDS:
+        # Bound to every interface: allow this machine's LAN IPs so it is
+        # reachable by address, not just by loopback.
+        extra.extend(_local_ipv4s())
+    elif host not in ("127.0.0.1", "localhost", "::1"):
+        # Bound to one concrete non-loopback address: allow exactly that.
+        extra.append(host)
+
+    for entry in extra:
+        pat = _host_pattern(entry)
+        if pat and pat not in hosts:
+            hosts.append(pat)
+            origins.append(f"http://{pat}")
+
+    settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
 def serve(
     server: Any,
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
     transport: str = "sse",
+    allowed_hosts: list[str] | None = None,
+    dns_rebinding_protection: bool = True,
 ) -> None:
     """Run the engine over HTTP/SSE. Blocks until the process is killed."""
     import uvicorn
 
+    _configure_transport_security(
+        server,
+        host=host,
+        allowed_hosts=allowed_hosts,
+        enable=dns_rebinding_protection,
+    )
     app = build_asgi_app(server, transport=transport)
     uvicorn.run(app, host=host, port=port, log_level="info")

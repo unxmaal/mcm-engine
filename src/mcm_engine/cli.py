@@ -73,6 +73,8 @@ def cmd_init(args):
 
 def cmd_serve(args):
     """Run the engine as a long-lived HTTP/SSE daemon."""
+    import os
+
     from .transport import serve
 
     config_path = Path(args.config) if args.config else None
@@ -80,7 +82,28 @@ def cmd_serve(args):
 
     config = load_config(config_path=config_path, project_root=project_root)
     server = MCMServer(config, project_root=project_root or Path.cwd())
-    serve(server, host=args.host, port=args.port, transport=args.transport)
+
+    # Env fallbacks for container deploys, where the reachable host (a docker
+    # -p published address) is not visible from inside the container and can't
+    # be auto-detected. MCM_ALLOWED_HOSTS is comma/space separated.
+    allowed_hosts = list(args.allowed_host)
+    env_hosts = os.environ.get("MCM_ALLOWED_HOSTS", "")
+    allowed_hosts.extend(h for h in env_hosts.replace(",", " ").split() if h)
+
+    protection = not args.no_dns_rebinding_protection
+    if os.environ.get("MCM_DNS_REBINDING_PROTECTION", "").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        protection = False
+
+    serve(
+        server,
+        host=args.host,
+        port=args.port,
+        transport=args.transport,
+        allowed_hosts=allowed_hosts,
+        dns_rebinding_protection=protection,
+    )
 
 
 def cmd_migrate(args):
@@ -373,6 +396,19 @@ def main():
     serve_parser.add_argument(
         "--transport", choices=["sse", "streamable-http"], default="sse",
         help="MCP transport variant (default sse).",
+    )
+    serve_parser.add_argument(
+        "--allowed-host", action="append", default=[], metavar="HOST[:PORT]",
+        help="Additional Host header value to accept past DNS-rebinding "
+             "protection (repeatable). A bare host allows any port. Loopback "
+             "is always allowed; when binding to 0.0.0.0 this machine's LAN "
+             "IPs are auto-allowed. Name the address clients use (e.g. "
+             "192.168.8.88) if auto-detection misses it.",
+    )
+    serve_parser.add_argument(
+        "--no-dns-rebinding-protection", action="store_true",
+        help="Disable Host/Origin validation entirely. Only for a trusted "
+             "network; leaves the daemon open to DNS-rebinding attacks.",
     )
     serve_parser.set_defaults(func=cmd_serve)
 
