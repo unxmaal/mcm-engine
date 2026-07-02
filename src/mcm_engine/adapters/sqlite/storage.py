@@ -7,6 +7,7 @@ refactors tools/*.py to use ctx.storage instead of db.execute directly).
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Iterator, Optional
 
@@ -192,6 +193,22 @@ class SqliteStorage:
 
     def ensure_schema(self) -> None:
         migrate_core(self._db)
+
+    # ---- Transactions ----
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group writes into one atomic unit. The per-method commits that
+        normally fire after each write are deferred; the whole block commits
+        once on clean exit and rolls back on any exception."""
+        self._db.begin_transaction()
+        try:
+            yield
+        except BaseException:
+            self._db.end_transaction(commit=False)
+            raise
+        else:
+            self._db.end_transaction(commit=True)
 
     # ---- Knowledge ----
 

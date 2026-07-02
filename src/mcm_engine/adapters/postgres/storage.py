@@ -8,6 +8,7 @@ generated column.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
@@ -536,6 +537,37 @@ class PostgresStorage:
         else:
             conn.row_factory = dict_row
         self._conn = conn
+        # >0 while a transaction() block is open — see _commit / transaction.
+        self._tx_depth = 0
+
+    # ---- Transactions ----
+
+    def _commit(self) -> None:
+        """Commit unless inside a transaction() block, where the per-write
+        commits are deferred to the single commit at block exit."""
+        if self._tx_depth > 0:
+            return
+        self._conn.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group writes into one atomic unit. The per-method commits are
+        deferred; the whole block commits once on clean exit and rolls back
+        on any exception."""
+        self._tx_depth += 1
+        try:
+            yield
+        except BaseException:
+            self._tx_depth = 0
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            raise
+        else:
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                self._conn.commit()
 
     # ---- Schema management ----
 
@@ -543,7 +575,7 @@ class PostgresStorage:
         with self._conn.cursor() as cur:
             for stmt in _DDL_STATEMENTS:
                 cur.execute(stmt)
-        self._conn.commit()
+        self._commit()
 
     def truncate_all(self) -> None:
         """Test-only convenience: wipe every owned table and reset
@@ -554,7 +586,7 @@ class PostgresStorage:
                 + ", ".join(_OWNED_TABLES)
                 + " RESTART IDENTITY CASCADE"
             )
-        self._conn.commit()
+        self._commit()
 
     # ---- Knowledge ----
 
@@ -602,7 +634,7 @@ class PostgresStorage:
                      row.project, row.rationale, row.alternatives),
                 )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     def update_knowledge(self, knowledge_id: int, **fields: Any) -> None:
@@ -620,7 +652,7 @@ class PostgresStorage:
                 f"UPDATE knowledge SET {cols}, updated_at = now() WHERE id = %s",
                 values,
             )
-        self._conn.commit()
+        self._commit()
 
     # ---- Negative ----
 
@@ -643,7 +675,7 @@ class PostgresStorage:
                      row.correct_approach, row.severity, row.project),
                 )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     # ---- Errors ----
@@ -667,7 +699,7 @@ class PostgresStorage:
                      row.tags, row.project),
                 )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     # ---- Rules ----
@@ -711,7 +743,7 @@ class PostgresStorage:
                      row.updated_by),
                 )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     def update_rule(self, rule_id: int, **fields: Any) -> None:
@@ -729,7 +761,7 @@ class PostgresStorage:
                 f"UPDATE rules SET {cols}, updated_at = now() WHERE id = %s",
                 values,
             )
-        self._conn.commit()
+        self._commit()
 
     def list_rules_with_file_paths(
         self, *, caller: Optional[str] = None,
@@ -749,7 +781,7 @@ class PostgresStorage:
                 "updated_at = now() WHERE id = %s",
                 (rule_id,),
             )
-        self._conn.commit()
+        self._commit()
 
     def restore_rule(self, rule_id: int) -> None:
         with self._conn.cursor() as cur:
@@ -758,7 +790,7 @@ class PostgresStorage:
                 "updated_at = now() WHERE id = %s",
                 (rule_id,),
             )
-        self._conn.commit()
+        self._commit()
 
     def insert_rule_event(
         self,
@@ -782,7 +814,7 @@ class PostgresStorage:
                  source_ref, source_commit, note),
             )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     def list_rule_events(
@@ -826,7 +858,7 @@ class PostgresStorage:
                          row.relation, row.note),
                     )
                 new_id = cur.fetchone()["id"]
-            self._conn.commit()
+            self._commit()
             return new_id
         except self._psycopg.errors.UniqueViolation:
             self._conn.rollback()
@@ -879,7 +911,7 @@ class PostgresStorage:
                      row.next_steps, row.blockers, row.context_snapshot),
                 )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     def get_last_session(
@@ -929,7 +961,7 @@ class PostgresStorage:
                      row.active_files, row.key_decisions),
                 )
             new_id = cur.fetchone()["id"]
-        self._conn.commit()
+        self._commit()
         return new_id
 
     def get_last_snapshot(
@@ -949,7 +981,7 @@ class PostgresStorage:
                 f"UPDATE {table} SET pinned = %s WHERE id = %s",
                 (bool(value), entity_id),
             )
-        self._conn.commit()
+        self._commit()
 
     def count_by_type(
         self,
@@ -1088,7 +1120,7 @@ class PostgresStorage:
                     f")",
                     (table,),
                 )
-        self._conn.commit()
+        self._commit()
 
     # ---- Engine-wide counters ----
 
