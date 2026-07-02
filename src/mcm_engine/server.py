@@ -182,6 +182,7 @@ class MCMServer:
         register_rules_tools(
             self.mcp, self.ctx, self.tracker, config.project_name,
             rules_paths, project_root,
+            files_authoritative=config.files_are_authoritative,
         )
 
         # Relations tools
@@ -208,7 +209,16 @@ class MCMServer:
 
     def start_watcher(self) -> None:
         """Daemon-mode startup: run a one-shot sync and then begin the
-        background observer thread. See docs/watcher-cascade.md."""
+        background observer thread. See docs/watcher-cascade.md.
+
+        In `source_of_truth=database` mode the DB is authoritative and rules
+        arrive via import_rules with no filesystem; the file->DB sync and the
+        observer are both skipped (issue #16). transport.py calls this
+        unconditionally — the gate lives here so it can read self.config."""
+        if not self.config.files_are_authoritative:
+            log("source_of_truth=database: watcher disabled (DB is "
+                "authoritative) — no startup sync, no file observer")
+            return
         counts = self.watcher.sync_once()
         log(f"sync_rules at startup: {counts}")
         self.watcher.start()
@@ -233,9 +243,15 @@ class MCMServer:
         process lifetime is too short for live file watching to pay
         for itself.
         """
-        try:
-            counts = self.watcher.sync_once()
-            log(f"sync_rules at stdio startup: {counts}")
-        except Exception as e:
-            log(f"sync_rules at stdio startup failed (non-fatal): {e}")
+        # In database mode the DB is authoritative; skip the startup file->DB
+        # sync entirely (issue #16). Files, if any, are stale projections.
+        if self.config.files_are_authoritative:
+            try:
+                counts = self.watcher.sync_once()
+                log(f"sync_rules at stdio startup: {counts}")
+            except Exception as e:
+                log(f"sync_rules at stdio startup failed (non-fatal): {e}")
+        else:
+            log("source_of_truth=database: skipping startup file sync "
+                "(DB is authoritative)")
         self.mcp.run()

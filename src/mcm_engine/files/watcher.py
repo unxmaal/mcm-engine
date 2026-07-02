@@ -26,6 +26,7 @@ from watchdog.events import (
 from watchdog.observers import Observer
 
 from ..backends import EntityType, RuleRow, StorageBackend
+from ..db import log
 from ..rules_links import build_wikilink_relations
 
 
@@ -165,11 +166,19 @@ class RulesWatcher:
         project_root: Path,
         *,
         debounce_ms: int = 500,
+        archive_circuit_floor: int = 5,
+        archive_circuit_fraction: float = 0.5,
     ):
         self._storage = storage
         self._rules_path = Path(rules_path).resolve()
         self._project_root = Path(project_root).resolve()
         self._debounce_s = debounce_ms / 1000.0
+        # Layer 3 blast-radius guard (issue #16): refuse to archive more than
+        # `fraction` of managed rules in one sweep once the count exceeds
+        # `floor`. A suddenly-empty rules dir (failed mount, mid-checkout, a
+        # pod with no filesystem) should not cascade into a mass wipe.
+        self._archive_circuit_floor = archive_circuit_floor
+        self._archive_circuit_fraction = archive_circuit_fraction
         self._observer: Optional[Any] = None
         self._handler = _RulesEventHandler(self)
         # Per-path debounce state. Maps absolute path → (timer, op).
@@ -210,7 +219,8 @@ class RulesWatcher:
 
         Returns a small dict of counts for diagnostics.
         """
-        counts = {"upserted": 0, "archived": 0, "unchanged": 0, "links": 0}
+        counts = {"upserted": 0, "archived": 0, "unchanged": 0, "links": 0,
+                  "archive_blocked": 0}
         if not self._rules_path.exists():
             return counts
 
@@ -224,9 +234,33 @@ class RulesWatcher:
             else:
                 counts["unchanged"] += 1
 
-        # Soft-delete orphans.
-        for row in self._storage.list_rules_with_file_paths():
-            if row.file_path and row.file_path not in seen_paths and not row.archived:
+        # Soft-delete orphans — but only files THIS watcher manages, i.e. whose
+        # file_path lives under rules_path (Layer 2). A provenance path or a
+        # DB-native import (file_path elsewhere or None) is not ours to reap.
+        managed = [
+            r for r in self._storage.list_rules_with_file_paths()
+            if r.file_path and not r.archived and self._is_managed_path(r.file_path)
+        ]
+        orphans = [r for r in managed if r.file_path not in seen_paths]
+
+        # Layer 3 circuit breaker: a sweep archiving a suspicious fraction of
+        # managed rules at once is almost certainly a transient empty dir, not
+        # a real bulk deletion. Refuse and log loudly rather than wipe.
+        if (
+            len(orphans) > self._archive_circuit_floor
+            and len(orphans) / max(1, len(managed)) > self._archive_circuit_fraction
+        ):
+            log(
+                f"watcher: REFUSING to archive {len(orphans)} of {len(managed)} "
+                f"managed rules in one sweep (circuit breaker: "
+                f">{int(self._archive_circuit_fraction * 100)}% and "
+                f">{self._archive_circuit_floor}). The rules dir is likely "
+                f"transiently empty (failed mount, mid-checkout, or a "
+                f"database-authoritative deployment). No rules archived; investigate."
+            )
+            counts["archive_blocked"] = len(orphans)
+        else:
+            for row in orphans:
                 self._storage.soft_delete_rule(row.id)
                 counts["archived"] += 1
 
@@ -286,6 +320,17 @@ class RulesWatcher:
             return str(path.relative_to(self._project_root))
         except ValueError:
             return str(path)
+
+    def _is_managed_path(self, file_path: str) -> bool:
+        """True when file_path names a file this watcher is responsible for —
+        i.e. one under the watched rules_path. A rule whose file_path lives
+        elsewhere (a provenance path from import_rules, or an external rule
+        dir) is not the watcher's to archive when the file is absent."""
+        try:
+            abs_p = (self._project_root / file_path).resolve()
+        except Exception:
+            return False
+        return abs_p == self._rules_path or self._rules_path in abs_p.parents
 
     def _cascade_upsert(self, abs_path: Path) -> str:
         """Mirror a file's content into the storage row. Returns

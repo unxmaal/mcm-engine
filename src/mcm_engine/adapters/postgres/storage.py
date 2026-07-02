@@ -774,6 +774,14 @@ class PostgresStorage:
             rows = cur.fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    def list_archived_rules(
+        self, *, caller: Optional[str] = None,
+    ) -> list[RuleRow]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT * FROM rules WHERE archived = TRUE")
+            rows = cur.fetchall()
+        return [_rule_from_row(r) for r in rows]
+
     def soft_delete_rule(self, rule_id: int) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
