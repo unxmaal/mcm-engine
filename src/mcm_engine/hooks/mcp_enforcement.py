@@ -299,24 +299,23 @@ def _decide(
     mutators = session_state.get("mutator_calls", 0)
 
     if is_mutator and mutators >= BLOCK_THRESHOLD:
+        # Fail-open (issue #19): this is a CONSULTATION GAP, not a block. The
+        # edit is ALWAYS allowed (return 0) — after this change the hook is
+        # accountability telemetry, not a gate. main() records a
+        # `consultation_gap` event. A hard block here dead-locks the agent
+        # exactly when the knowledge backend is unreachable (the one moment it
+        # cannot call a reset tool to clear the counter).
         msg = (
-            "[mcm-engine] BLOCKED — project MCP-first contract violated.\n"
-            f"You have performed {mutators} file edits this session without "
-            "a single look-first MCP read. The contract is non-negotiable: "
-            "the knowledge base is authoritative for everything not in your "
-            "pretrained weights (Corning systems, accounts, conventions, "
-            "people, history). Acting without checking it is acting on "
-            "guesses.\n"
-            "\n"
-            "Required next action (BEFORE any further Edit/Write/NotebookEdit): "
-            "call `mcp__knowledge__search` with a query relevant to what you "
-            "are about to edit. If nothing matches, say so in your reply "
-            "and proceed with the caveat. Then continue.\n"
-            "\n"
-            "Reset tools: "
-            f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
+            "[mcm-engine] CONSULTATION GAP recorded — "
+            f"{mutators} file edits this session with no look-first MCP read. "
+            "This edit is ALLOWED (fail-open); the gap is logged to "
+            ".claude/mcp-enforcement-events.jsonl and counts against this "
+            "session's informed-vs-blind ratio. The knowledge base is "
+            "authoritative for project specifics, not your pretrained weights "
+            "— strongly recommended next: call a KB search before continuing. "
+            f"Reset tools: {', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
         )
-        return 2, msg
+        return 0, msg
 
     if total >= WARN_THRESHOLD:
         msg = (
@@ -382,9 +381,16 @@ def main(argv: list[str] | None = None) -> int:
         # State write failures shouldn't block the user's tool call.
         pass
 
-    # Diagnostic event log: record warns + blocks (not silent allows or
-    # compliance resets) so the thresholds can be tuned from real data.
-    action = "block" if exit_code == 2 else ("warn" if message else "")
+    # Diagnostic event log: record consultation-gaps + warns (not silent
+    # allows or compliance resets) so the thresholds can be tuned from real
+    # data. A gap is a would-have-blocked mutator at/over BLOCK_THRESHOLD;
+    # under fail-open (#19) it is recorded, not blocked — exit stays 0.
+    normalized = _normalize_builtin_tool(tool_name)
+    at_gap = (
+        normalized in BLOCKING_BUILTIN_TOOLS
+        and s.get("mutator_calls", 0) >= BLOCK_THRESHOLD
+    )
+    action = "consultation_gap" if at_gap else ("warn" if message else "")
     if action:
         _append_event(_events_path(cwd), {
             "ts": time.time(),
