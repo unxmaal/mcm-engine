@@ -58,9 +58,14 @@ EXPOSE 8080
 # Configurable bind + project via env, with sane defaults for container
 # ops. Override MCM_PROJECT_NAME in deployment manifests to brand the
 # server identity to the actual project.
+# MCM_ALLOWED_HOSTS: comma/space separated Host values clients reach the
+# daemon by (e.g. the published LAN IP or DNS name). Required past DNS-rebinding
+# protection because a container can't auto-detect its -p published address.
+# Loopback is always allowed; leave empty only for loopback-only access.
 ENV MCM_HOST=0.0.0.0 \
     MCM_PORT=8080 \
     MCM_TRANSPORT=sse \
+    MCM_ALLOWED_HOSTS="" \
     MCM_PROJECT_NAME=mcm-engine
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
