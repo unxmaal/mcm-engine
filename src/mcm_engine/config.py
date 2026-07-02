@@ -8,6 +8,14 @@ from typing import Any, Union
 
 import yaml
 
+from .db import log
+
+# Sealed set for the source-of-authority axis (issue #16). A value outside
+# this set falls back to "files" with a warning — the fail-safe direction is
+# the historical always-files behavior. NOTE: this is value-level fail-safe for
+# a KNOWN key, distinct from the strict-key rule (unknown KEYS still fail closed).
+_VALID_SOURCE_OF_TRUTH = ("files", "database")
+
 
 @dataclass
 class NudgeConfig:
@@ -74,6 +82,13 @@ class MCMConfig:
     plugins: list[str] = field(default_factory=list)
     nudges: NudgeConfig = field(default_factory=NudgeConfig)
     backends: BackendsConfig = field(default_factory=BackendsConfig)
+    # Source-of-authority axis (issue #16). "files": markdown under rules_path
+    # is authoritative and the watcher enforces files-win (World A / local
+    # stdio). "database": the DB is authoritative — rules are pushed in via
+    # import_rules, the startup file->DB sync/archival is not run, and reads
+    # prefer the DB (World B / always-on pod). Default "files" leaves local
+    # behavior unchanged. Validated to the sealed set in load_config.
+    source_of_truth: str = "files"
     rules_path: Union[str, list[str]] = "rules/"
     server_name: str = ""
     server_instructions: str = ""
@@ -91,6 +106,13 @@ class MCMConfig:
         if p.is_absolute():
             return p
         return project_root / p
+
+    @property
+    def files_are_authoritative(self) -> bool:
+        """True when markdown files are the source of authority (World A).
+        False in "database" mode (World B), where the DB is authoritative and
+        the file->DB sync/archival direction must not run."""
+        return self.source_of_truth != "database"
 
     def resolve_rules_paths(self, project_root: Path) -> list[Path]:
         """Resolve rules_path(s) relative to project root.
@@ -147,6 +169,7 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
         "MCM_SERVER_NAME": "server_name",
         "MCM_SERVER_INSTRUCTIONS": "server_instructions",
         "MCM_RULES_PATH": "rules_path",
+        "MCM_SOURCE_OF_TRUTH": "source_of_truth",
     }
     for env_key, config_key in env_map.items():
         val = os.environ.get(env_key)
@@ -155,6 +178,18 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
                 raw[config_key] = val.split(":")
             else:
                 raw[config_key] = val
+
+    # Source-of-authority axis (issue #16): value-level fail-safe. A value
+    # outside the sealed set (from YAML or env) falls back to "files" with a
+    # warning rather than crashing — the historical always-files direction is
+    # the safe default. (Unknown *keys* still fail closed below.)
+    sot = raw.get("source_of_truth")
+    if sot is not None and sot not in _VALID_SOURCE_OF_TRUTH:
+        log(
+            f"invalid source_of_truth {sot!r}; expected one of "
+            f"{'/'.join(_VALID_SOURCE_OF_TRUTH)}. Defaulting to 'files'."
+        )
+        raw["source_of_truth"] = "files"
 
     # Validate required fields
     if "project_name" not in raw:

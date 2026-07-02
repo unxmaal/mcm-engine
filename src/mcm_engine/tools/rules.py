@@ -251,11 +251,17 @@ def register_rules_tools(
     project_name: str,
     rules_paths: list[Path],
     project_root: Path,
+    files_authoritative: bool = True,
 ) -> None:
     """Register add_rule, read_rule, promote_to_rule, sync_rules,
-    reinforce_rule tools.
+    reinforce_rule, import_rules, restore_rule tools.
 
     Accepts a Context or a raw KnowledgeDB for backward compat.
+
+    ``files_authoritative`` (issue #16) reflects config.source_of_truth: when
+    False (database mode) the DB is authoritative, so add_rule writes no
+    markdown file and read_rule prefers the stored body over any local file.
+    Defaults True so existing callers (and every test) keep files-mode behavior.
     """
     ctx = coerce_context(ctx_or_db)
     primary_rules_path = rules_paths[0] if rules_paths else project_root / "rules"
@@ -330,7 +336,7 @@ def register_rules_tools(
                 )
             else:
                 warning = f"\nWarning: file '{file_path}' does not exist. Rule indexed without file backing."
-        else:
+        elif files_authoritative:
             cat_dir = primary_rules_path / category if category else primary_rules_path
             cat_dir.mkdir(parents=True, exist_ok=True)
             slug = _slugify(title)
@@ -345,6 +351,12 @@ def register_rules_tools(
             new_file.write_text(file_content, encoding="utf-8")
             actual_path = str(new_file.relative_to(project_root))
             content_hash = compute_content_hash(file_content)
+        else:
+            # database mode (issue #16): the DB is authoritative and there is
+            # no filesystem to own. Store the body in the row only; write no
+            # markdown file and leave file_path empty so the watcher (if it
+            # ever runs) never treats this as a managed, then-missing file.
+            content_hash = compute_content_hash(content) if content else None
 
         description = content[:500] if content else ""
         rule_id = storage.insert_rule(RuleRow(
@@ -476,6 +488,43 @@ def register_rules_tools(
         return {**_tally(results), "rules": results}
 
     @mcp.tool()
+    def restore_rule(
+        rule_ids: list[int] | None = None,
+        all_archived: bool = False,
+        actor: str = "",
+    ) -> dict:
+        """Un-archive soft-deleted rules (issue #16 recovery tool).
+
+        Archived rules are invisible to search but not deleted. Use this to
+        recover after an accidental orphan sweep (e.g. a watcher archive-storm
+        in a mis-deployed pod) or any soft-delete. Provide explicit `rule_ids`,
+        or `all_archived=True` to restore every archived rule at once. Emits a
+        `restored` event per rule, attributed to the resolved actor.
+
+        Returns {restored: <count>, rule_ids: [<restored ids>]}.
+        """
+        tracker.record_call("restore_rule")
+        who = resolve_actor(actor)
+
+        targets: list[int] = []
+        if all_archived:
+            targets.extend(r.id for r in storage.list_archived_rules())
+        if rule_ids:
+            targets.extend(rule_ids)
+        targets = sorted(set(targets))
+
+        restored: list[int] = []
+        with storage.transaction():
+            for rid in targets:
+                row = storage.find_by_id(EntityType.RULE, rid)
+                if row is None or not row.archived:
+                    continue
+                storage.restore_rule(rid)
+                storage.insert_rule_event(rid, "restored", who)
+                restored.append(rid)
+        return {"restored": len(restored), "rule_ids": restored}
+
+    @mcp.tool()
     def read_rule(file_path: str) -> str:
         """Read a rule's contents. Prefers the file on disk; when the file
         is absent (e.g. a pod deployment with no filesystem for rules loaded
@@ -486,6 +535,14 @@ def register_rules_tools(
         fp = Path(file_path)
         full = fp if fp.is_absolute() else project_root / file_path
         row = storage.find_rule_by_file_path(file_path)
+
+        # database mode (issue #16): the DB is authoritative — prefer the stored
+        # body over any (stale) local file. Falls through to disk only if the
+        # row has no content. files mode keeps the disk-first order below.
+        if not files_authoritative and row is not None and row.content:
+            counters.increment(EntityType.RULE, row.id, "hit_count")
+            counters.increment(EntityType.RULE, row.id, "last_hit_at")
+            return _with_nudge(row.content, tracker, file_path)
 
         if full.exists():
             try:

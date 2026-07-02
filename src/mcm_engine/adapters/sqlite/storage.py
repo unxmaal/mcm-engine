@@ -409,6 +409,14 @@ class SqliteStorage:
         ).fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    def list_archived_rules(
+        self, *, caller: Optional[str] = None
+    ) -> list[RuleRow]:
+        rows = self._db.execute(
+            "SELECT * FROM rules WHERE archived = 1"
+        ).fetchall()
+        return [_rule_from_row(r) for r in rows]
+
     def soft_delete_rule(self, rule_id: int) -> None:
         self._db.execute_write(
             "UPDATE rules SET archived = 1, archived_at = datetime('now'), "

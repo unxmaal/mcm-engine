@@ -174,6 +174,14 @@ class StorageConformance:
         assert fetched.archived is False
         assert fetched.archived_at is None
 
+    def test_list_archived_rules(self, storage):
+        live = storage.insert_rule(RuleRow(id=0, title="live", keywords="kw"))
+        gone = storage.insert_rule(RuleRow(id=0, title="gone", keywords="kw"))
+        storage.soft_delete_rule(gone)
+        archived_ids = {r.id for r in storage.list_archived_rules()}
+        assert gone in archived_ids
+        assert live not in archived_ids
+
     def test_list_rules_with_file_paths_skips_pathless(self, storage):
         storage.insert_rule(RuleRow(id=0, title="A", keywords="kw", file_path="a.md"))
         storage.insert_rule(RuleRow(id=0, title="B", keywords="kw", file_path=None))
