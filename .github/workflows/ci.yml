@@ -203,7 +203,12 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # ignore-error: the GitHub Actions Cache backend intermittently
+          # fails to reserve (transient 5xx, the repo's 10GB cache quota, or
+          # concurrent builds racing the same key). Layer caching is an
+          # optimization, never worth failing the build/push over — degrade a
+          # cache-export failure to a warning instead of a red X.
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Run /healthz against the freshly-built image
         # On PRs the image is loaded locally with the first tag from
