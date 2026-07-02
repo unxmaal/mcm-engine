@@ -17,6 +17,7 @@ Contract versioning lives in docs/contract-versioning.md.
 """
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -277,6 +278,24 @@ class StorageBackend(Protocol):
     def ensure_schema(self) -> None:
         """Create or migrate the adapter's underlying schema to the
         current version. Idempotent. Called at composition-root startup."""
+        ...
+
+    # ---- Transactions ----
+    def transaction(self) -> "AbstractContextManager[None]":
+        """Group multiple writes into one atomic unit.
+
+        Writes issued inside the block that would normally self-commit are
+        deferred; the whole block commits once on clean exit and rolls back
+        on any exception. Used by bulk paths (e.g. the import_rules tool) that
+        need all-or-nothing across several rows and their audit events.
+
+        Caveat — the embedded reference adapters use a single shared
+        connection, so a block holds one connection-level transaction. Any
+        write issued on the SAME connection by another thread while the block
+        is open is folded into this block's commit/rollback. Call it for
+        deploy-time / single-writer batches (its intended use), not while
+        other tool writes are expected to race it on the same adapter.
+        """
         ...
 
     # NOTE: every read method accepts `caller: Optional[str] = None` as a

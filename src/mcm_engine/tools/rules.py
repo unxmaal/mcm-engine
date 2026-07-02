@@ -112,6 +112,138 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
     return result
 
 
+# --- import_rules (bulk, pod-native) helpers -----------------------------
+
+
+class _BatchAbort(Exception):
+    """Raised inside the import transaction to force a rollback while carrying
+    the per-rule status back to the caller (the on_duplicate=error path)."""
+
+    def __init__(self, message: str, results: list[dict]):
+        super().__init__(message)
+        self.results = results
+
+
+def _batch_reject(message: str, rules: object) -> dict:
+    """A pre-DB validation failure: reject the whole batch, write nothing."""
+    n = len(rules) if isinstance(rules, list) else 0
+    return {"error": message, "total": n, "created": 0, "updated": 0,
+            "skipped": 0, "errors": 0, "rules": []}
+
+
+def _tally(results: list[dict]) -> dict:
+    counts = {"created": 0, "updated": 0, "skipped": 0, "errors": 0}
+    for r in results:
+        status = r.get("status")
+        if status == "error":
+            counts["errors"] += 1
+        elif status in counts:
+            counts[status] += 1
+    return {"total": len(results), **counts}
+
+
+def _apply_import_batch(
+    storage,
+    items: list[dict],
+    who: str,
+    on_duplicate: str,
+    src_repo: str,
+    src_ref: str,
+    src_commit: str,
+) -> list[dict]:
+    """Per-row create/update/skip against title collisions, mirroring
+    add_rule's semantics. Runs inside storage.transaction() so the whole
+    batch (rows AND their events) commits or rolls back as one unit.
+
+    Dedup is read-then-write via find_rule_by_title — there is no UNIQUE
+    constraint on rules.title to hang an ON CONFLICT on (see issue #14).
+    """
+    # error mode: verify no collision BEFORE any write, so an abort leaves the
+    # DB untouched and reports honest per-rule status.
+    if on_duplicate == "error":
+        collisions = {
+            it["title"] for it in items
+            if storage.find_rule_by_title(it["title"]) is not None
+        }
+        if collisions:
+            results = [
+                {"title": it["title"], "status": "error",
+                 "error": "rule already exists"}
+                if it["title"] in collisions else
+                {"title": it["title"], "status": "skipped",
+                 "error": "batch aborted: duplicate title(s) present"}
+                for it in items
+            ]
+            raise _BatchAbort(
+                f"on_duplicate=error: {len(collisions)} title(s) already exist: "
+                f"{', '.join(sorted(collisions))}",
+                results,
+            )
+
+    results: list[dict] = []
+    for it in items:
+        title = it["title"]
+        content = it["content"]
+        content_hash = compute_content_hash(content)
+        existing = storage.find_rule_by_title(title)
+
+        if existing is not None:
+            if on_duplicate == "skip":
+                results.append({"title": title, "status": "skipped",
+                                "rule_id": existing.id})
+                continue
+            # on_duplicate == "update" (error mode already aborted above)
+            material = content != (existing.content or "")
+            storage.update_rule(
+                existing.id,
+                keywords=it["keywords"],
+                description=content[:500],
+                category=it["category"] or existing.category,
+                file_path=it["file_path"] or existing.file_path,
+                content=content,
+                content_hash=content_hash,
+                updated_by=who,
+            )
+            if material:
+                storage.insert_rule_event(
+                    existing.id, "updated", who,
+                    content_hash=content_hash,
+                    source_repo=src_repo or None,
+                    source_ref=src_ref or None,
+                    source_commit=src_commit or None,
+                )
+                results.append({"title": title, "status": "updated",
+                                "rule_id": existing.id})
+            else:
+                # Identical re-import: row rewritten with same body, no event.
+                results.append({"title": title, "status": "skipped",
+                                "rule_id": existing.id})
+            continue
+
+        rule_id = storage.insert_rule(RuleRow(
+            id=0,
+            title=title,
+            keywords=it["keywords"],
+            file_path=it["file_path"] or None,
+            description=content[:500],
+            category=it["category"] or None,
+            content_hash=content_hash,
+            content=content,
+            created_by=who,
+            updated_by=who,
+        ))
+        storage.insert_rule_event(
+            rule_id, "created", who,
+            content_hash=content_hash,
+            source_repo=src_repo or None,
+            source_ref=src_ref or None,
+            source_commit=src_commit or None,
+        )
+        results.append({"title": title, "status": "created", "rule_id": rule_id})
+
+    return results
+
+
 def register_rules_tools(
     mcp: FastMCP,
     ctx_or_db,
@@ -241,6 +373,107 @@ def register_rules_tools(
         if warning:
             msg += warning
         return _with_nudge(msg, tracker, title)
+
+    @mcp.tool()
+    def import_rules(
+        rules: list[dict],
+        actor: str = "",
+        source_repo: str = "",
+        source_ref: str = "",
+        source_commit: str = "",
+        on_duplicate: str = "update",
+    ) -> dict:
+        """Bulk-import rules in a single call, for filesystem-less deploys
+        (a pod that cannot see the rules/ tree). Each rule carries its full
+        `content` in the payload; nothing is read from or written to disk.
+
+        Unlike calling `add_rule` in a loop, this counts as ONE tracked call,
+        so a documented batch load does not trip the look-first nudge. `actor`,
+        `source_repo`, `source_ref`, `source_commit` are shared across every
+        rule in the batch and recorded on each rule_events row.
+
+        Args:
+            rules: list of {title, keywords, content, category?, file_path?}
+                dicts. title, keywords, content are required and non-empty.
+                file_path is provenance-only here (no file is written).
+            on_duplicate: behavior when a title already exists —
+                "update" (default): overwrite; emit an `updated` event only
+                    when the body actually changed (identical re-import is a
+                    no-op, reported as skipped).
+                "skip": leave the existing row untouched, emit no event.
+                "error": abort the whole batch if ANY title already exists;
+                    nothing is written.
+
+        Returns a dict {total, created, updated, skipped, errors, rules:[...]}
+        with per-rule {title, status, rule_id?/error?}. The whole batch is one
+        transaction: on a mid-batch failure nothing is written. A validation
+        failure (missing field, duplicate title within the batch, bad
+        on_duplicate) rejects the batch with a top-level `error`.
+        """
+        tracker.record_call("import_rules", topic=f"{len(rules)} rules")
+        tracker.record_store()
+
+        if on_duplicate not in ("update", "skip", "error"):
+            return _batch_reject(
+                f"invalid on_duplicate {on_duplicate!r}; "
+                "expected update|skip|error",
+                rules,
+            )
+        if not rules:
+            return {"total": 0, "created": 0, "updated": 0,
+                    "skipped": 0, "errors": 0, "rules": []}
+
+        # Validation pass — nothing touches the DB until this clears.
+        items: list[dict] = []
+        seen: set[str] = set()
+        for i, r in enumerate(rules):
+            if not isinstance(r, dict):
+                return _batch_reject(f"rule at index {i} is not an object", rules)
+            title = (r.get("title") or "").strip()
+            keywords = (r.get("keywords") or "").strip()
+            content = r.get("content") or ""
+            if not title:
+                return _batch_reject(f"rule at index {i} missing title", rules)
+            if not keywords:
+                return _batch_reject(f"rule {title!r} missing keywords", rules)
+            if not content:
+                return _batch_reject(f"rule {title!r} missing content", rules)
+            if title in seen:
+                return _batch_reject(
+                    f"duplicate title within batch: {title!r}", rules)
+            seen.add(title)
+            items.append({
+                "title": title,
+                "keywords": keywords,
+                "content": content,
+                "category": (r.get("category") or "").strip(),
+                "file_path": (r.get("file_path") or "").strip(),
+            })
+
+        who = resolve_actor(actor)
+
+        # One atomic transaction spanning every row AND its events.
+        try:
+            with storage.transaction():
+                results = _apply_import_batch(
+                    storage, items, who, on_duplicate,
+                    source_repo, source_ref, source_commit,
+                )
+        except _BatchAbort as abort:
+            # on_duplicate=error with collisions — nothing was written.
+            return {"error": str(abort), **_tally(abort.results),
+                    "rules": abort.results}
+        except Exception as e:  # defensive: transaction already rolled back
+            log(f"import_rules rolled back on error: {e}")
+            return {
+                "error": f"import failed, rolled back: {e}",
+                "total": len(items), "created": 0, "updated": 0,
+                "skipped": 0, "errors": len(items),
+                "rules": [{"title": it["title"], "status": "error",
+                           "error": str(e)} for it in items],
+            }
+
+        return {**_tally(results), "rules": results}
 
     @mcp.tool()
     def read_rule(file_path: str) -> str:

@@ -109,6 +109,10 @@ class KnowledgeDB:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = self._open_connection()
+        # >0 while a storage.transaction() block is open. Intra-block commit()
+        # calls are deferred so a multi-write batch is one atomic unit; the
+        # outermost end_transaction() performs the single real commit/rollback.
+        self._tx_depth = 0
 
     def _open_connection(self) -> sqlite3.Connection:
         """Open a fresh SQLite connection with correct pragmas.
@@ -137,19 +141,30 @@ class KnowledgeDB:
         self.conn = self._open_connection()
 
     def execute_write(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Execute a write statement with one retry on readonly/locked errors."""
+        """Execute a write statement with one retry on readonly/locked errors.
+
+        The reconnect-and-retry is skipped inside a transaction() block: a
+        reconnect opens a fresh connection and silently abandons the batch's
+        prior writes. Inside a batch we let the lock error propagate so the
+        transaction rolls back cleanly rather than committing a partial batch.
+        """
         try:
             return self.conn.execute(sql, params)
         except sqlite3.OperationalError as e:
             err = str(e).lower()
-            if "readonly" in err or "locked" in err:
+            if ("readonly" in err or "locked" in err) and self._tx_depth == 0:
                 log(f"Write failed ({e}), reconnecting and retrying")
                 self._reconnect()
                 return self.conn.execute(sql, params)
             raise
 
     def commit(self):
-        """Commit with one retry on readonly/locked errors."""
+        """Commit with one retry on readonly/locked errors.
+
+        Deferred while a transaction() block is open — the outermost
+        end_transaction(commit=True) performs the single real commit."""
+        if self._tx_depth > 0:
+            return
         try:
             self.conn.commit()
         except sqlite3.OperationalError as e:
@@ -160,6 +175,26 @@ class KnowledgeDB:
                 # Re-raise — the transaction was lost, caller needs to re-execute
                 raise
             raise
+
+    def begin_transaction(self) -> None:
+        """Enter a deferred-commit scope. Nestable via a depth counter."""
+        self._tx_depth += 1
+
+    def end_transaction(self, *, commit: bool) -> None:
+        """Leave a deferred-commit scope. The outermost exit commits (or rolls
+        back) the accumulated writes exactly once."""
+        if self._tx_depth == 0:
+            return
+        self._tx_depth -= 1
+        if self._tx_depth > 0:
+            return
+        if commit:
+            self.commit()
+        else:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a read query."""

@@ -182,6 +182,31 @@ class StorageConformance:
         titles = sorted(r.title for r in rules)
         assert titles == ["A", "C"]
 
+    # ---- transaction() atomicity (issue #14) ----
+
+    def test_transaction_commits_on_clean_exit(self, storage):
+        with storage.transaction():
+            rid = storage.insert_rule(RuleRow(id=0, title="tx-ok", keywords="kw"))
+            storage.insert_rule_event(rid, "created", "someone")
+        row = storage.find_rule_by_title("tx-ok")
+        assert row is not None
+        assert [e.event_type for e in storage.list_rule_events(row.id)] == ["created"]
+
+    def test_transaction_rolls_back_on_exception(self, storage):
+        # A rule + its event written, then an error inside the block: the whole
+        # unit must roll back, leaving neither the row nor the event behind.
+        class _Boom(Exception):
+            pass
+
+        with pytest.raises(_Boom):
+            with storage.transaction():
+                rid = storage.insert_rule(
+                    RuleRow(id=0, title="tx-rollback", keywords="kw"))
+                storage.insert_rule_event(rid, "created", "someone")
+                raise _Boom()
+
+        assert storage.find_rule_by_title("tx-rollback") is None
+
     def test_insert_rule_persists_content_and_attribution(self, storage):
         """v8: full body + created_by/updated_by round-trip (issue #10)."""
         new_id = storage.insert_rule(RuleRow(
