@@ -1,0 +1,95 @@
+# Default values for the mcm-engine chart.
+# This mirrors examples/docker-compose.yml: a bundled Postgres plus the daemon in
+# the "database is authoritative" posture. Every durable entity lives in Postgres.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/unxmaal/mcm-engine
+  # Empty tag defaults to .Chart.AppVersion. Pin an explicit tag for reproducibility.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# mcm-engine daemon configuration. These map onto the MCM_* environment the
+# container reads (see the image ENV block and README "Configuration").
+mcm:
+  projectName: mcm
+  sourceOfTruth: database        # DB authoritative; no filesystem rules sync
+  transport: streamable-http     # clients hit /mcp (image default is sse)
+  port: 8080
+  # Host values clients reach the daemon by. REQUIRED past the DNS-rebinding
+  # guard unless dnsRebindingProtection is false. When ingress.enabled is true,
+  # the ingress hosts are added automatically. Loopback is always allowed.
+  allowedHosts: []
+  # Set false to disable the DNS-rebinding guard entirely (trusted clusters only).
+  dnsRebindingProtection: true
+  # Require a bearer token on the HTTP transport. When true, mint tokens with
+  # `mcm-engine mint-token` (Postgres storage) and hand them to clients.
+  authRequired: false
+  # Extra raw env vars, e.g. [{name: MCM_TRUST_DEFAULT, value: "1.0"}].
+  extraEnv: []
+
+# Bundled Postgres. Set enabled=false to use an external database instead
+# (fill in externalDatabase below). This is a minimal first-party StatefulSet,
+# not a third-party subchart, so there is no external chart dependency.
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  auth:
+    username: mcm
+    database: mcm
+    # Password for the bundled DB. REQUIRED when postgresql.enabled is true.
+    # The chart assembles the DSN from it at render time, so it must be a value,
+    # not an external secret reference. For an externally-managed secret, use an
+    # external database (postgresql.enabled: false) with externalDatabase below.
+    password: ""
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+  resources: {}
+
+# External database, used only when postgresql.enabled is false. Provide the
+# full DSN inline, or reference an existing secret with key `dsn`.
+externalDatabase:
+  dsn: ""
+  existingSecret: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: mcm-engine.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+
+# Pod-level security context. The image runs as a non-root venv; adjust to your
+# cluster policy.
+podSecurityContext: {}
+securityContext: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

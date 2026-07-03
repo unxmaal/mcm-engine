@@ -1,0 +1,40 @@
+mcm-engine is deployed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Endpoint: the streamable-http MCP endpoint is served at /mcp on port {{ .Values.service.port }}.
+
+{{- if .Values.ingress.enabled }}
+
+Reachable via Ingress at:
+{{- range .Values.ingress.hosts }}
+  http://{{ .host }}/mcp
+{{- end }}
+Ensure each Ingress host is in mcm.allowedHosts (the chart adds them automatically)
+or the DNS-rebinding guard will reject requests with 421.
+{{- else }}
+
+No Ingress is enabled. Reach the service in-cluster, or port-forward:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "mcm-engine.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+Then point an MCP client at http://127.0.0.1:{{ .Values.service.port }}/mcp
+(loopback is always allowed past the DNS-rebinding guard).
+{{- end }}
+
+{{- if not .Values.mcm.dnsRebindingProtection }}
+
+WARNING: mcm.dnsRebindingProtection is false. The daemon accepts any Host header.
+Use this only on a trusted network.
+{{- end }}
+
+{{- if and .Values.mcm.dnsRebindingProtection (not .Values.mcm.allowedHosts) (not .Values.ingress.enabled) }}
+
+NOTE: mcm.allowedHosts is empty and no Ingress is set, so only loopback (port-forward)
+reaches the daemon. Add the host clients connect by to mcm.allowedHosts for LAN/cluster access.
+{{- end }}
+
+{{- if .Values.mcm.authRequired }}
+
+Auth is required. Mint a bearer token inside the pod:
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "mcm-engine.fullname" . }} -- mcm-engine mint-token --principal <name>
+{{- end }}

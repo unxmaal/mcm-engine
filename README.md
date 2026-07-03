@@ -193,6 +193,30 @@ the bind; `MCM_ALLOWED_HOSTS` is required for non-loopback access, because a con
 cannot auto-detect its published address. The reference `terraform/aws/` module provisions
 ECR, RDS, ElastiCache, OpenSearch, and App Runner.
 
+### With Docker Compose
+
+[`examples/docker-compose.yml`](examples/docker-compose.yml) brings up Postgres and the
+daemon in the database-authoritative posture. Copy `examples/.env.example` to
+`examples/.env`, set `POSTGRES_PASSWORD` and `ALLOWED_HOSTS`, then:
+
+```bash
+docker compose -f examples/docker-compose.yml --env-file examples/.env up -d
+```
+
+### On Kubernetes (Helm)
+
+[`deploy/helm/mcm-engine/`](deploy/helm/mcm-engine/) deploys the daemon with a bundled
+Postgres (a first-party StatefulSet plus a PVC), or an external database via
+`postgresql.enabled=false`. The service is `ClusterIP` with an optional Ingress.
+
+```bash
+helm install mcm deploy/helm/mcm-engine \
+  --set postgresql.auth.password=<pick-a-password> \
+  --set mcm.allowedHosts={mcm-engine.example.com}
+```
+
+Values are documented in [`deploy/helm/mcm-engine/README.md`](deploy/helm/mcm-engine/README.md).
+
 ---
 
 ## Usage
@@ -451,6 +475,8 @@ destination unless `--force`.
 | File | Topic |
 |------|-------|
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history and changes |
+| [`examples/docker-compose.yml`](examples/docker-compose.yml) | Compose deployment example (Postgres + daemon) |
+| [`deploy/helm/mcm-engine/`](deploy/helm/mcm-engine/) | Helm chart for Kubernetes |
 | `docs/watcher-cascade.md` | Files-win conflict resolution, debounce, atomic-rename handling |
 | `docs/capabilities.md` | Adapter capability flags + honest degradation |
 | `docs/contract-versioning.md` | When to bump `CONTRACT_VERSION` |

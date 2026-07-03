@@ -4,6 +4,16 @@ All notable changes to mcm-engine. Format follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic
 versioning.
 
+## [Unreleased]
+
+### Added
+- Example deployment Compose stack at `examples/docker-compose.yml` (Postgres plus the
+  daemon, database-authoritative posture) with an `examples/.env.example`.
+- Helm chart at `deploy/helm/mcm-engine/` for Kubernetes. Bundles a minimal first-party
+  Postgres StatefulSet and PVC by default, or targets an external database via
+  `postgresql.enabled=false`. ClusterIP service with an optional Ingress; probes wired to
+  `/healthz` and `/readyz`; Postgres DSN assembled into a Secret.
+
 ## [3.0.0] — 2026-07-03
 
 The "truth and hygiene" release: memory that knows what's correct, what's stale,

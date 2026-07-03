@@ -1,0 +1,26 @@
+{{- $hosts := .Values.mcm.allowedHosts | default (list) -}}
+{{- if .Values.ingress.enabled -}}
+{{- range .Values.ingress.hosts -}}
+{{- if .host -}}{{- $hosts = append $hosts .host -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mcm-engine.fullname" . }}
+  labels:
+    {{- include "mcm-engine.labels" . | nindent 4 }}
+data:
+  MCM_PROJECT_NAME: {{ .Values.mcm.projectName | quote }}
+  MCM_SOURCE_OF_TRUTH: {{ .Values.mcm.sourceOfTruth | quote }}
+  MCM_TRANSPORT: {{ .Values.mcm.transport | quote }}
+  MCM_HOST: "0.0.0.0"
+  MCM_PORT: {{ .Values.mcm.port | quote }}
+  MCM_BACKENDS_STORAGE: "postgres"
+  MCM_BACKENDS_COUNTERS: "postgres"
+  MCM_BACKENDS_SEARCH: "postgres"
+  MCM_ALLOWED_HOSTS: {{ $hosts | join "," | quote }}
+  MCM_DNS_REBINDING_PROTECTION: {{ ternary "true" "false" .Values.mcm.dnsRebindingProtection | quote }}
+  {{- if .Values.mcm.authRequired }}
+  MCM_AUTH_REQUIRED: "true"
+  {{- end }}

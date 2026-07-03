@@ -1,0 +1,55 @@
+# Example deployment stack for mcm-engine: Postgres + the daemon.
+#
+# This is the "database is authoritative" posture (MCM_SOURCE_OF_TRUTH=database):
+# the DB holds every rule, and no rules/ filesystem tree is synced. All durable
+# state (rules, knowledge, errors, sessions, snapshots) lives in Postgres, so the
+# app container needs no volume of its own.
+#
+# Usage:
+#   cp examples/.env.example examples/.env    # then edit the two required values
+#   docker compose -f examples/docker-compose.yml --env-file examples/.env up -d
+#
+# Clients then reach the streamable-http endpoint at http://<ALLOWED_HOSTS>:8080/mcp.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mcm
+      POSTGRES_DB: mcm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcm -d mcm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcm-engine:
+    # :main tracks the latest build. Pin to a released tag (e.g. :3.0.0) for a
+    # reproducible deployment.
+    image: ghcr.io/unxmaal/mcm-engine:main
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MCM_PROJECT_NAME: mcm
+      MCM_SOURCE_OF_TRUTH: database          # DB is authoritative; no filesystem rules sync
+      MCM_TRANSPORT: streamable-http          # clients hit /mcp (image default is sse)
+      MCM_ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS in .env}
+      MCM_HOST: 0.0.0.0
+      MCM_PORT: 8080
+      MCM_BACKENDS_STORAGE: postgres
+      MCM_BACKENDS_COUNTERS: postgres
+      MCM_BACKENDS_SEARCH: postgres
+      # The session axis is in-memory only (live nudge counters, reset on restart);
+      # there is no postgres session adapter, so it is intentionally left unset.
+      MCM_POSTGRES_DSN: postgresql://mcm:${POSTGRES_PASSWORD}@postgres:5432/mcm
+      # MCM_AUTH_REQUIRED unset = auth off. Suitable for a trusted LAN only.
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
