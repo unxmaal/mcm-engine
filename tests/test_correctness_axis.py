@@ -207,7 +207,10 @@ class TestSupersededFilteredFromSearch:
 
 class TestCorrectnessRanking:
     def test_correctness_weight_demotes_failures_and_promotes_passes(self):
-        from mcm_engine.scoring import CORRECTNESS_WEIGHT, compose_rank
+        # Under the #25 additive-hybrid rerank, correctness is a signed
+        # tanh(net) term (bounded), not a raw linear net — so assert the
+        # direction (promote/demote), not an exact linear value.
+        from mcm_engine.scoring import compose_rank
 
         base = compose_rank(raw_rank=1.0, hit_count=0, reinforcement_count=0,
                             pinned=False, age_days=None)
@@ -217,5 +220,5 @@ class TestCorrectnessRanking:
         worse = compose_rank(raw_rank=1.0, hit_count=0, reinforcement_count=0,
                              pinned=False, age_days=None,
                              correct_count=0, incorrect_count=3)
-        assert better == pytest.approx(base + CORRECTNESS_WEIGHT * 3)
-        assert worse < base  # a failing rule is demoted, not banned
+        assert better > base   # net-positive outcomes promote
+        assert worse < base    # a failing rule is demoted, not banned
