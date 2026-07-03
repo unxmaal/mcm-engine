@@ -119,6 +119,20 @@ def cmd_migrate(args):
     print(format_report(report))
 
 
+def cmd_export_mirror(args):
+    """One-way DB -> git review mirror of active rules (issue #22)."""
+    from pathlib import Path
+
+    from .mirror import export_mirror
+
+    storage = open_storage(args.source)
+    result = export_mirror(storage, Path(args.out))
+    if result["committed"]:
+        print(f"Mirrored {result['written']} active rules to {args.out} (new commit).")
+    else:
+        print(f"Mirror up to date: {result['written']} active rules, no changes.")
+
+
 def cmd_hook(args):
     """Run the PreToolUse enforcement hook. Reads a single event from
     stdin and exits 0 (allow) or 2 (block). Wire into your agent
@@ -432,6 +446,22 @@ def main():
              "truncating the destination if a clean slate is required.",
     )
     migrate_parser.set_defaults(func=cmd_migrate)
+
+    # export-mirror (one-way DB -> git review mirror, issue #22)
+    mirror_parser = subparsers.add_parser(
+        "export-mirror",
+        help="One-way DB->git review mirror of active rules (audit surface, "
+             "never authoritative; read-only, never touches rules_paths).",
+    )
+    mirror_parser.add_argument(
+        "--from", dest="source", required=True,
+        help="Source storage DSN (sqlite:///path or postgresql://...).",
+    )
+    mirror_parser.add_argument(
+        "--out", required=True,
+        help="Output git directory (created and git-init'd if absent).",
+    )
+    mirror_parser.set_defaults(func=cmd_export_mirror)
 
     # mint-token (LODESTONE bearer token)
     mint_parser = subparsers.add_parser(
