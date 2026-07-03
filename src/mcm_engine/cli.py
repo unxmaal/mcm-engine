@@ -133,6 +133,15 @@ def cmd_export_mirror(args):
         print(f"Mirror up to date: {result['written']} active rules, no changes.")
 
 
+def cmd_consolidate(args):
+    """Read-only KB-hygiene consolidation report (issue #31)."""
+    from .consolidate import consolidation_report, format_report
+
+    storage = open_storage(args.source)
+    rep = consolidation_report(storage, max_age_days=args.max_age_days)
+    print(format_report(rep))
+
+
 def cmd_hook(args):
     """Run the PreToolUse enforcement hook. Reads a single event from
     stdin and exits 0 (allow) or 2 (block). Wire into your agent
@@ -462,6 +471,22 @@ def main():
         help="Output git directory (created and git-init'd if absent).",
     )
     mirror_parser.set_defaults(func=cmd_export_mirror)
+
+    # consolidate (read-only KB-hygiene report, issue #31)
+    consolidate_parser = subparsers.add_parser(
+        "consolidate",
+        help="Read-only KB-hygiene report: merge + conflict + stale candidates "
+             "(propose-only; act via supersede_rule / archive / etc.).",
+    )
+    consolidate_parser.add_argument(
+        "--from", dest="source", required=True,
+        help="Source storage DSN (sqlite:///path or postgresql://...).",
+    )
+    consolidate_parser.add_argument(
+        "--max-age-days", type=int, default=90,
+        help="Age threshold (days) for stale candidates (default 90).",
+    )
+    consolidate_parser.set_defaults(func=cmd_consolidate)
 
     # mint-token (LODESTONE bearer token)
     mint_parser = subparsers.add_parser(
