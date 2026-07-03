@@ -212,12 +212,12 @@ class TestCorrectnessRanking:
         # direction (promote/demote), not an exact linear value.
         from mcm_engine.scoring import compose_rank
 
-        base = compose_rank(raw_rank=1.0, hit_count=0, reinforcement_count=0,
+        base = compose_rank(relevance=0.5, hit_count=0, reinforcement_count=0,
                             pinned=False, age_days=None)
-        better = compose_rank(raw_rank=1.0, hit_count=0, reinforcement_count=0,
+        better = compose_rank(relevance=0.5, hit_count=0, reinforcement_count=0,
                               pinned=False, age_days=None,
                               correct_count=4, incorrect_count=1)
-        worse = compose_rank(raw_rank=1.0, hit_count=0, reinforcement_count=0,
+        worse = compose_rank(relevance=0.5, hit_count=0, reinforcement_count=0,
                              pinned=False, age_days=None,
                              correct_count=0, incorrect_count=3)
         assert better > base   # net-positive outcomes promote
