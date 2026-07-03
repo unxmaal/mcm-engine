@@ -69,8 +69,9 @@ def consolidation_report(
     ]
     conflict_candidates = [
         {"a": {"id": a, "title": titles.get(a, "")},
-         "b": {"id": b, "title": titles.get(b, "")}}
-        for a, b in find_conflicts(conf_items)
+         "b": {"id": b, "title": titles.get(b, "")},
+         "label": label}
+        for a, b, label in find_conflicts(conf_items)
     ]
 
     # stale candidates: unreinforced, aged, not recently hit (flagged only)
@@ -116,8 +117,9 @@ def format_report(rep: dict) -> str:
         members = ", ".join("#{} '{}'".format(m["id"], m["title"]) for m in cluster)
         lines.append("  [merge] " + members)
     for c in rep["conflict_candidates"]:
-        lines.append("  [conflict] #{} '{}'  <>  #{} '{}'".format(
-            c["a"]["id"], c["a"]["title"], c["b"]["id"], c["b"]["title"]))
+        lines.append("  [conflict:{}] #{} '{}'  <>  #{} '{}'".format(
+            c.get("label", ""), c["a"]["id"], c["a"]["title"],
+            c["b"]["id"], c["b"]["title"]))
     for st in rep["stale_candidates"]:
         lines.append("  [stale] #{} '{}' — {}".format(st["id"], st["title"], st["why"]))
     lines.append(
