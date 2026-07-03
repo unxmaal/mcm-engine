@@ -164,3 +164,47 @@ def find_near_duplicates(
     result = [sorted(members) for members in clusters.values() if len(members) >= 2]
     result.sort(key=lambda c: (c[0], c))
     return result
+
+
+# --- Conflict detection (issue #32): topic-similar but body-divergent -------
+
+TOPIC_THRESHOLD = 0.5   # title+keywords similarity: "same subject"
+BODY_THRESHOLD = 0.4    # content similarity: at/below this the claims diverge
+
+
+def find_conflicts(
+    items: Iterable[tuple],
+    *,
+    topic_threshold: float = TOPIC_THRESHOLD,
+    body_threshold: float = BODY_THRESHOLD,
+    min_entropy: float = MIN_ENTROPY,
+) -> list[tuple]:
+    """Surface CONFLICT candidates: pairs that are topically similar but whose
+    bodies diverge ("same subject, opposite story").
+
+    ``items`` is an iterable of ``(id, topic_text, body_text)``. A pair is a
+    candidate iff topic similarity >= ``topic_threshold`` AND body similarity
+    <= ``body_threshold``. This is the INVERSE of ``find_near_duplicates`` (high
+    similarity on the WHOLE text): a near-duplicate has HIGH body similarity and
+    is therefore excluded. Rows whose topic is below ``min_entropy``, or whose
+    body has no shingles (can't assess divergence), are skipped.
+
+    Deterministic; returns sorted ``(id_a, id_b)`` pairs with id_a < id_b.
+    """
+    rows = [
+        (rid, topic, body) for rid, topic, body in items
+        if shannon_entropy(topic) >= min_entropy and _tokens(body)
+    ]
+    topic_sig = {rid: minhash_signature(topic) for rid, topic, _ in rows}
+    body_sig = {rid: minhash_signature(body) for rid, _, body in rows}
+    ids = [rid for rid, _, _ in rows]
+    pairs: list[tuple] = []
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = ids[i], ids[j]
+            if _signature_similarity(topic_sig[a], topic_sig[b]) < topic_threshold:
+                continue
+            if _signature_similarity(body_sig[a], body_sig[b]) <= body_threshold:
+                pairs.append((a, b) if a <= b else (b, a))
+    pairs.sort()
+    return pairs

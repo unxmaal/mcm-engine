@@ -244,6 +244,36 @@ def _apply_import_batch(
     return results
 
 
+def _active_conflict_items(storage):
+    """(items, titles) over ACTIVE rules for conflict detection (issue #32).
+    items = [(id, topic=title+keywords, body=content)]."""
+    items = []
+    titles = {}
+    for row in storage.iter_entries(EntityType.RULE):
+        if getattr(row, "archived", False):
+            continue
+        if getattr(row, "status", "active") == "superseded":
+            continue
+        titles[row.id] = row.title
+        items.append((row.id, f"{row.title} {row.keywords or ''}", row.content or ""))
+    return items, titles
+
+
+def _conflict_note_for(storage, new_id):
+    """Non-blocking add_rule note when the just-added rule conflicts with an
+    existing active rule (issue #32) — topically similar but body-divergent.
+    Surfacing only: never supersedes, no LLM."""
+    from ..dedup import find_conflicts
+
+    items, titles = _active_conflict_items(storage)
+    pairs = find_conflicts(items)
+    conflicting = sorted({(b if a == new_id else a) for a, b in pairs if new_id in (a, b)})
+    if not conflicting:
+        return ""
+    parts = "; ".join(f"#{cid} '{titles.get(cid, '')}'" for cid in conflicting)
+    return f"\n  ⚠ may conflict with {parts} — consider supersede_rule"
+
+
 def register_rules_tools(
     mcp: FastMCP,
     ctx_or_db,
@@ -379,11 +409,15 @@ def register_rules_tools(
             source_commit=source_commit or None,
         )
 
+        conflict_note = _conflict_note_for(storage, rule_id)
+
         msg = f"Rule added: {title}"
         if actual_path:
             msg += f"\n  File: {actual_path}"
         if warning:
             msg += warning
+        if conflict_note:
+            msg += conflict_note
         return _with_nudge(msg, tracker, title)
 
     @mcp.tool()
@@ -817,6 +851,29 @@ def register_rules_tools(
             lines.append(f"  cluster {i}:")
             for rid in cluster:
                 lines.append(f"    #{rid} {titles.get(rid, '')}")
+        return _with_nudge("\n".join(lines), tracker)
+
+    @mcp.tool()
+    def find_conflicting_rules(topic_threshold: float = 0.5,
+                               body_threshold: float = 0.4) -> str:
+        """Surface CONFLICT candidates (issue #32): active rules that are
+        TOPICALLY similar (title+keywords) but whose BODIES diverge — "same
+        subject, opposite story", the inverse of a near-duplicate. Deterministic,
+        embedding-free. READ-ONLY — never supersedes/merges; a human or agent
+        decides what (if anything) to supersede_rule."""
+        tracker.record_call("find_conflicting_rules")
+        from ..dedup import find_conflicts
+
+        items, titles = _active_conflict_items(storage)
+        pairs = find_conflicts(items, topic_threshold=topic_threshold,
+                               body_threshold=body_threshold)
+        if not pairs:
+            return _with_nudge("No conflicting rules found.", tracker)
+        lines = [f"Found {len(pairs)} conflict candidate(s) "
+                 f"(topic>={topic_threshold}, body<={body_threshold}):"]
+        for a, b in pairs:
+            lines.append(f"  #{a} '{titles.get(a, '')}'  <->  #{b} '{titles.get(b, '')}'")
+        lines.append("  Review; if one supersedes the other, call supersede_rule.")
         return _with_nudge("\n".join(lines), tracker)
 
     @mcp.tool()
