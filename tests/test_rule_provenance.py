@@ -225,7 +225,9 @@ def test_read_rule_falls_back_to_db_content_when_file_absent(wired):
         content="the body only lives in the database",
     ))
     out = wired["mcp"]["read_rule"]("rules/ghost-never-written.md")
-    assert out.startswith("the body only lives in the database")
+    # #34: read_rule now delimits the stored body as untrusted data, so the
+    # body is present but no longer the literal prefix.
+    assert "the body only lives in the database" in out
 
 
 def test_read_rule_db_fallback_increments_hit_count(wired):
