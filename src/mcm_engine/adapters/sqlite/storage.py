@@ -474,6 +474,33 @@ class SqliteStorage:
                 (rule_id, "outcome", actor or "nobody", note),
             )
 
+    def record_token_event(self, kind: str, tokens: int) -> None:
+        """Issue #37 — append one token-ledger row (best-effort telemetry)."""
+        with self.transaction():
+            self._db.execute_write(
+                "INSERT INTO token_ledger (kind, tokens) VALUES (?, ?)",
+                (kind, int(tokens)),
+            )
+
+    def token_totals(self) -> dict:
+        """Issue #37 — {'saved': int, 'spent': int} from the token ledger."""
+        totals = {"saved": 0, "spent": 0}
+        rows = self._db.execute(
+            "SELECT kind, COALESCE(SUM(tokens), 0) AS total "
+            "FROM token_ledger GROUP BY kind"
+        ).fetchall()
+        for r in rows:
+            totals[r["kind"]] = int(r["total"])
+        return totals
+
+    def list_rule_outcomes(self, rule_id: int) -> list:
+        """Issue #36 — (actor, passed) rows for a rule, oldest first."""
+        rows = self._db.execute(
+            "SELECT actor, passed FROM rule_outcomes WHERE rule_id = ? ORDER BY id",
+            (rule_id,),
+        ).fetchall()
+        return [(r["actor"], bool(r["passed"])) for r in rows]
+
     def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
         """Soft-supersede a rule (issue #21): mark superseded rather than
         deleting, so it drops out of default retrieval but stays inspectable."""

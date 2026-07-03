@@ -80,6 +80,11 @@ def register_knowledge_tools(
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
+        try:  # #37: storing knowledge cost tokens.
+            storage.record_token_event(
+                "spent", max(1, (len(summary) + len(detail or "")) // 4))
+        except Exception:
+            pass
 
         # Exact topic match — update instead of insert.
         existing = storage.find_knowledge_by_topic_kind(topic, kind)

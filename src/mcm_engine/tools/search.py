@@ -138,14 +138,33 @@ def _score_and_format_rule(
     if getattr(row, "status", "active") == "superseded" and not include_archived:
         return None
     snap = counters.last_flushed_snapshot(EntityType.RULE, hit.entity_id)
+    correct = snap.get("correct_count") or 0
+    incorrect = snap.get("incorrect_count") or 0
+    if correct or incorrect:
+        # #36: late-binding graded trust — recompute correctness from the outcome
+        # ledger, weighted by the current actor->weight map and excluding
+        # self-reports (author!=judge, #24). Empty map -> all weights 1.0 ->
+        # weighted totals equal the cached counts, so ranking is unchanged.
+        from ..trust import actor_weight
+        author = getattr(row, "created_by", None)
+        wc = wi = 0.0
+        for actor, passed in storage.list_rule_outcomes(row.id):
+            if author and actor == author:
+                continue
+            w = actor_weight(actor)
+            if passed:
+                wc += w
+            else:
+                wi += w
+        correct, incorrect = wc, wi
     composite = compose_rank(
         relevance=relevance,
         hit_count=snap.get("hit_count"),
         reinforcement_count=snap.get("reinforcement_count"),
         pinned=bool(snap.get("pinned")),
         age_days=_age_days(row.created_at),
-        correct_count=snap.get("correct_count"),
-        incorrect_count=snap.get("incorrect_count"),
+        correct_count=correct,
+        incorrect_count=incorrect,
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)

@@ -18,6 +18,7 @@ from ..db import log
 from ..files.watcher import compute_content_hash
 from ..principal import resolve_actor
 from ..rules_links import build_wikilink_relations, extract_wikilinks
+from ..sanitize import scan_injection, wrap_untrusted
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -426,6 +427,14 @@ def register_rules_tools(
             msg += warning
         if conflict_note:
             msg += conflict_note
+        markers = scan_injection(f"{title}\n{content}")
+        if markers:
+            msg += (f"\n  ⚠ possible injection markers ({', '.join(markers)}) "
+                    "— stored but flagged for review")
+        try:  # #37: storing a rule cost tokens.
+            storage.record_token_event("spent", max(1, len(content or "") // 4))
+        except Exception:
+            pass
         return _with_nudge(msg, tracker, title)
 
     @mcp.tool()
@@ -578,13 +587,23 @@ def register_rules_tools(
         full = fp if fp.is_absolute() else project_root / file_path
         row = storage.find_rule_by_file_path(file_path)
 
+        def _serve_body(body: str) -> str:
+            # #34: delimit stored content as untrusted DATA at read time so a
+            # downstream agent reads a rule as a past finding, not live
+            # instructions (enforced here in retrieval code, not the prompt).
+            try:  # #37: reading a stored rule saved re-deriving it.
+                storage.record_token_event("saved", max(1, len(body) // 4))
+            except Exception:
+                pass
+            return _with_nudge(wrap_untrusted(body), tracker, file_path)
+
         # database mode (issue #16): the DB is authoritative — prefer the stored
         # body over any (stale) local file. Falls through to disk only if the
         # row has no content. files mode keeps the disk-first order below.
         if not files_authoritative and row is not None and row.content:
             counters.increment(EntityType.RULE, row.id, "hit_count")
             counters.increment(EntityType.RULE, row.id, "last_hit_at")
-            return _with_nudge(row.content, tracker, file_path)
+            return _serve_body(row.content)
 
         if full.exists():
             try:
@@ -594,13 +613,13 @@ def register_rules_tools(
             if row is not None:
                 counters.increment(EntityType.RULE, row.id, "hit_count")
                 counters.increment(EntityType.RULE, row.id, "last_hit_at")
-            return _with_nudge(content, tracker, file_path)
+            return _serve_body(content)
 
         # No file on disk — serve the DB copy of the body if we have one.
         if row is not None and row.content:
             counters.increment(EntityType.RULE, row.id, "hit_count")
             counters.increment(EntityType.RULE, row.id, "last_hit_at")
-            return _with_nudge(row.content, tracker, file_path)
+            return _serve_body(row.content)
 
         return _with_nudge(f"Rule file not found: {file_path}", tracker)
 

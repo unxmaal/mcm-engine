@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 9
+CORE_VERSION = 10
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -232,6 +232,14 @@ CREATE TABLE IF NOT EXISTS rule_outcomes (
     at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_rule_outcomes_rule ON rule_outcomes (rule_id);
+
+-- v10: token ledger (issue #37) — tokens saved on reads, spent on writes.
+CREATE TABLE IF NOT EXISTS token_ledger (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    tokens INTEGER NOT NULL,
+    at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Typed relationships between knowledge entries
 CREATE TABLE IF NOT EXISTS relations (
@@ -583,6 +591,21 @@ def _migrate_v8_to_v9(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v9_to_v10(db: KnowledgeDB) -> None:
+    """v9 -> v10: token ledger (issue #37). Append-only rows recording tokens
+    saved (reads) and spent (writes), summed for the session_start dashboard."""
+    db.execute_write(
+        """CREATE TABLE IF NOT EXISTS token_ledger (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            tokens INTEGER NOT NULL,
+            at TEXT NOT NULL DEFAULT (datetime('now'))
+        )"""
+    )
+    log("Migration v9->v10: created token_ledger table")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -593,6 +616,7 @@ _MIGRATIONS = [
     (6, 7, _migrate_v6_to_v7),
     (7, 8, _migrate_v7_to_v8),
     (8, 9, _migrate_v8_to_v9),
+    (9, 10, _migrate_v9_to_v10),
 ]
 
 
