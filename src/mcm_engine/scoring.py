@@ -32,6 +32,11 @@ from typing import Optional
 # it in one place — here — not in a dozen ORDER BY clauses.
 HIT_WEIGHT = 0.1
 REINFORCEMENT_WEIGHT = 0.3
+# Issue #21: correctness (outcome-driven) is weighted above popularity. The
+# term is net (correct - incorrect), so a rule that keeps failing is DEMOTED
+# (a negative contribution) rather than hard-banned — ranking adjustment, not
+# exclusion, per the "decay/exploration, never a hard ban" caveat.
+CORRECTNESS_WEIGHT = 0.5
 PINNED_WEIGHT = 2.0
 RECENCY_WINDOW_DAYS = 30.0
 RECENCY_MAX_BONUS = 1.0
@@ -55,15 +60,24 @@ def compose_rank(
     reinforcement_count: Optional[int],
     pinned: bool,
     age_days: Optional[float],
+    correct_count: Optional[int] = None,
+    incorrect_count: Optional[int] = None,
 ) -> float:
-    """The full composite score for knowledge + rules entities."""
+    """The full composite score for knowledge + rules entities.
+
+    `correct_count`/`incorrect_count` (issue #21) default to None so every
+    existing caller is unchanged; rules pass them to fold outcome-driven
+    correctness into ranking as a net (correct - incorrect) term.
+    """
     hits = float(hit_count or 0)
     reinforcement = float(reinforcement_count or 0)
+    correctness = float(correct_count or 0) - float(incorrect_count or 0)
     pinned_term = PINNED_WEIGHT if pinned else 0.0
     return (
         float(raw_rank)
         + HIT_WEIGHT * hits
         + REINFORCEMENT_WEIGHT * reinforcement
+        + CORRECTNESS_WEIGHT * correctness
         + pinned_term
         + recency_bonus(age_days)
     )

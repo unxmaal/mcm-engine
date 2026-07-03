@@ -785,3 +785,47 @@ def register_rules_tools(
         return _with_nudge(
             f"Reinforced: {row.title} (reinforcement_count={count})", tracker,
         )
+
+    @mcp.tool()
+    def report_outcome(rule_ids: list[int], passed: bool, actor: str = "") -> str:
+        """Record whether acting on rule(s) actually WORKED (issue #21) — a
+        CORRECTNESS signal, kept separate from popularity (hit/reinforcement).
+
+        AUTHOR!=JUDGE guard (load-bearing): a report whose actor is the rule's
+        own author is self-certification — the model agreeing with itself. It is
+        still logged (rule_outcomes row + event) but does NOT move the
+        correctness counters; only an INDEPENDENT actor's report can. Trust keys
+        on the author!=judge relationship, not identity alone."""
+        tracker.record_call("report_outcome")
+        who = resolve_actor(actor)
+        results: list[str] = []
+        for rid in rule_ids:
+            row = storage.find_by_id(EntityType.RULE, rid)
+            if row is None:
+                results.append(f"{rid}: not found")
+                continue
+            is_self = bool(row.created_by) and who == row.created_by
+            storage.record_outcome(rid, who, passed, count=not is_self)
+            if is_self:
+                results.append(f"{rid}: recorded (self-report by {who}, uncounted)")
+            else:
+                results.append(f"{rid}: {'passed' if passed else 'failed'} recorded")
+        return _with_nudge("report_outcome — " + "; ".join(results), tracker)
+
+    @mcp.tool()
+    def supersede_rule(old_id: int, new_id: int, actor: str = "") -> str:
+        """Mark old_id as superseded by new_id (issue #21): soft-expire, never
+        delete. A superseded rule drops out of default search but stays
+        inspectable (include_superseded / as_of)."""
+        tracker.record_call("supersede_rule")
+        who = resolve_actor(actor)
+        old = storage.find_by_id(EntityType.RULE, old_id)
+        if old is None:
+            return _with_nudge(f"Rule {old_id} not found.", tracker)
+        new = storage.find_by_id(EntityType.RULE, new_id)
+        if new is None:
+            return _with_nudge(f"Superseding rule {new_id} not found.", tracker)
+        storage.supersede_rule(old_id, new_id, who)
+        return _with_nudge(
+            f"Superseded: {old.title} (now superseded_by={new_id})", tracker,
+        )
