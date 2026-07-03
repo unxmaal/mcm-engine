@@ -20,7 +20,7 @@ from ..backends import (
     StorageBackend,
 )
 from ..db import log
-from ..scoring import compose_rank, compose_rank_pinned_only
+from ..scoring import compose_rank, compose_rank_pinned_only, minmax_normalize
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -91,7 +91,7 @@ def _score_and_format_knowledge(
     storage: StorageBackend,
     counters: CounterStore,
     project: str,
-    query_terms: int | None = None,
+    relevance: float = 1.0,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.KNOWLEDGE, hit.entity_id)
     if row is None:
@@ -100,12 +100,11 @@ def _score_and_format_knowledge(
         return None
     snap = counters.last_flushed_snapshot(EntityType.KNOWLEDGE, hit.entity_id)
     composite = compose_rank(
-        raw_rank=hit.score,
+        relevance=relevance,
         hit_count=snap.get("hit_count"),
         reinforcement_count=snap.get("reinforcement_count"),
         pinned=bool(snap.get("pinned")),
         age_days=_age_days(row.created_at),
-        query_terms=query_terms,
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)
@@ -124,7 +123,7 @@ def _score_and_format_rule(
     storage: StorageBackend,
     counters: CounterStore,
     include_archived: bool = False,
-    query_terms: int | None = None,
+    relevance: float = 1.0,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.RULE, hit.entity_id)
     if row is None:
@@ -140,14 +139,13 @@ def _score_and_format_rule(
         return None
     snap = counters.last_flushed_snapshot(EntityType.RULE, hit.entity_id)
     composite = compose_rank(
-        raw_rank=hit.score,
+        relevance=relevance,
         hit_count=snap.get("hit_count"),
         reinforcement_count=snap.get("reinforcement_count"),
         pinned=bool(snap.get("pinned")),
         age_days=_age_days(row.created_at),
         correct_count=snap.get("correct_count"),
         incorrect_count=snap.get("incorrect_count"),
-        query_terms=query_terms,
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)
@@ -167,13 +165,14 @@ def _score_and_format_negative(
     hit: SearchHit,
     storage: StorageBackend,
     project: str,
+    relevance: float = 1.0,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.NEGATIVE, hit.entity_id)
     if row is None:
         return None
     if project and not _project_match(row.project, project):
         return None
-    composite = compose_rank_pinned_only(raw_rank=hit.score, pinned=hit.is_pinned)
+    composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[NEGATIVE]{pinned} {row.category}: {row.what_failed}"
     if row.why_failed:
@@ -187,13 +186,14 @@ def _score_and_format_error(
     hit: SearchHit,
     storage: StorageBackend,
     project: str,
+    relevance: float = 1.0,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.ERROR, hit.entity_id)
     if row is None:
         return None
     if project and not _project_match(row.project, project):
         return None
-    composite = compose_rank_pinned_only(raw_rank=hit.score, pinned=hit.is_pinned)
+    composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[ERROR]{pinned} {row.pattern}"
     if row.root_cause:
@@ -221,20 +221,26 @@ def _scope_block(
     # sort across. SqliteSearch already sorts by raw rank desc; the
     # composite re-sort may reorder a bit.
     raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3)
-    query_terms = len(query.split())
+    # Batch min-max relevance normalization (#27): scale-free across adapters
+    # (SQLite bm25 vs Postgres ts_rank_cd) because it uses THIS batch's own
+    # score range rather than a fixed, adapter-specific midpoint.
+    _scores = [h.score for h in raw_hits]
+    _lo = min(_scores) if _scores else 0.0
+    _hi = max(_scores) if _scores else 0.0
 
     scored: list[tuple[float, str, int]] = []  # (composite, formatted, entity_id)
     for hit in raw_hits:
         if min_rank > 0 and hit.score < min_rank:
             continue
+        relevance = minmax_normalize(hit.score, _lo, _hi)
         if etype is EntityType.KNOWLEDGE:
-            result = _score_and_format_knowledge(hit, storage, counters, project, query_terms)
+            result = _score_and_format_knowledge(hit, storage, counters, project, relevance)
         elif etype is EntityType.RULE:
-            result = _score_and_format_rule(hit, storage, counters, include_archived, query_terms)
+            result = _score_and_format_rule(hit, storage, counters, include_archived, relevance)
         elif etype is EntityType.NEGATIVE:
-            result = _score_and_format_negative(hit, storage, project)
+            result = _score_and_format_negative(hit, storage, project, relevance)
         elif etype is EntityType.ERROR:
-            result = _score_and_format_error(hit, storage, project)
+            result = _score_and_format_error(hit, storage, project, relevance)
         else:
             continue
         if result is None:

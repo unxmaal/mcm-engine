@@ -1,35 +1,30 @@
-"""Composite search rank — additive-hybrid reformulation (issue #25).
+"""Composite search rank — scale-free additive-hybrid (issues #25 / #27).
 
-The pre-#25 formula added *raw* counter values to the lexical rank:
+#25 introduced the additive-hybrid weighted sum but normalized the lexical
+relevance with a fixed-scale sigmoid whose midpoint was calibrated for SQLite
+FTS5 bm25 (magnitudes ~1-20). The Postgres adapter scores with ts_rank_cd on a
+much smaller scale (~0.1-1), so that sigmoid collapsed relevance to ~0 there and
+counters dominated. #27 replaces the fixed sigmoid with BATCH MIN-MAX relative
+normalization applied in the search layer:
 
-    composite = raw_rank + 0.1*hit + 0.3*reinforcement + 0.5*(correct-incorrect)
-              + 2.0*pinned + recency_bonus
+    relevance = (raw_rank - batch_min) / (batch_max - batch_min)
 
-which let an unbounded counter (hit_count=100 -> +10) swamp the relevance
-signal. This reformulation normalizes every signal to a bounded range and
-takes a weighted sum, with relevance weighted above the *summed* other weights
-so a strong lexical match cannot be out-voted by counter noise:
+which is scale-free — identical behavior for bm25, ts_rank_cd, or any future
+adapter, with zero per-scale tuning. `compose_rank` therefore receives a
+pre-normalized `relevance` in [0,1]; tools/search.py computes it across each
+query's candidate batch.
 
-    composite = W_RELEVANCE     * relevance(raw_rank, query_terms)   # sigmoid, [0,1]
-              + W_HIT           * saturate(hit_count)                # x/(x+k), [0,1)
+    composite = W_RELEVANCE     * relevance                    # [0,1], batch min-max
+              + W_HIT           * saturate(hit_count)          # x/(x+k), [0,1)
               + W_REINFORCEMENT * saturate(reinforcement_count)
-              + W_CORRECTNESS   * tanh(net_outcomes / scale)         # signed, [-1,1]
-              + W_RECENCY       * recency_bonus(age_days)            # linear, [0,1]
+              + W_CORRECTNESS   * tanh(net_outcomes / scale)   # signed, [-1,1]
+              + W_RECENCY       * recency_bonus(age_days)      # linear, [0,1]
               + PINNED_WEIGHT   * (1 if pinned else 0)
 
-Design notes:
-- relevance uses a query-length-adaptive logistic sigmoid over the sign-flipped
-  (higher=better) bm25 rank — the Mem0 `normalize_bm25` shape. `query_terms`
-  defaults to None (fixed params) so callers that don't have the query still work.
-- correctness (issue #21) is SIGNED via tanh(net): a failing rule is demoted
-  (negative contribution) not banned, and an untested rule / net-zero rule is
-  neutral (0). "Decay/exploration, never a hard ban."
-- Sign convention unchanged: higher = better (SqliteSearch flips FTS5's
-  negative-better bm25 before this scorer sees it).
-
-TUNING CAVEAT: the bm25 sigmoid midpoints/steepness assume a bm25 magnitude
-scale; they're isolated constants below and should be validated against real
-query bm25 distributions (or swapped for batch min-max) before heavy reliance.
+W_RELEVANCE > the summed other non-pinned weights, so a top-of-batch match is
+never out-voted by counter noise. Correctness (issue #21) is signed: a failing
+rule is demoted (not banned), an untested / net-zero rule is neutral. Sign
+convention unchanged: higher = better.
 """
 from __future__ import annotations
 
@@ -38,7 +33,7 @@ from typing import Optional
 
 # --- weights (on the NORMALIZED [0,1]/[-1,1] terms) -------------------------
 # Relevance must exceed the sum of the other non-pinned weights (0.1+0.3+0.5+0.3
-# = 1.2) so a top lexical match is never swamped by maxed-out counters.
+# = 1.2) so a top-of-batch match is never swamped by maxed-out counters.
 W_RELEVANCE = 2.0
 W_HIT = 0.1
 W_REINFORCEMENT = 0.3
@@ -53,35 +48,23 @@ CORRECTNESS_SCALE = 2.0        # net outcomes -> tanh(net/scale)
 RECENCY_WINDOW_DAYS = 30.0
 RECENCY_MAX_BONUS = 1.0
 
-# bm25 sigmoid params, query-length-adaptive (Mem0-style). Fewer query terms ->
-# lower midpoint (a short query's top bm25 is smaller).
-_BM25_DEFAULT = (8.0, 0.6)     # (midpoint, steepness) when query length unknown
 
+def minmax_normalize(value: float, lo: float, hi: float) -> float:
+    """Scale a raw lexical rank to [0,1] relative to the candidate batch.
 
-def _bm25_params(query_terms: Optional[int]) -> tuple[float, float]:
-    if not query_terms:
-        return _BM25_DEFAULT
-    if query_terms <= 3:
-        return (5.0, 0.7)
-    if query_terms <= 15:
-        return (8.0, 0.6)
-    return (12.0, 0.5)
-
-
-def _sigmoid(x: float, midpoint: float, steepness: float) -> float:
-    z = -steepness * (x - midpoint)
-    if z >= 60:      # avoid overflow; sigmoid -> 0
-        return 0.0
-    if z <= -60:
+    Scale-free: works identically for bm25 (~1-20) or ts_rank_cd (~0.1-1) since
+    it uses the batch's own min/max. A degenerate batch (hi <= lo: a single hit,
+    or all-equal scores) returns 1.0 — uniform, so the other signals break the
+    tie. Clamped to [0,1] for safety.
+    """
+    if hi <= lo:
         return 1.0
-    return 1.0 / (1.0 + math.exp(z))
-
-
-def normalize_relevance(raw_rank: float, query_terms: Optional[int] = None) -> float:
-    """Sign-flipped bm25 rank -> [0,1] via a query-length-adaptive sigmoid.
-    Monotonically increasing in raw_rank."""
-    midpoint, steepness = _bm25_params(query_terms)
-    return _sigmoid(float(raw_rank), midpoint, steepness)
+    v = (float(value) - lo) / (hi - lo)
+    if v < 0.0:
+        return 0.0
+    if v > 1.0:
+        return 1.0
+    return v
 
 
 def _saturate(count: Optional[int], k: float) -> float:
@@ -112,24 +95,23 @@ def recency_bonus(age_days: Optional[float]) -> float:
 
 def compose_rank(
     *,
-    raw_rank: float,
+    relevance: float,
     hit_count: Optional[int],
     reinforcement_count: Optional[int],
     pinned: bool,
     age_days: Optional[float],
     correct_count: Optional[int] = None,
     incorrect_count: Optional[int] = None,
-    query_terms: Optional[int] = None,
 ) -> float:
     """Additive-hybrid composite for knowledge + rules entities.
 
-    `correct_count`/`incorrect_count` (issue #21) and `query_terms` (issue #25)
-    default to None so existing callers are unchanged; rules pass correctness to
-    fold outcome-driven trust into ranking, and callers with the query pass its
-    term count for the length-adaptive relevance sigmoid.
+    `relevance` is a pre-normalized [0,1] lexical score (batch min-max, computed
+    by the search layer — see `minmax_normalize`). `correct_count`/
+    `incorrect_count` (issue #21) default to None so non-rule callers are
+    unchanged.
     """
     base = (
-        W_RELEVANCE * normalize_relevance(raw_rank, query_terms)
+        W_RELEVANCE * float(relevance)
         + W_HIT * _saturate(hit_count, HIT_SATURATION)
         + W_REINFORCEMENT * _saturate(reinforcement_count, REINFORCEMENT_SATURATION)
         + W_CORRECTNESS * _correctness_term(correct_count, incorrect_count)
@@ -140,13 +122,9 @@ def compose_rank(
 
 def compose_rank_pinned_only(
     *,
-    raw_rank: float,
+    relevance: float,
     pinned: bool,
-    query_terms: Optional[int] = None,
 ) -> float:
     """Reduced composite for negative + errors entities, which only track
-    `pinned` (no counters). Uses the same relevance normalization so lexical
-    scale is consistent with `compose_rank`."""
-    return W_RELEVANCE * normalize_relevance(raw_rank, query_terms) + (
-        PINNED_WEIGHT if pinned else 0.0
-    )
+    `pinned` (no counters). `relevance` is the same batch-min-max [0,1] value."""
+    return W_RELEVANCE * float(relevance) + (PINNED_WEIGHT if pinned else 0.0)
