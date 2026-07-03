@@ -19,8 +19,8 @@
     "mutator_calls": 0
   },
   "dc3a5f4a-b64f-42cd-a0d2-e251a18cd2d5": {
-    "builtin_calls": 119,
+    "builtin_calls": 130,
     "last_reset_at": 1783085001.2123709,
-    "mutator_calls": 59
+    "mutator_calls": 67
   }
 }

@@ -367,6 +367,11 @@ class StorageBackend(Protocol):
         """Return {'saved': int, 'spent': int} from the token ledger (issue #37)."""
         ...
 
+    def list_rule_outcomes(self, rule_id: int) -> list:
+        """Return [(actor, passed_bool), ...] for a rule's outcome ledger
+        (issue #36) — used for late-binding trust-weighted correctness."""
+        ...
+
     # ---- Rule provenance / audit log (issue #10) ----
     #
     # Events are emitted by the *tool layer* (add_rule / sync_rules /

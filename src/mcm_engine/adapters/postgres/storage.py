@@ -902,6 +902,16 @@ class PostgresStorage:
                 totals[r["kind"]] = int(r["total"])
         return totals
 
+    def list_rule_outcomes(self, rule_id: int) -> list:
+        """Issue #36 — (actor, passed) rows for a rule, oldest first."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT actor, passed FROM rule_outcomes WHERE rule_id = %s "
+                "ORDER BY id",
+                (rule_id,),
+            )
+            return [(r["actor"], bool(r["passed"])) for r in cur.fetchall()]
+
     def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
         """Issue #21 — soft-supersede (never delete). Atomic via transaction()."""
         with self.transaction():
