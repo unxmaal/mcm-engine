@@ -91,6 +91,7 @@ def _score_and_format_knowledge(
     storage: StorageBackend,
     counters: CounterStore,
     project: str,
+    query_terms: int | None = None,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.KNOWLEDGE, hit.entity_id)
     if row is None:
@@ -104,6 +105,7 @@ def _score_and_format_knowledge(
         reinforcement_count=snap.get("reinforcement_count"),
         pinned=bool(snap.get("pinned")),
         age_days=_age_days(row.created_at),
+        query_terms=query_terms,
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)
@@ -122,6 +124,7 @@ def _score_and_format_rule(
     storage: StorageBackend,
     counters: CounterStore,
     include_archived: bool = False,
+    query_terms: int | None = None,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.RULE, hit.entity_id)
     if row is None:
@@ -144,6 +147,7 @@ def _score_and_format_rule(
         age_days=_age_days(row.created_at),
         correct_count=snap.get("correct_count"),
         incorrect_count=snap.get("incorrect_count"),
+        query_terms=query_terms,
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)
@@ -217,15 +221,16 @@ def _scope_block(
     # sort across. SqliteSearch already sorts by raw rank desc; the
     # composite re-sort may reorder a bit.
     raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3)
+    query_terms = len(query.split())
 
     scored: list[tuple[float, str, int]] = []  # (composite, formatted, entity_id)
     for hit in raw_hits:
         if min_rank > 0 and hit.score < min_rank:
             continue
         if etype is EntityType.KNOWLEDGE:
-            result = _score_and_format_knowledge(hit, storage, counters, project)
+            result = _score_and_format_knowledge(hit, storage, counters, project, query_terms)
         elif etype is EntityType.RULE:
-            result = _score_and_format_rule(hit, storage, counters, include_archived)
+            result = _score_and_format_rule(hit, storage, counters, include_archived, query_terms)
         elif etype is EntityType.NEGATIVE:
             result = _score_and_format_negative(hit, storage, project)
         elif etype is EntityType.ERROR:
