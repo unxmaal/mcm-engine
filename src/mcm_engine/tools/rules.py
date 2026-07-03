@@ -431,6 +431,10 @@ def register_rules_tools(
         if markers:
             msg += (f"\n  ⚠ possible injection markers ({', '.join(markers)}) "
                     "— stored but flagged for review")
+        try:  # #37: storing a rule cost tokens.
+            storage.record_token_event("spent", max(1, len(content or "") // 4))
+        except Exception:
+            pass
         return _with_nudge(msg, tracker, title)
 
     @mcp.tool()
@@ -587,6 +591,10 @@ def register_rules_tools(
             # #34: delimit stored content as untrusted DATA at read time so a
             # downstream agent reads a rule as a past finding, not live
             # instructions (enforced here in retrieval code, not the prompt).
+            try:  # #37: reading a stored rule saved re-deriving it.
+                storage.record_token_event("saved", max(1, len(body) // 4))
+            except Exception:
+                pass
             return _with_nudge(wrap_untrusted(body), tracker, file_path)
 
         # database mode (issue #16): the DB is authoritative — prefer the stored

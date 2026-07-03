@@ -141,6 +141,19 @@ def register_session_tools(
         except Exception:
             pass
 
+        # Token ledger (issue #37): memory value as tokens saved vs spent.
+        try:
+            tl = storage.token_totals()
+            saved, spent = tl.get("saved", 0), tl.get("spent", 0)
+            net = saved - spent
+            sign = "+" if net >= 0 else ""
+            parts.append(
+                f"Token ledger: saved ~{saved // 1000}k, spent ~{spent // 1000}k "
+                f"(net {sign}{net // 1000}k)"
+            )
+        except Exception:
+            pass
+
         # Stale knowledge (>90 days, no recent hit, not pinned).
         try:
             stale = storage.count_stale_knowledge()

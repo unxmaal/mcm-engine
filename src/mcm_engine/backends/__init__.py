@@ -359,6 +359,14 @@ class StorageBackend(Protocol):
         """Soft-supersede a rule (issue #21): mark superseded, never delete."""
         ...
 
+    def record_token_event(self, kind: str, tokens: int) -> None:
+        """Append a token-ledger row (issue #37): kind is 'saved'|'spent'."""
+        ...
+
+    def token_totals(self) -> dict:
+        """Return {'saved': int, 'spent': int} from the token ledger (issue #37)."""
+        ...
+
     # ---- Rule provenance / audit log (issue #10) ----
     #
     # Events are emitted by the *tool layer* (add_rule / sync_rules /
