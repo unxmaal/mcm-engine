@@ -787,6 +787,39 @@ def register_rules_tools(
         )
 
     @mcp.tool()
+    def find_duplicate_rules(threshold: float = 0.9) -> str:
+        """Surface NEAR-DUPLICATE rules for review (issue #30). Deterministic
+        MinHash/LSH over each active rule's title+keywords+content;
+        embedding-free. READ-ONLY — never merges, supersedes, or deletes; a
+        human/agent decides what (if anything) to reconcile."""
+        tracker.record_call("find_duplicate_rules")
+        from ..dedup import find_near_duplicates
+
+        titles: dict[int, str] = {}
+        items: list[tuple[int, str]] = []
+        for row in storage.iter_entries(EntityType.RULE):
+            if getattr(row, "archived", False):
+                continue
+            if getattr(row, "status", "active") == "superseded":
+                continue
+            titles[row.id] = row.title
+            items.append(
+                (row.id, f"{row.title} {row.keywords or ''} {row.content or ''}")
+            )
+
+        clusters = find_near_duplicates(items, threshold=threshold)
+        if not clusters:
+            return _with_nudge("No near-duplicate rules found.", tracker)
+        lines = [
+            f"Found {len(clusters)} near-duplicate cluster(s) (threshold={threshold}):"
+        ]
+        for i, cluster in enumerate(clusters, 1):
+            lines.append(f"  cluster {i}:")
+            for rid in cluster:
+                lines.append(f"    #{rid} {titles.get(rid, '')}")
+        return _with_nudge("\n".join(lines), tracker)
+
+    @mcp.tool()
     def report_outcome(rule_ids: list[int], passed: bool, actor: str = "") -> str:
         """Record whether acting on rule(s) actually WORKED (issue #21) — a
         CORRECTNESS signal, kept separate from popularity (hit/reinforcement).
