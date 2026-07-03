@@ -877,6 +877,19 @@ def register_rules_tools(
         return _with_nudge("\n".join(lines), tracker)
 
     @mcp.tool()
+    def consolidation_report(max_age_days: int = 90) -> str:
+        """Read-only KB-hygiene report (issue #31): near-duplicate merge
+        candidates, topic-similar/body-divergent conflict candidates, and stale
+        rules (unreinforced + aged + not recently hit). Surfacing only — mutates
+        nothing; act via supersede_rule / archive / report_outcome."""
+        tracker.record_call("consolidation_report")
+        from ..consolidate import consolidation_report as _report
+        from ..consolidate import format_report
+
+        return _with_nudge(format_report(_report(storage, max_age_days=max_age_days)),
+                           tracker)
+
+    @mcp.tool()
     def report_outcome(rule_ids: list[int], passed: bool, actor: str = "") -> str:
         """Record whether acting on rule(s) actually WORKED (issue #21) — a
         CORRECTNESS signal, kept separate from popularity (hit/reinforcement).
