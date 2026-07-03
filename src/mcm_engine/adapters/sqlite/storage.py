@@ -95,6 +95,15 @@ def _error_from_row(r: sqlite3.Row) -> ErrorRow:
     )
 
 
+def _col(r: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """Tolerant column access — returns default if the column is absent from
+    the row (e.g. a query written before a migration added the column)."""
+    try:
+        return r[key]
+    except (KeyError, IndexError):
+        return default
+
+
 def _rule_from_row(r: sqlite3.Row) -> RuleRow:
     return RuleRow(
         id=r["id"],
@@ -115,6 +124,11 @@ def _rule_from_row(r: sqlite3.Row) -> RuleRow:
         content=r["content"],
         created_by=r["created_by"],
         updated_by=r["updated_by"],
+        correct_count=_col(r, "correct_count", 0) or 0,
+        incorrect_count=_col(r, "incorrect_count", 0) or 0,
+        valid_until=_parse_dt(_col(r, "valid_until")),
+        superseded_by=_col(r, "superseded_by"),
+        status=_col(r, "status", "active") or "active",
     )
 
 
@@ -432,6 +446,48 @@ class SqliteStorage:
             (rule_id,),
         )
         self._db.commit()
+
+    def record_outcome(
+        self, rule_id: int, actor: str, passed: bool, *, count: bool = True
+    ) -> None:
+        """Record one outcome report (issue #21). Always appends a rule_outcomes
+        ledger row + a rule_events row; bumps correct/incorrect only when
+        ``count`` — the author!=judge guard passes count=False for self-reports
+        so they are logged but do not move the correctness signal. Atomic."""
+        p = 1 if passed else 0
+        with self.transaction():
+            self._db.execute_write(
+                "INSERT INTO rule_outcomes (rule_id, actor, passed) VALUES (?, ?, ?)",
+                (rule_id, actor or "nobody", p),
+            )
+            if count:
+                col = "correct_count" if passed else "incorrect_count"
+                self._db.execute_write(
+                    f"UPDATE rules SET {col} = {col} + 1 WHERE id = ?", (rule_id,)
+                )
+            note = ("passed" if passed else "failed") + (
+                "" if count else " (self-report, uncounted)"
+            )
+            self._db.execute_write(
+                "INSERT INTO rule_events (rule_id, event_type, actor, note) "
+                "VALUES (?, ?, ?, ?)",
+                (rule_id, "outcome", actor or "nobody", note),
+            )
+
+    def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
+        """Soft-supersede a rule (issue #21): mark superseded rather than
+        deleting, so it drops out of default retrieval but stays inspectable."""
+        with self.transaction():
+            self._db.execute_write(
+                "UPDATE rules SET valid_until = datetime('now'), superseded_by = ?, "
+                "status = 'superseded', updated_at = datetime('now') WHERE id = ?",
+                (new_id, old_id),
+            )
+            self._db.execute_write(
+                "INSERT INTO rule_events (rule_id, event_type, actor, note) "
+                "VALUES (?, ?, ?, ?)",
+                (old_id, "superseded", actor or "nobody", f"superseded_by:{new_id}"),
+            )
 
     def insert_rule_event(
         self,

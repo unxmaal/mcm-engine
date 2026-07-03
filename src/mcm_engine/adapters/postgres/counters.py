@@ -33,7 +33,8 @@ _TABLE: dict[EntityType, str] = {
 
 _COUNTER_COLUMNS: dict[str, set[str]] = {
     "knowledge":          {"hit_count", "reinforcement_count", "pinned", "last_hit_at"},
-    "rules":              {"hit_count", "reinforcement_count", "pinned", "last_hit_at"},
+    "rules":              {"hit_count", "reinforcement_count", "pinned", "last_hit_at",
+                           "correct_count", "incorrect_count"},
     "negative_knowledge": {"pinned"},
     "errors":             {"pinned"},
 }
