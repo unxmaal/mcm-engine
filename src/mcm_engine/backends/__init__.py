@@ -170,6 +170,14 @@ class RuleRow:
     content: Optional[str] = None
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
+    # Issue #21 (v9): correctness axis + supersession. correct/incorrect are
+    # outcome-driven (distinct from popularity). status/valid_until/superseded_by
+    # implement non-destructive supersession.
+    correct_count: int = 0
+    incorrect_count: int = 0
+    valid_until: Optional[datetime] = None
+    superseded_by: Optional[int] = None
+    status: str = "active"
 
 
 @dataclass
@@ -338,6 +346,18 @@ class StorageBackend(Protocol):
         ...
     def soft_delete_rule(self, rule_id: int) -> None: ...
     def restore_rule(self, rule_id: int) -> None: ...
+
+    def record_outcome(
+        self, rule_id: int, actor: str, passed: bool, *, count: bool = True
+    ) -> None:
+        """Record one outcome report for a rule (issue #21): append a
+        rule_outcomes ledger row + a rule_events row, and bump correct/incorrect
+        counters only when ``count`` (author!=judge self-reports pass False)."""
+        ...
+
+    def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
+        """Soft-supersede a rule (issue #21): mark superseded, never delete."""
+        ...
 
     # ---- Rule provenance / audit log (issue #10) ----
     #

@@ -130,6 +130,11 @@ def _score_and_format_rule(
     # The watcher cascade (MCM2-23) and `read_rule` still reach them.
     if row.archived and not include_archived:
         return None
+    # Superseded rules (issue #21) are soft-expired: hidden from default search,
+    # surfaced alongside archived rows via the include_archived escape. A
+    # dedicated include_superseded / as_of audit flag is a follow-up.
+    if getattr(row, "status", "active") == "superseded" and not include_archived:
+        return None
     snap = counters.last_flushed_snapshot(EntityType.RULE, hit.entity_id)
     composite = compose_rank(
         raw_rank=hit.score,
@@ -137,6 +142,8 @@ def _score_and_format_rule(
         reinforcement_count=snap.get("reinforcement_count"),
         pinned=bool(snap.get("pinned")),
         age_days=_age_days(row.created_at),
+        correct_count=snap.get("correct_count"),
+        incorrect_count=snap.get("incorrect_count"),
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)

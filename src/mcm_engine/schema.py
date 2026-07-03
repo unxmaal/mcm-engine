@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 8
+CORE_VERSION = 9
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -168,7 +168,13 @@ CREATE TABLE IF NOT EXISTS rules (
     updated_at TEXT DEFAULT (datetime('now')),
     content TEXT,
     created_by TEXT,
-    updated_by TEXT
+    updated_by TEXT,
+    -- v9: correctness axis + supersession (issue #21). None are FTS-indexed.
+    correct_count INTEGER DEFAULT 0,
+    incorrect_count INTEGER DEFAULT 0,
+    valid_until TEXT,
+    superseded_by INTEGER,
+    status TEXT DEFAULT 'active'
 );
 
 -- The FTS column is named `content` to match the rules.content column
@@ -215,6 +221,17 @@ CREATE TABLE IF NOT EXISTS rule_events (
     note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rule_events_rule_at ON rule_events (rule_id, at DESC);
+
+-- v9: append-only per-outcome ledger (issue #21). Stores (actor, passed)
+-- only — trust weight is applied at rank time (late-binding), never persisted.
+CREATE TABLE IF NOT EXISTS rule_outcomes (
+    id INTEGER PRIMARY KEY,
+    rule_id INTEGER NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'nobody',
+    passed INTEGER NOT NULL,
+    at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rule_outcomes_rule ON rule_outcomes (rule_id);
 
 -- Typed relationships between knowledge entries
 CREATE TABLE IF NOT EXISTS relations (
@@ -525,6 +542,47 @@ def _migrate_v7_to_v8(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v8_to_v9(db: KnowledgeDB) -> None:
+    """v8 -> v9: correctness axis + supersession (issue #21).
+
+    Adds rules.correct_count / incorrect_count (outcome-driven correctness,
+    separate from popularity) plus valid_until / superseded_by / status for
+    non-destructive supersession, and the append-only rule_outcomes ledger.
+    None of the new columns are FTS-indexed, so rules_fts is left untouched.
+    Existing rows default to status='active' with zero counts.
+    """
+    if not _has_column(db, "rules", "correct_count"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN correct_count INTEGER DEFAULT 0")
+        log("Migration v8->v9: added rules.correct_count")
+    if not _has_column(db, "rules", "incorrect_count"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN incorrect_count INTEGER DEFAULT 0")
+        log("Migration v8->v9: added rules.incorrect_count")
+    if not _has_column(db, "rules", "valid_until"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN valid_until TEXT")
+        log("Migration v8->v9: added rules.valid_until")
+    if not _has_column(db, "rules", "superseded_by"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN superseded_by INTEGER")
+        log("Migration v8->v9: added rules.superseded_by")
+    if not _has_column(db, "rules", "status"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN status TEXT DEFAULT 'active'")
+        log("Migration v8->v9: added rules.status")
+
+    db.execute_write(
+        """CREATE TABLE IF NOT EXISTS rule_outcomes (
+            id INTEGER PRIMARY KEY,
+            rule_id INTEGER NOT NULL,
+            actor TEXT NOT NULL DEFAULT 'nobody',
+            passed INTEGER NOT NULL,
+            at TEXT NOT NULL DEFAULT (datetime('now'))
+        )"""
+    )
+    db.execute_write(
+        "CREATE INDEX IF NOT EXISTS idx_rule_outcomes_rule ON rule_outcomes (rule_id)"
+    )
+    log("Migration v8->v9: created rule_outcomes table")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -534,6 +592,7 @@ _MIGRATIONS = [
     (5, 6, _migrate_v5_to_v6),
     (6, 7, _migrate_v6_to_v7),
     (7, 8, _migrate_v7_to_v8),
+    (8, 9, _migrate_v8_to_v9),
 ]
 
 
