@@ -170,6 +170,23 @@ def find_near_duplicates(
 
 TOPIC_THRESHOLD = 0.5   # title+keywords similarity: "same subject"
 BODY_THRESHOLD = 0.4    # content similarity: at/below this the claims diverge
+SUBSUME_THRESHOLD = 0.8  # #33: fraction of one body's shingles contained in the other
+
+
+def classify_conflict(body_a: str, body_b: str) -> str:
+    """Label a conflict pair (issue #33) by body-shingle CONTAINMENT asymmetry:
+    ``subsumes`` (a contains ~all of b and is larger), ``subsumed`` (a is
+    contained in b), else ``contradictory`` (neither contains the other —
+    genuinely divergent). Deterministic; no LLM."""
+    sa, sb = _shingles(body_a), _shingles(body_b)
+    if not sa or not sb:
+        return "contradictory"
+    inter = len(sa & sb)
+    if inter / len(sb) >= SUBSUME_THRESHOLD and len(sa) > len(sb):
+        return "subsumes"
+    if inter / len(sa) >= SUBSUME_THRESHOLD and len(sb) > len(sa):
+        return "subsumed"
+    return "contradictory"
 
 
 def find_conflicts(
@@ -189,7 +206,8 @@ def find_conflicts(
     is therefore excluded. Rows whose topic is below ``min_entropy``, or whose
     body has no shingles (can't assess divergence), are skipped.
 
-    Deterministic; returns sorted ``(id_a, id_b)`` pairs with id_a < id_b.
+    Deterministic; returns sorted ``(id_a, id_b, label)`` triples (id_a < id_b),
+    label in {contradictory, subsumes, subsumed} (issue #33, see classify_conflict).
     """
     rows = [
         (rid, topic, body) for rid, topic, body in items
@@ -197,6 +215,7 @@ def find_conflicts(
     ]
     topic_sig = {rid: minhash_signature(topic) for rid, topic, _ in rows}
     body_sig = {rid: minhash_signature(body) for rid, _, body in rows}
+    body_of = {rid: body for rid, _, body in rows}
     ids = [rid for rid, _, _ in rows]
     pairs: list[tuple] = []
     for i in range(len(ids)):
@@ -205,6 +224,7 @@ def find_conflicts(
             if _signature_similarity(topic_sig[a], topic_sig[b]) < topic_threshold:
                 continue
             if _signature_similarity(body_sig[a], body_sig[b]) <= body_threshold:
-                pairs.append((a, b) if a <= b else (b, a))
+                lo, hi = (a, b) if a <= b else (b, a)
+                pairs.append((lo, hi, classify_conflict(body_of[lo], body_of[hi])))
     pairs.sort()
     return pairs

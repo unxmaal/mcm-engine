@@ -80,9 +80,10 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 WARN_THRESHOLD = 3
@@ -340,6 +341,99 @@ def _decide(
 
 
 # ---------------------------------------------------------------------------
+# Ambient recall (issue #35) — OPT-IN, default OFF, experimental.
+#
+# When MCM_AMBIENT_RECALL is truthy, a file-mutator event triggers a BEST-EFFORT
+# KB search keyed on the edited file path, and the top rule hit is surfaced as an
+# advisory stderr line ("hook as muse"). It NEVER blocks, never changes the exit
+# code, and silently skips on ANY error/timeout/backend-unavailable. Enabling it
+# needs `uv tool install --reinstall` to take effect in the live hook, and it
+# should be tuned before broad use — it adds a search to every qualifying call,
+# and which backend it hits depends on the cwd's config. Default OFF so the
+# hook's behavior is byte-identical to today unless you opt in.
+# ---------------------------------------------------------------------------
+
+AMBIENT_ENV = "MCM_AMBIENT_RECALL"
+AMBIENT_MAX_PER_SESSION = 8
+AMBIENT_TIMEOUT_S = 1.0
+_AMBIENT_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def _ambient_enabled() -> bool:
+    return os.environ.get(AMBIENT_ENV, "").strip().lower() in _AMBIENT_TRUTHY
+
+
+def _ambient_query(tool_name: str, event: dict) -> Optional[str]:
+    """Implicit query from a file-mutator event's path (basename tokens); None
+    for non-mutator events or when no path is present."""
+    if _normalize_builtin_tool(tool_name) not in BLOCKING_BUILTIN_TOOLS:
+        return None
+    ti = event.get("tool_input") or {}
+    path = ti.get("file_path") or ti.get("path") or ti.get("notebook_path")
+    if not path:
+        return None
+    stem = Path(str(path)).stem
+    toks = [t for t in re.split(r"[^A-Za-z0-9]+", stem) if len(t) > 2]
+    return " ".join(toks) if toks else None
+
+
+def _default_ambient_search(query: str, cwd: Path):
+    """Best-effort KB rule search from the hook. Returns ``(title, file_path)``
+    of the top hit or None. HEAVY (loads config + opens storage) — the caller
+    runs it under a timeout and swallows every exception, so it must be safe to
+    abandon mid-flight."""
+    from ..backends import EntityType
+    from ..config import load_config
+    from ..wiring import build_context
+
+    config = load_config(project_root=_find_project_root(cwd))
+    ctx = build_context(config)
+    hits = ctx.search.search(query, entity_types={EntityType.RULE}, limit=1)
+    if not hits:
+        return None
+    row = ctx.storage.find_by_id(EntityType.RULE, hits[0].entity_id)
+    if row is None:
+        return None
+    return (row.title, row.file_path)
+
+
+def _ambient_recall(tool_name, event, session_state, cwd, *, search=None) -> Optional[str]:
+    """Opt-in ambient recall. Returns one advisory line or None. NEVER raises,
+    never blocks longer than AMBIENT_TIMEOUT_S. Mutates ``session_state`` (the
+    per-session dedup list) only when enabled."""
+    if not _ambient_enabled():
+        return None
+    query = _ambient_query(tool_name, event)
+    if not query:
+        return None
+    suggested = session_state.setdefault("ambient_suggested", [])
+    if len(suggested) >= AMBIENT_MAX_PER_SESSION:
+        return None
+    run = search or _default_ambient_search
+    box: dict = {}
+
+    def _work():
+        try:
+            box["r"] = run(query, cwd)
+        except Exception:
+            box["r"] = None
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(AMBIENT_TIMEOUT_S)
+    hit = box.get("r")
+    if not hit:
+        return None
+    title, file_path = hit
+    key = file_path or title
+    if not key or key in suggested:
+        return None
+    suggested.append(key)
+    tail = f" (read_rule {file_path})" if file_path else ""
+    return f"💡 relevant memory: {title}{tail}"
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -375,6 +469,14 @@ def main(argv: list[str] | None = None) -> int:
 
     exit_code, message = _decide(tool_name, s)
 
+    # Opt-in ambient recall (#35). Never raises, never blocks; mutates `s` (the
+    # dedup list) only when MCM_AMBIENT_RECALL is set, so it's a no-op otherwise.
+    # Computed before _write_state so the per-session dedup list persists.
+    try:
+        ambient = _ambient_recall(tool_name, event, s, cwd)
+    except Exception:
+        ambient = None
+
     try:
         _write_state(sp, state)
     except OSError:
@@ -401,8 +503,11 @@ def main(argv: list[str] | None = None) -> int:
             "mutator_calls": s.get("mutator_calls", 0),
         })
 
-    if message:
-        print(message, file=sys.stderr)
+    out = message
+    if ambient:
+        out = f"{out}\n{ambient}" if out else ambient
+    if out:
+        print(out, file=sys.stderr)
     return exit_code
 
 

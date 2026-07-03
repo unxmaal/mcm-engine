@@ -267,10 +267,18 @@ def _conflict_note_for(storage, new_id):
 
     items, titles = _active_conflict_items(storage)
     pairs = find_conflicts(items)
-    conflicting = sorted({(b if a == new_id else a) for a, b in pairs if new_id in (a, b)})
+    conflicting: dict = {}
+    for a, b, label in pairs:
+        if new_id == a:
+            conflicting[b] = label
+        elif new_id == b:
+            conflicting[a] = label
     if not conflicting:
         return ""
-    parts = "; ".join(f"#{cid} '{titles.get(cid, '')}'" for cid in conflicting)
+    parts = "; ".join(
+        f"#{cid} '{titles.get(cid, '')}' ({conflicting[cid]})"
+        for cid in sorted(conflicting)
+    )
     return f"\n  ⚠ may conflict with {parts} — consider supersede_rule"
 
 
@@ -871,8 +879,8 @@ def register_rules_tools(
             return _with_nudge("No conflicting rules found.", tracker)
         lines = [f"Found {len(pairs)} conflict candidate(s) "
                  f"(topic>={topic_threshold}, body<={body_threshold}):"]
-        for a, b in pairs:
-            lines.append(f"  #{a} '{titles.get(a, '')}'  <->  #{b} '{titles.get(b, '')}'")
+        for a, b, label in pairs:
+            lines.append(f"  [{label}] #{a} '{titles.get(a, '')}'  <->  #{b} '{titles.get(b, '')}'")
         lines.append("  Review; if one supersedes the other, call supersede_rule.")
         return _with_nudge("\n".join(lines), tracker)
 

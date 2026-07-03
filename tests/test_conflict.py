@@ -29,7 +29,9 @@ def test_same_topic_divergent_body_is_a_conflict():
          "never invalidate eagerly rely only on ttl expiry timers instead"),
     ]
     pairs = find_conflicts(items)
-    assert (1, 2) in pairs
+    assert any(a == 1 and b == 2 for a, b, _ in pairs)
+    # neither body contains the other -> contradictory (issue #33 typing)
+    assert next(lab for a, b, lab in pairs if (a, b) == (1, 2)) == "contradictory"
 
 
 def test_near_duplicate_same_body_is_not_a_conflict():
@@ -71,6 +73,32 @@ def test_deterministic():
          "widgets pick their color from the parent theme at render time"),
     ]
     assert find_conflicts(items) == find_conflicts(items)
+
+
+# --- #33 conflict typing ----------------------------------------------------
+
+def test_classify_conflict_subsumes_subsumed_contradictory():
+    from mcm_engine.dedup import classify_conflict
+
+    big = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda"
+    small = "alpha beta gamma delta"                       # subset of big
+    disjoint = "one two three four five six seven eight"
+    assert classify_conflict(big, small) == "subsumes"
+    assert classify_conflict(small, big) == "subsumed"
+    assert classify_conflict(big, disjoint) == "contradictory"
+
+
+def test_find_conflicts_labels_subsumption():
+    # Same topic; #2's body is a small subset of #1's large body -> low overall
+    # similarity (a conflict) but full containment -> labeled 'subsumes'.
+    big = ("retry policy exponential backoff jitter max attempts five base delay "
+           "hundred milliseconds circuit breaker threshold ten failures window "
+           "sixty seconds half open probe single request timeout two seconds")
+    small = "retry policy exponential backoff jitter max attempts"
+    items = [(1, "retry policy configuration", big),
+             (2, "retry policy configuration", small)]
+    labeled = {(a, b): lab for a, b, lab in find_conflicts(items)}
+    assert labeled.get((1, 2)) == "subsumes"
 
 
 # --- tool + add_rule wiring -------------------------------------------------
