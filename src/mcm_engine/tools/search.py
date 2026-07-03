@@ -203,6 +203,39 @@ def _score_and_format_error(
     return composite, entry
 
 
+def _spread_related_rules(top, storage, counters, *, include_archived, cap):
+    """One-hop spreading activation (#35): surface rules LINKED to the direct
+    hits (via the relations graph) that the query itself missed on tokens.
+    Returns formatted strings marked ``[related]`` to append AFTER the direct
+    hits — they are never re-scored above a direct hit, only appended. Read-only;
+    value scales with how many links exist in the corpus."""
+    seen = {eid for _, _, eid in top}
+    neighbor_ids: list[int] = []
+    for _, _, rid in top:
+        try:
+            outs = storage.list_outgoing_relations(EntityType.RULE, rid)
+            ins = storage.list_incoming_relations(EntityType.RULE, rid)
+        except Exception:
+            continue
+        for rel in outs:
+            if rel.target_type is EntityType.RULE and rel.target_id not in seen:
+                seen.add(rel.target_id)
+                neighbor_ids.append(rel.target_id)
+        for rel in ins:
+            if rel.source_type is EntityType.RULE and rel.source_id not in seen:
+                seen.add(rel.source_id)
+                neighbor_ids.append(rel.source_id)
+    related: list[str] = []
+    for nid in neighbor_ids[:cap]:
+        hit = SearchHit(entity_type=EntityType.RULE, entity_id=nid, score=0.0)
+        res = _score_and_format_rule(hit, storage, counters, include_archived, 0.0)
+        if res is None:  # archived / superseded / missing -> not surfaced
+            continue
+        _, formatted = res
+        related.append(formatted.replace("[RULE]", "[RULE][related]", 1))
+    return related
+
+
 def _scope_block(
     etype: EntityType,
     search_backend: SearchBackend,
@@ -263,7 +296,12 @@ def _scope_block(
             except Exception as e:
                 log(f"search: hit-count bump skipped for {etype.name} #{eid} ({e})")
 
-    return [formatted for _, formatted, _ in top]
+    out_lines = [f for _, f, _ in top]
+    if etype is EntityType.RULE and top:
+        out_lines += _spread_related_rules(
+            top, storage, counters, include_archived=include_archived, cap=limit,
+        )
+    return out_lines
 
 
 def _search_all_scopes(
