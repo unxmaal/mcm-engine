@@ -34,6 +34,8 @@ TEXT_EXTENSIONS = frozenset({
     "rb", "pl", "pm", "php",
     "sh", "bash", "zsh", "fish",
     "lua", "r", "scala", "clj", "ex", "exs",
+    # templates (jinja/go/handlebars) — hold config + rules in IaC repos
+    "j2", "jinja", "jinja2", "tmpl", "tpl",
     # markup / config (not .md — that belongs to markdown-dir)
     "txt", "rst", "adoc", "tex",
     "json", "yaml", "yml", "toml", "ini", "conf", "cfg",
