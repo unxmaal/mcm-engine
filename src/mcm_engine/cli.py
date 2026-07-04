@@ -240,24 +240,39 @@ def cmd_ingest(args):
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path=config_path, project_root=project_root)
 
-    # Same wiring fix MCMServer does in server.py:81-99: resolve db_path
-    # against project_root, and pre-populate the embedded adapters'
-    # storage_options.db_path so build_context sees an absolute path.
-    resolved_db = config.resolve_db_path(project_root)
-    backends = config.backends
-    for axis_name, axis_opts in (
-        ("storage", backends.storage_options),
-        ("counters", backends.counters_options),
-        ("search", backends.search_options),
-    ):
-        if getattr(backends, axis_name) == "embedded" and "db_path" not in axis_opts:
-            axis_opts["db_path"] = str(resolved_db)
+    resolved_db = _wire_embedded_db_paths(config, project_root)
 
     try:
         ingester = find_ingester(args.source, explicit_name=args.type)
     except (UnknownIngester, NoMatchingIngester) as e:
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(2)
+
+    if args.rules and args.bulk:
+        print("error: --rules and --bulk are incompatible (rules mode is "
+              "curated / no-write)", file=sys.stderr)
+        sys.exit(2)
+    if args.auto and args.bulk:
+        print("error: --auto and --bulk are incompatible", file=sys.stderr)
+        sys.exit(2)
+    if args.auto and args.adjudicate:
+        print("error: --auto and --adjudicate are incompatible (--auto runs the "
+              "model itself; --adjudicate delegates to your agent)", file=sys.stderr)
+        sys.exit(2)
+
+    # --auto needs a configured adjudicator; fail fast before sifting.
+    auto_adjudicator = None
+    if args.auto:
+        from .ingest import adjudicate as _adj
+        try:
+            auto_adjudicator = _adj.build_adjudicator(config)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
+        if auto_adjudicator is None:
+            print("error: --auto needs a configured [adjudicator] in "
+                  "mcm-engine.yaml (provider / base_url / model).", file=sys.stderr)
+            sys.exit(2)
 
     skip = set(args.skip.split(",")) if args.skip else None
     opts = {
@@ -269,26 +284,64 @@ def cmd_ingest(args):
     # Walk first, then page. Streamers are cheap because they're generators,
     # but `--bulk` needs counts and `--offset`/`--batch` needs slicing.
     candidates = list(ingester.stream(args.source, opts))
-    total = len(candidates)
+    raw_total = len(candidates)
+
+    # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
+    # raw files) — the whole point is that far fewer things come out than went in.
+    existing_by_id: dict[int, str] = {}
+    ctx = None
+    if args.rules or args.auto:
+        from .ingest import rulesift
+        from .wiring import build_context
+
+        _ensure_embedded_schema(config)
+        ctx = build_context(config)
+        existing = rulesift.load_existing_rules(ctx.storage)
+        existing_by_id = dict(existing)
+        raw_code = ingester.name == "text-dir"
+        items = rulesift.sift(candidates, existing, raw_code=raw_code)
+    else:
+        items = candidates
+
+    total = len(items)
     start = max(0, args.offset)
     end = total if args.bulk else min(start + args.batch, total)
-    window = candidates[start:end]
+    window = items[start:end]
 
     print(f"# ingester: {ingester.name}", file=sys.stderr)
     print(f"# source:   {args.source}", file=sys.stderr)
-    print(f"# total:    {total} candidates", file=sys.stderr)
-    if args.bulk:
+    if args.auto:
+        print(f"# mode:     auto (model adjudication -> writes)", file=sys.stderr)
+        print(f"# funnel:   {raw_total} raw candidates -> {total} rule candidates", file=sys.stderr)
+    elif args.rules:
+        _mode = "rules + adjudicate (request for the agent)" if args.adjudicate else "rules (curated funnel — no writes)"
+        print(f"# mode:     {_mode}", file=sys.stderr)
+        print(f"# funnel:   {raw_total} raw candidates -> {total} rule candidates", file=sys.stderr)
+        print(f"# showing:  {start + 1}-{end} of {total}", file=sys.stderr)
+        if end < total:
+            print(f"# next:     --offset {end} --batch {args.batch}", file=sys.stderr)
+    elif args.bulk:
+        print(f"# total:    {total} candidates", file=sys.stderr)
         print(f"# mode:     --bulk (writes to {resolved_db})", file=sys.stderr)
         if args.dry_run:
             print(f"# dry-run:  yes (no writes)", file=sys.stderr)
     else:
+        print(f"# total:    {total} candidates", file=sys.stderr)
         print(f"# mode:     curated (no writes — agent decides per candidate)", file=sys.stderr)
         print(f"# showing:  {start + 1}-{end} of {total}", file=sys.stderr)
         if end < total:
             print(f"# next:     --offset {end} --batch {args.batch}", file=sys.stderr)
     print(file=sys.stderr)
 
-    if args.bulk:
+    if args.auto:
+        _ingest_auto(items, existing_by_id, config, ctx, auto_adjudicator,
+                     project_root=project_root, batch=args.batch)
+    elif args.rules and args.adjudicate:
+        from .ingest import adjudicate
+        print(adjudicate.render_request(window, existing_by_id))
+    elif args.rules:
+        _ingest_emit_rules(window, start_index=start, total=total)
+    elif args.bulk:
         _ingest_bulk(window, config, dry_run=args.dry_run, total=total)
     else:
         _ingest_emit(window, start_index=start, total=total)
@@ -325,21 +378,139 @@ def _ingest_emit(window, *, start_index: int, total: int) -> None:
         print()
 
 
-def _ingest_bulk(window, config, *, dry_run: bool, total: int) -> None:
-    """--bulk mode: write every candidate. Same path the v1 ingest used.
-    For declared-authoritative corpora only."""
-    from .db import KnowledgeDB
-    from .schema import migrate_core
+def _ingest_emit_rules(window, *, start_index: int, total: int) -> None:
+    """Rules mode: emit each surviving rule candidate as a delimited block,
+    tagged with its novelty band. REFINE candidates name the existing rule they
+    refine. No writes — the agent (or, later, the adjudicator) decides."""
+    for offset, cand in enumerate(window):
+        idx = start_index + offset + 1
+        print(f"=== rule-candidate {idx}/{total} [{cand.band.value}] ===")
+        print(f"source: {cand.source_topic}")
+        print(f"band: {cand.band.value}")
+        if cand.matched_rule_id is not None:
+            print(f"refines_rule: {cand.matched_rule_id}")
+        print("text:")
+        print(cand.text.rstrip())
+        print()
+
+
+def _wire_embedded_db_paths(config, project_root: Path) -> Path:
+    """Resolve db_path against project_root and pre-populate the embedded
+    adapters' storage_options.db_path so build_context sees an absolute path —
+    the same wiring fix MCMServer does in server.py. Returns the resolved path."""
+    resolved_db = config.resolve_db_path(project_root)
+    backends = config.backends
+    for axis_name, axis_opts in (
+        ("storage", backends.storage_options),
+        ("counters", backends.counters_options),
+        ("search", backends.search_options),
+    ):
+        if getattr(backends, axis_name) == "embedded" and "db_path" not in axis_opts:
+            axis_opts["db_path"] = str(resolved_db)
+    return resolved_db
+
+
+def cmd_apply_rules(args):
+    """Apply adjudication verdicts (JSON from `ingest --rules --adjudicate`) to
+    the KB. Backend-agnostic: writes through the configured storage, whatever it
+    is and wherever it lives. This is the commit half of the harness-delegation
+    loop and the same path a standalone (Slice 3) adjudicator will feed."""
+    from .ingest import adjudicate
     from .wiring import build_context
 
-    # Ensure the SQLite schema exists. build_context wires storage adapters
-    # against the configured db_path but doesn't migrate the schema — the
-    # engine usually does that during MCMServer init.
+    project_root = Path(args.project_root) if args.project_root else Path.cwd()
+    config = load_config(
+        config_path=Path(args.config) if args.config else None,
+        project_root=project_root,
+    )
+    _wire_embedded_db_paths(config, project_root)
+
+    if args.file == "-":
+        text = sys.stdin.read()
+    else:
+        text = Path(args.file).read_text(encoding="utf-8")
+
+    try:
+        verdicts = adjudicate.parse_verdicts(text)
+    except ValueError as e:
+        print(f"apply-rules: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    _ensure_embedded_schema(config)
+    ctx = build_context(config)
+    report = adjudicate.commit_verdicts(
+        ctx.storage, ctx.counters, verdicts,
+        actor=args.actor or "ingest",
+        source_repo=args.source_repo or "",
+        source_ref=args.source_ref or "",
+        source_commit=args.source_commit or "",
+    )
+    print(
+        f"applied: created={report.created}, superseded={report.superseded}, "
+        f"reinforced={report.reinforced}, rejected={report.rejected}, "
+        f"errors={report.errors}"
+    )
+    for d in report.details:
+        if d.get("error"):
+            print(f"  error [{d.get('action')}] {d.get('source', '')}: {d['error']}",
+                  file=sys.stderr)
+
+
+def _ingest_auto(items, existing_by_id, config, ctx, adjudicator, *,
+                 project_root: Path, batch: int) -> None:
+    """Fully automatic path: adjudicate the sifted survivors with the configured
+    model (in --batch-sized chunks so a big repo isn't one giant call), route
+    verdicts by confidence, auto-commit the confident ones and queue the rest."""
+    from .ingest import adjudicate
+
+    verdicts = []
+    step = max(1, batch)
+    for i in range(0, len(items), step):
+        verdicts.extend(adjudicator.adjudicate(items[i:i + step], existing_by_id))
+
+    threshold = config.adjudicator.confidence_threshold
+    auto, queued = adjudicate.partition_by_confidence(verdicts, threshold)
+
+    report = adjudicate.commit_verdicts(
+        ctx.storage, ctx.counters, auto, actor="auto-ingest",
+    )
+
+    queue_path = Path(config.adjudicator.review_queue_path)
+    if not queue_path.is_absolute():
+        queue_path = project_root / queue_path
+    n_queued = adjudicate.queue_for_review(str(queue_path), queued)
+
+    print(
+        f"auto-ingest: committed created={report.created}, "
+        f"superseded={report.superseded}, reinforced={report.reinforced}, "
+        f"errors={report.errors}; queued for review={n_queued} -> {queue_path}"
+    )
+    for d in report.details:
+        if d.get("error"):
+            print(f"  error [{d.get('action')}] {d.get('source', '')}: {d['error']}",
+                  file=sys.stderr)
+
+
+def _ensure_embedded_schema(config) -> None:
+    """Migrate the embedded SQLite schema if needed. build_context wires
+    storage adapters against the configured db_path but doesn't migrate — the
+    engine usually does that during MCMServer init, so CLI paths that touch
+    storage directly must ensure it first."""
+    from .db import KnowledgeDB
+    from .schema import migrate_core
+
     if config.backends.storage == "embedded":
         db_path = config.backends.storage_options.get("db_path")
         if db_path:
             migrate_core(KnowledgeDB(db_path))
 
+
+def _ingest_bulk(window, config, *, dry_run: bool, total: int) -> None:
+    """--bulk mode: write every candidate. Same path the v1 ingest used.
+    For declared-authoritative corpora only."""
+    from .wiring import build_context
+
+    _ensure_embedded_schema(config)
     ctx = build_context(config)
     inserted = updated = errors = 0
     for i, row in enumerate(window, 1):
@@ -561,6 +732,26 @@ def main():
              "corpora; default mode is recommended for everything else.",
     )
     ingest_parser.add_argument(
+        "--rules", action="store_true",
+        help="Curated rule-sift mode: run the mechanical funnel (extract "
+             "rule-shaped spans, drop non-rules, band against existing rules) "
+             "and emit ONLY net-new candidates, each tagged with its novelty "
+             "band. No writes. Incompatible with --bulk.",
+    )
+    ingest_parser.add_argument(
+        "--adjudicate", action="store_true",
+        help="With --rules: emit an adjudication request (candidates + existing "
+             "rule bodies + a verdict schema) for the calling harness's model to "
+             "decide. Feed its JSON verdicts back with `apply-rules`.",
+    )
+    ingest_parser.add_argument(
+        "--auto", action="store_true",
+        help="Fully automatic: sift -> adjudicate with the configured "
+             "[adjudicator] model -> commit high-confidence verdicts and queue "
+             "the rest for review. Requires an adjudicator in mcm-engine.yaml. "
+             "Writes to the KB. Incompatible with --bulk / --adjudicate.",
+    )
+    ingest_parser.add_argument(
         "--batch", type=int, default=25,
         help="Curated mode: how many candidates to emit per invocation "
              "(default 25). Ignored under --bulk.",
@@ -578,6 +769,29 @@ def main():
     ingest_parser.add_argument("--config", help="Path to mcm-engine.yaml")
     ingest_parser.add_argument("--project-root", help="Project root directory")
     ingest_parser.set_defaults(func=cmd_ingest)
+
+    # apply-rules — commit adjudication verdicts (the other half of --adjudicate)
+    apply_parser = subparsers.add_parser(
+        "apply-rules",
+        help="Apply adjudication verdicts (JSON from `ingest --rules "
+             "--adjudicate`) to the knowledge base.",
+        description="Read a JSON array of rule verdicts and commit them "
+                    "(add / refine / reinforce / reject) through the configured "
+                    "storage backend.",
+    )
+    apply_parser.add_argument(
+        "file", help="Path to the verdicts JSON file, or '-' to read stdin.",
+    )
+    apply_parser.add_argument(
+        "--actor", default="", help="Actor recorded on created/superseded events "
+                                    "(default: ingest).",
+    )
+    apply_parser.add_argument("--source-repo", default="", help="Provenance: source repo.")
+    apply_parser.add_argument("--source-ref", default="", help="Provenance: source ref/branch.")
+    apply_parser.add_argument("--source-commit", default="", help="Provenance: source commit.")
+    apply_parser.add_argument("--config", help="Path to mcm-engine.yaml")
+    apply_parser.add_argument("--project-root", help="Project root directory")
+    apply_parser.set_defaults(func=cmd_apply_rules)
 
     args = parser.parse_args()
     args.func(args)

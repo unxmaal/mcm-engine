@@ -47,7 +47,7 @@ def test_text_dir_comes_after_specific_ingesters_in_registry_order():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("ext", ["py", "rs", "ts", "go", "json", "yaml", "toml", "txt"])
+@pytest.mark.parametrize("ext", ["py", "rs", "ts", "go", "json", "yaml", "toml", "txt", "j2"])
 def test_matches_dir_with_any_text_extension(tmp_path, ext):
     (tmp_path / f"a.{ext}").write_text("body", encoding="utf-8")
     assert TextDirIngester.matches(str(tmp_path)) is True
@@ -207,6 +207,16 @@ def test_tags_include_folder_hierarchy(tmp_path):
     rows = _ingest_all(tmp_path)
     tags = set(rows[0].tags.split(","))
     assert {"src", "cli"}.issubset(tags)
+
+
+def test_jinja_templates_are_surfaced(tmp_path):
+    """.j2 templates carry config/rules in ansible-style repos — text-dir must
+    surface them. Regression: booterizer had 20 .j2 files skipped."""
+    (tmp_path / "dhcpd.conf.j2").write_text(
+        "# option domain-name must match the netboot server\n", encoding="utf-8"
+    )
+    rows = _ingest_all(tmp_path)
+    assert "dhcpd.conf.j2" in {r.topic for r in rows}
 
 
 def test_detail_holds_full_file_contents(tmp_path):

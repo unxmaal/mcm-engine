@@ -73,6 +73,31 @@ class BackendsConfig:
 
 
 @dataclass
+class AdjudicatorConfig:
+    """Optional cheap-model adjudicator for automatic rules ingestion (Slice 3).
+
+    The engine is model-free by default: an empty ``provider`` means no
+    adjudicator is configured and ``ingest --auto`` errors out. When set, the
+    adjudicator is reached over an OpenAI-compatible HTTP endpoint — provider-
+    agnostic on purpose (Anthropic, OpenAI, a local model, or whatever an
+    opencode user runs). The API key is read from ``api_key_env`` (an env var
+    name) at call time so secrets never live in the YAML.
+    """
+
+    provider: str = ""                 # "" = unconfigured; "openai-compatible" today
+    base_url: str = ""                 # e.g. https://api.openai.com/v1
+    model: str = ""                    # cheap model id (haiku / old sonnet / ...)
+    api_key_env: str = ""              # env var name holding the API key
+    temperature: float = 0.0
+    max_tokens: int = 2048
+    timeout: float = 60.0
+    # Auto-commit bar: verdicts at/above this confidence commit; below it (and
+    # anything with an injection marker) go to the review queue instead.
+    confidence_threshold: float = 0.7
+    review_queue_path: str = ".claude/rule-review-queue.jsonl"
+
+
+@dataclass
 class MCMConfig:
     """Top-level configuration for an MCM Engine instance."""
 
@@ -82,6 +107,7 @@ class MCMConfig:
     plugins: list[str] = field(default_factory=list)
     nudges: NudgeConfig = field(default_factory=NudgeConfig)
     backends: BackendsConfig = field(default_factory=BackendsConfig)
+    adjudicator: AdjudicatorConfig = field(default_factory=AdjudicatorConfig)
     # Source-of-authority axis (issue #16). "files": markdown under rules_path
     # is authoritative and the watcher enforces files-win (World A / local
     # stdio). "database": the DB is authoritative — rules are pushed in via
@@ -254,9 +280,22 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     if opensearch_url and backends.search == "opensearch":
         backends.search_options.setdefault("url", opensearch_url)
 
+    # Extract adjudicator sub-config — same strict-key hygiene (Slice 3).
+    adjudicator_raw = raw.pop("adjudicator", {})
+    adjudicator_fields = AdjudicatorConfig.__dataclass_fields__
+    unknown_adjudicator = sorted(set(adjudicator_raw) - set(adjudicator_fields))
+    if unknown_adjudicator:
+        valid = ", ".join(sorted(adjudicator_fields))
+        raise ValueError(
+            f"unknown adjudicator key(s): {', '.join(unknown_adjudicator)}. "
+            f"Valid adjudicator keys: {valid}"
+        )
+    adjudicator = AdjudicatorConfig(**adjudicator_raw)
+
     # Build top-level config — fail closed on unknown keys, except for the
     # explicit `extra:` block which is the documented escape hatch.
-    known_fields = set(MCMConfig.__dataclass_fields__.keys()) - {"nudges", "backends"}
+    known_fields = set(MCMConfig.__dataclass_fields__.keys()) - {
+        "nudges", "backends", "adjudicator"}
     unknown_top = sorted(set(raw) - known_fields)
     if unknown_top:
         valid = ", ".join(sorted(known_fields))
@@ -268,5 +307,6 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     config_kwargs = {k: v for k, v in raw.items() if k in known_fields}
     config_kwargs["nudges"] = nudges
     config_kwargs["backends"] = backends
+    config_kwargs["adjudicator"] = adjudicator
 
     return MCMConfig(**config_kwargs)
