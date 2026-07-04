@@ -252,6 +252,27 @@ def cmd_ingest(args):
         print("error: --rules and --bulk are incompatible (rules mode is "
               "curated / no-write)", file=sys.stderr)
         sys.exit(2)
+    if args.auto and args.bulk:
+        print("error: --auto and --bulk are incompatible", file=sys.stderr)
+        sys.exit(2)
+    if args.auto and args.adjudicate:
+        print("error: --auto and --adjudicate are incompatible (--auto runs the "
+              "model itself; --adjudicate delegates to your agent)", file=sys.stderr)
+        sys.exit(2)
+
+    # --auto needs a configured adjudicator; fail fast before sifting.
+    auto_adjudicator = None
+    if args.auto:
+        from .ingest import adjudicate as _adj
+        try:
+            auto_adjudicator = _adj.build_adjudicator(config)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
+        if auto_adjudicator is None:
+            print("error: --auto needs a configured [adjudicator] in "
+                  "mcm-engine.yaml (provider / base_url / model).", file=sys.stderr)
+            sys.exit(2)
 
     skip = set(args.skip.split(",")) if args.skip else None
     opts = {
@@ -268,7 +289,8 @@ def cmd_ingest(args):
     # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
     # raw files) — the whole point is that far fewer things come out than went in.
     existing_by_id: dict[int, str] = {}
-    if args.rules:
+    ctx = None
+    if args.rules or args.auto:
         from .ingest import rulesift
         from .wiring import build_context
 
@@ -288,7 +310,10 @@ def cmd_ingest(args):
 
     print(f"# ingester: {ingester.name}", file=sys.stderr)
     print(f"# source:   {args.source}", file=sys.stderr)
-    if args.rules:
+    if args.auto:
+        print(f"# mode:     auto (model adjudication -> writes)", file=sys.stderr)
+        print(f"# funnel:   {raw_total} raw candidates -> {total} rule candidates", file=sys.stderr)
+    elif args.rules:
         _mode = "rules + adjudicate (request for the agent)" if args.adjudicate else "rules (curated funnel — no writes)"
         print(f"# mode:     {_mode}", file=sys.stderr)
         print(f"# funnel:   {raw_total} raw candidates -> {total} rule candidates", file=sys.stderr)
@@ -308,7 +333,10 @@ def cmd_ingest(args):
             print(f"# next:     --offset {end} --batch {args.batch}", file=sys.stderr)
     print(file=sys.stderr)
 
-    if args.rules and args.adjudicate:
+    if args.auto:
+        _ingest_auto(items, existing_by_id, config, ctx, auto_adjudicator,
+                     project_root=project_root, batch=args.batch)
+    elif args.rules and args.adjudicate:
         from .ingest import adjudicate
         print(adjudicate.render_request(window, existing_by_id))
     elif args.rules:
@@ -421,6 +449,41 @@ def cmd_apply_rules(args):
         f"applied: created={report.created}, superseded={report.superseded}, "
         f"reinforced={report.reinforced}, rejected={report.rejected}, "
         f"errors={report.errors}"
+    )
+    for d in report.details:
+        if d.get("error"):
+            print(f"  error [{d.get('action')}] {d.get('source', '')}: {d['error']}",
+                  file=sys.stderr)
+
+
+def _ingest_auto(items, existing_by_id, config, ctx, adjudicator, *,
+                 project_root: Path, batch: int) -> None:
+    """Fully automatic path: adjudicate the sifted survivors with the configured
+    model (in --batch-sized chunks so a big repo isn't one giant call), route
+    verdicts by confidence, auto-commit the confident ones and queue the rest."""
+    from .ingest import adjudicate
+
+    verdicts = []
+    step = max(1, batch)
+    for i in range(0, len(items), step):
+        verdicts.extend(adjudicator.adjudicate(items[i:i + step], existing_by_id))
+
+    threshold = config.adjudicator.confidence_threshold
+    auto, queued = adjudicate.partition_by_confidence(verdicts, threshold)
+
+    report = adjudicate.commit_verdicts(
+        ctx.storage, ctx.counters, auto, actor="auto-ingest",
+    )
+
+    queue_path = Path(config.adjudicator.review_queue_path)
+    if not queue_path.is_absolute():
+        queue_path = project_root / queue_path
+    n_queued = adjudicate.queue_for_review(str(queue_path), queued)
+
+    print(
+        f"auto-ingest: committed created={report.created}, "
+        f"superseded={report.superseded}, reinforced={report.reinforced}, "
+        f"errors={report.errors}; queued for review={n_queued} -> {queue_path}"
     )
     for d in report.details:
         if d.get("error"):
@@ -680,6 +743,13 @@ def main():
         help="With --rules: emit an adjudication request (candidates + existing "
              "rule bodies + a verdict schema) for the calling harness's model to "
              "decide. Feed its JSON verdicts back with `apply-rules`.",
+    )
+    ingest_parser.add_argument(
+        "--auto", action="store_true",
+        help="Fully automatic: sift -> adjudicate with the configured "
+             "[adjudicator] model -> commit high-confidence verdicts and queue "
+             "the rest for review. Requires an adjudicator in mcm-engine.yaml. "
+             "Writes to the KB. Incompatible with --bulk / --adjudicate.",
     )
     ingest_parser.add_argument(
         "--batch", type=int, default=25,
