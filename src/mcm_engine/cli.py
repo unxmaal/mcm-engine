@@ -259,6 +259,11 @@ def cmd_ingest(args):
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(2)
 
+    if args.rules and args.bulk:
+        print("error: --rules and --bulk are incompatible (rules mode is "
+              "curated / no-write)", file=sys.stderr)
+        sys.exit(2)
+
     skip = set(args.skip.split(",")) if args.skip else None
     opts = {
         "kind": args.kind,
@@ -269,26 +274,51 @@ def cmd_ingest(args):
     # Walk first, then page. Streamers are cheap because they're generators,
     # but `--bulk` needs counts and `--offset`/`--batch` needs slicing.
     candidates = list(ingester.stream(args.source, opts))
-    total = len(candidates)
+    raw_total = len(candidates)
+
+    # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
+    # raw files) — the whole point is that far fewer things come out than went in.
+    if args.rules:
+        from .ingest import rulesift
+        from .wiring import build_context
+
+        _ensure_embedded_schema(config)
+        ctx = build_context(config)
+        existing = rulesift.load_existing_rules(ctx.storage)
+        raw_code = ingester.name == "text-dir"
+        items = rulesift.sift(candidates, existing, raw_code=raw_code)
+    else:
+        items = candidates
+
+    total = len(items)
     start = max(0, args.offset)
     end = total if args.bulk else min(start + args.batch, total)
-    window = candidates[start:end]
+    window = items[start:end]
 
     print(f"# ingester: {ingester.name}", file=sys.stderr)
     print(f"# source:   {args.source}", file=sys.stderr)
-    print(f"# total:    {total} candidates", file=sys.stderr)
-    if args.bulk:
+    if args.rules:
+        print(f"# mode:     rules (curated funnel — no writes)", file=sys.stderr)
+        print(f"# funnel:   {raw_total} raw candidates -> {total} rule candidates", file=sys.stderr)
+        print(f"# showing:  {start + 1}-{end} of {total}", file=sys.stderr)
+        if end < total:
+            print(f"# next:     --offset {end} --batch {args.batch}", file=sys.stderr)
+    elif args.bulk:
+        print(f"# total:    {total} candidates", file=sys.stderr)
         print(f"# mode:     --bulk (writes to {resolved_db})", file=sys.stderr)
         if args.dry_run:
             print(f"# dry-run:  yes (no writes)", file=sys.stderr)
     else:
+        print(f"# total:    {total} candidates", file=sys.stderr)
         print(f"# mode:     curated (no writes — agent decides per candidate)", file=sys.stderr)
         print(f"# showing:  {start + 1}-{end} of {total}", file=sys.stderr)
         if end < total:
             print(f"# next:     --offset {end} --batch {args.batch}", file=sys.stderr)
     print(file=sys.stderr)
 
-    if args.bulk:
+    if args.rules:
+        _ingest_emit_rules(window, start_index=start, total=total)
+    elif args.bulk:
         _ingest_bulk(window, config, dry_run=args.dry_run, total=total)
     else:
         _ingest_emit(window, start_index=start, total=total)
@@ -325,21 +355,42 @@ def _ingest_emit(window, *, start_index: int, total: int) -> None:
         print()
 
 
-def _ingest_bulk(window, config, *, dry_run: bool, total: int) -> None:
-    """--bulk mode: write every candidate. Same path the v1 ingest used.
-    For declared-authoritative corpora only."""
+def _ingest_emit_rules(window, *, start_index: int, total: int) -> None:
+    """Rules mode: emit each surviving rule candidate as a delimited block,
+    tagged with its novelty band. REFINE candidates name the existing rule they
+    refine. No writes — the agent (or, later, the adjudicator) decides."""
+    for offset, cand in enumerate(window):
+        idx = start_index + offset + 1
+        print(f"=== rule-candidate {idx}/{total} [{cand.band.value}] ===")
+        print(f"source: {cand.source_topic}")
+        print(f"band: {cand.band.value}")
+        if cand.matched_rule_id is not None:
+            print(f"refines_rule: {cand.matched_rule_id}")
+        print("text:")
+        print(cand.text.rstrip())
+        print()
+
+
+def _ensure_embedded_schema(config) -> None:
+    """Migrate the embedded SQLite schema if needed. build_context wires
+    storage adapters against the configured db_path but doesn't migrate — the
+    engine usually does that during MCMServer init, so CLI paths that touch
+    storage directly must ensure it first."""
     from .db import KnowledgeDB
     from .schema import migrate_core
-    from .wiring import build_context
 
-    # Ensure the SQLite schema exists. build_context wires storage adapters
-    # against the configured db_path but doesn't migrate the schema — the
-    # engine usually does that during MCMServer init.
     if config.backends.storage == "embedded":
         db_path = config.backends.storage_options.get("db_path")
         if db_path:
             migrate_core(KnowledgeDB(db_path))
 
+
+def _ingest_bulk(window, config, *, dry_run: bool, total: int) -> None:
+    """--bulk mode: write every candidate. Same path the v1 ingest used.
+    For declared-authoritative corpora only."""
+    from .wiring import build_context
+
+    _ensure_embedded_schema(config)
     ctx = build_context(config)
     inserted = updated = errors = 0
     for i, row in enumerate(window, 1):
@@ -559,6 +610,13 @@ def main():
         help="Auto-insert every candidate as a knowledge row (skip the "
              "per-item evaluation step). Use only for declared-authoritative "
              "corpora; default mode is recommended for everything else.",
+    )
+    ingest_parser.add_argument(
+        "--rules", action="store_true",
+        help="Curated rule-sift mode: run the mechanical funnel (extract "
+             "rule-shaped spans, drop non-rules, band against existing rules) "
+             "and emit ONLY net-new candidates, each tagged with its novelty "
+             "band. No writes. Incompatible with --bulk.",
     )
     ingest_parser.add_argument(
         "--batch", type=int, default=25,
