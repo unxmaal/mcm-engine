@@ -82,41 +82,41 @@ def test_scope_all_returns_every_entity_type(wired):
     """Default scope still returns hits from every type (no regression)."""
     result = wired["search"](query="needle-token")
     assert "[KNOWLEDGE/" in result
-    assert "[NEGATIVE]" in result
-    assert "[ERROR]" in result
-    assert "[RULE]" in result
+    assert "[NEGATIVE #" in result
+    assert "[ERROR #" in result
+    assert "[RULE #" in result
 
 
 def test_scope_knowledge_returns_only_knowledge(wired):
     result = wired["search"](query="needle-token", scope="knowledge")
     assert "[KNOWLEDGE/" in result
-    assert "[NEGATIVE]" not in result, "scope=knowledge leaked NEGATIVE result"
-    assert "[ERROR]" not in result, "scope=knowledge leaked ERROR result"
-    assert "[RULE]" not in result, "scope=knowledge leaked RULE result"
+    assert "[NEGATIVE #" not in result, "scope=knowledge leaked NEGATIVE result"
+    assert "[ERROR #" not in result, "scope=knowledge leaked ERROR result"
+    assert "[RULE #" not in result, "scope=knowledge leaked RULE result"
 
 
 def test_scope_negative_returns_only_negative(wired):
     result = wired["search"](query="needle-token", scope="negative")
-    assert "[NEGATIVE]" in result
+    assert "[NEGATIVE #" in result
     assert "[KNOWLEDGE/" not in result
-    assert "[ERROR]" not in result
-    assert "[RULE]" not in result
+    assert "[ERROR #" not in result
+    assert "[RULE #" not in result
 
 
 def test_scope_errors_returns_only_errors(wired):
     result = wired["search"](query="needle-token", scope="errors")
-    assert "[ERROR]" in result
+    assert "[ERROR #" in result
     assert "[KNOWLEDGE/" not in result
-    assert "[NEGATIVE]" not in result
-    assert "[RULE]" not in result
+    assert "[NEGATIVE #" not in result
+    assert "[RULE #" not in result
 
 
 def test_scope_rules_returns_only_rules(wired):
     result = wired["search"](query="needle-token", scope="rules")
-    assert "[RULE]" in result
+    assert "[RULE #" in result
     assert "[KNOWLEDGE/" not in result
-    assert "[NEGATIVE]" not in result
-    assert "[ERROR]" not in result
+    assert "[NEGATIVE #" not in result
+    assert "[ERROR #" not in result
 
 
 def test_scope_unknown_value_falls_back_to_all(wired):
@@ -125,7 +125,7 @@ def test_scope_unknown_value_falls_back_to_all(wired):
     bad scopes — better to return too much than nothing."""
     result = wired["search"](query="needle-token", scope="nonsense")
     assert "[KNOWLEDGE/" in result
-    assert "[RULE]" in result
+    assert "[RULE #" in result
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def test_archived_rule_not_in_default_search(wired):
     """Soft-deleting a rule must hide it from the default search."""
     wired["storage"].soft_delete_rule(wired["rule_id"])
     result = wired["search"](query="needle-token")
-    assert "[RULE]" not in result, (
+    assert "[RULE #" not in result, (
         "archived rule appeared in search — defect #3 from cutover A.5"
     )
 
@@ -146,7 +146,7 @@ def test_archived_rule_invisible_even_when_scope_is_rules(wired):
     """Narrowing to scope=rules + the rule being archived = no result."""
     wired["storage"].soft_delete_rule(wired["rule_id"])
     result = wired["search"](query="needle-token", scope="rules")
-    assert "[RULE]" not in result
+    assert "[RULE #" not in result
 
 
 def test_unarchived_rule_returns_to_search(wired):
@@ -154,7 +154,7 @@ def test_unarchived_rule_returns_to_search(wired):
     wired["storage"].soft_delete_rule(wired["rule_id"])
     wired["storage"].restore_rule(wired["rule_id"])
     result = wired["search"](query="needle-token")
-    assert "[RULE]" in result
+    assert "[RULE #" in result
 
 
 def test_archived_knowledge_not_filtered(wired):
@@ -187,8 +187,8 @@ def test_search_survives_locked_counter_bump(wired, monkeypatch):
     # Bumped scopes (KNOWLEDGE, RULE) must still return results, not raise.
     result = wired["search"](query="needle-token")
     assert "[KNOWLEDGE/" in result
-    assert "[RULE]" in result
+    assert "[RULE #" in result
 
     # And when the query only targets a bumped scope.
     rules_only = wired["search"](query="needle-token", scope="rules")
-    assert "[RULE]" in rules_only
+    assert "[RULE #" in rules_only
