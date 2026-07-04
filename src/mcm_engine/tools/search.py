@@ -110,7 +110,7 @@ def _score_and_format_knowledge(
     last_hit_d = _age_days(row.last_hit_at)
     stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()}]{stale}{pinned} {row.topic}: {row.summary}"
+    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()} #{row.id}]{stale}{pinned} {row.topic}: {row.summary}"
     if row.detail:
         entry += f"\n  Detail: {row.detail}"
     if row.tags:
@@ -170,7 +170,7 @@ def _score_and_format_rule(
     last_hit_d = _age_days(row.last_hit_at)
     stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[RULE]{stale}{pinned} {row.title}"
+    entry = f"[RULE #{row.id}]{stale}{pinned} {row.title}"
     if row.category:
         entry += f" ({row.category})"
     if row.description:
@@ -193,7 +193,7 @@ def _score_and_format_negative(
         return None
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[NEGATIVE]{pinned} {row.category}: {row.what_failed}"
+    entry = f"[NEGATIVE #{row.id}]{pinned} {row.category}: {row.what_failed}"
     if row.why_failed:
         entry += f"\n  Why: {row.why_failed}"
     if row.correct_approach:
@@ -214,7 +214,7 @@ def _score_and_format_error(
         return None
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[ERROR]{pinned} {row.pattern}"
+    entry = f"[ERROR #{row.id}]{pinned} {row.pattern}"
     if row.root_cause:
         entry += f"\n  Root cause: {row.root_cause}"
     if row.fix:
@@ -251,7 +251,9 @@ def _spread_related_rules(top, storage, counters, *, include_archived, cap):
         if res is None:  # archived / superseded / missing -> not surfaced
             continue
         _, formatted = res
-        related.append(formatted.replace("[RULE]", "[RULE][related]", 1))
+        # Insert [related] after the "[RULE #<id>]" tag (close the tag's first
+        # ']') — the id is now inside the tag, so a bare "[RULE]" no longer matches.
+        related.append(formatted.replace("]", "][related]", 1))
     return related
 
 

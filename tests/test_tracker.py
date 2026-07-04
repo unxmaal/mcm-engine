@@ -426,8 +426,11 @@ class TestPeriodicToolNudges:
         assert "add_negative" not in nudge
 
     def test_periodic_escalates_to_block(self):
+        # advisory_periodic_tools=[] keeps this a test of the escalation
+        # MECHANISM — link_knowledge is advisory by default now (#47).
         t = SessionTracker(self._quiet(
             periodic_tools={"link_knowledge": 3},
+            advisory_periodic_tools=[],
             nudge_escalation_threshold=2,
         ))
         for _ in range(3):
@@ -514,3 +517,26 @@ class TestAdvisoryPeriodicTools:
         t.get_nudge()
         with pytest.raises(MandatoryStopError, match="link_knowledge"):
             t.record_call("search")
+
+    def test_default_marks_link_knowledge_advisory(self):
+        """Issue #47: forcing link_knowledge manufactures junk edges (blind
+        guesses) just like forcing add_negative manufactures junk negatives, so
+        it must nudge but never escalate to a hard block."""
+        cfg = NudgeConfig()
+        assert "link_knowledge" in cfg.advisory_periodic_tools
+
+    def test_link_knowledge_never_deadlocks_by_default(self):
+        """Regression for the #47 deadlock: with the real default advisory list,
+        an ignored link_knowledge nudge fires but never blocks — otherwise you'd
+        be forced to call link_knowledge while search (needed to find ids) is
+        itself blocked."""
+        t = SessionTracker(self._quiet(
+            periodic_tools={"link_knowledge": 3},
+            nudge_escalation_threshold=2,
+        ))  # advisory_periodic_tools left at the real default
+        for _ in range(3):
+            t.record_call("search")
+        assert "PERIODIC" in t.get_nudge()  # the nudge still fires
+        for _ in range(10):
+            t.record_call("search")  # ignoring it well past threshold must NOT raise
+            t.get_nudge()

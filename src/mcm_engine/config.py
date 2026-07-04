@@ -45,8 +45,12 @@ class NudgeConfig:
     })
     # Periodic tools that NUDGE but never escalate to a hard block. Forcing
     # these manufactures junk (e.g. an invented add_negative when nothing
-    # actually failed), so they stay advisory regardless of escalation.
-    advisory_periodic_tools: list[str] = field(default_factory=lambda: ["add_negative"])
+    # actually failed, or a link_knowledge with guessed ids), so they stay
+    # advisory regardless of escalation. link_knowledge is advisory because a
+    # hard block on it deadlocks: you'd be forced to call it while `search` —
+    # the tool you'd use to discover the ids to link — is itself blocked (#47).
+    advisory_periodic_tools: list[str] = field(
+        default_factory=lambda: ["add_negative", "link_knowledge"])
 
 
 @dataclass
