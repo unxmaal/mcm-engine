@@ -47,7 +47,7 @@ def test_text_dir_comes_after_specific_ingesters_in_registry_order():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("ext", ["py", "rs", "ts", "go", "json", "yaml", "toml", "txt", "j2"])
+@pytest.mark.parametrize("ext", ["py", "rs", "ts", "go", "json", "yaml", "toml", "txt", "j2", "service"])
 def test_matches_dir_with_any_text_extension(tmp_path, ext):
     (tmp_path / f"a.{ext}").write_text("body", encoding="utf-8")
     assert TextDirIngester.matches(str(tmp_path)) is True
@@ -217,6 +217,16 @@ def test_jinja_templates_are_surfaced(tmp_path):
     )
     rows = _ingest_all(tmp_path)
     assert "dhcpd.conf.j2" in {r.topic for r in rows}
+
+
+def test_systemd_unit_files_are_surfaced(tmp_path):
+    """.service (systemd units) carry setup rules in comments. Regression:
+    airprint-bridge's avahi/airprint.service was skipped. Stopgap for #51."""
+    (tmp_path / "airprint.service").write_text(
+        "[Unit]\n# must start after avahi-daemon or discovery fails\n", encoding="utf-8"
+    )
+    rows = _ingest_all(tmp_path)
+    assert "airprint.service" in {r.topic for r in rows}
 
 
 def test_detail_holds_full_file_contents(tmp_path):

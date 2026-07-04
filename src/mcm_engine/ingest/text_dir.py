@@ -38,7 +38,7 @@ TEXT_EXTENSIONS = frozenset({
     "j2", "jinja", "jinja2", "tmpl", "tpl",
     # markup / config (not .md — that belongs to markdown-dir)
     "txt", "rst", "adoc", "tex",
-    "json", "yaml", "yml", "toml", "ini", "conf", "cfg",
+    "json", "yaml", "yml", "toml", "ini", "conf", "cfg", "service",
     "xml", "html", "htm", "css", "scss", "sass",
     # tabular / data
     "csv", "tsv",
