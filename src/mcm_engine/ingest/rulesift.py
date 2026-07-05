@@ -213,6 +213,25 @@ def sift(
     return _collapse_duplicates(survivors)
 
 
+def sift_groups(
+    groups: Iterable[tuple[Iterable[KnowledgeRow], bool]],
+    existing_rules: Iterable[tuple[int, str]],
+) -> list[RuleCandidate]:
+    """Sift several ingester outputs together (union ingestion, #53).
+
+    ``groups`` is an iterable of ``(rows, raw_code)`` — one entry per ingester,
+    each carrying its own extraction mode (text-dir yields whole source files
+    -> ``raw_code=True``; curated ingesters -> ``False``). Each group is sifted
+    in its own mode, then near-duplicates are collapsed across the COMBINED
+    survivor set so a rule that shows up via two ingesters isn't emitted twice.
+    """
+    existing = list(existing_rules)
+    combined: list[RuleCandidate] = []
+    for rows, raw_code in groups:
+        combined.extend(sift(rows, existing, raw_code=raw_code))
+    return _collapse_duplicates(combined)
+
+
 def _collapse_duplicates(survivors: list[RuleCandidate]) -> list[RuleCandidate]:
     """Drop intra-run near-duplicate spans, keeping the first of each cluster
     (order preserved). Reuses dedup's deterministic MinHash clustering."""

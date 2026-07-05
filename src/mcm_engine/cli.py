@@ -220,7 +220,7 @@ def cmd_ingest(args):
     from .ingest import (
         NoMatchingIngester,
         UnknownIngester,
-        find as find_ingester,
+        find_all as find_ingesters,
         registered as list_registered,
     )
     from .wiring import build_verified_context
@@ -244,7 +244,7 @@ def cmd_ingest(args):
     resolved_db = _wire_embedded_db_paths(config, project_root)
 
     try:
-        ingester = find_ingester(args.source, explicit_name=args.type)
+        ingesters = find_ingesters(args.source, explicit_name=args.type)
     except (UnknownIngester, NoMatchingIngester) as e:
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(2)
@@ -282,9 +282,30 @@ def cmd_ingest(args):
         "skip": skip,
     }
 
-    # Walk first, then page. Streamers are cheap because they're generators,
-    # but `--bulk` needs counts and `--offset`/`--batch` needs slicing.
-    candidates = list(ingester.stream(args.source, opts))
+    # Union ingestion (#53): walk EVERY matching ingester in precedence order,
+    # accumulating the extensions each one owns and handing that set to the
+    # lower-precedence ones so no file is surfaced twice. Streamers are cheap
+    # generators, but `--bulk` needs counts and `--offset`/`--batch` needs
+    # slicing, so we materialize per ingester.
+    groups: list[tuple[Any, list]] = []
+    claimed_ext: set[str] = set()
+    for ing in ingesters:
+        ing_opts = {**opts, "exclude_extensions": frozenset(claimed_ext)}
+        rows = list(ing.stream(args.source, ing_opts))
+        groups.append((ing, rows))
+        claimed_ext |= set(ing.owned_extensions())
+
+    # Flatten with a precedence-preserving dedup on (topic, kind): if two
+    # ingesters somehow yield the same entry, the higher-precedence one wins.
+    candidates = []
+    _seen_topics: set[tuple[str, str]] = set()
+    for _ing, rows in groups:
+        for row in rows:
+            key = (row.topic, row.kind or "")
+            if key in _seen_topics:
+                continue
+            _seen_topics.add(key)
+            candidates.append(row)
     raw_total = len(candidates)
 
     # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
@@ -299,8 +320,12 @@ def cmd_ingest(args):
         ctx = build_verified_context(config)
         existing = rulesift.load_existing_rules(ctx.storage)
         existing_by_id = dict(existing)
-        raw_code = ingester.name == "text-dir"
-        items = rulesift.sift(candidates, existing, raw_code=raw_code)
+        # Each ingester carries its own extraction mode: text-dir yields whole
+        # source files (raw_code), curated ingesters yield prose/docstrings.
+        items = rulesift.sift_groups(
+            [(rows, ing.name == "text-dir") for ing, rows in groups],
+            existing,
+        )
     else:
         items = candidates
 
@@ -309,7 +334,7 @@ def cmd_ingest(args):
     end = total if args.bulk else min(start + args.batch, total)
     window = items[start:end]
 
-    print(f"# ingester: {ingester.name}", file=sys.stderr)
+    print(f"# ingester: {', '.join(ing.name for ing, _ in groups)}", file=sys.stderr)
     print(f"# source:   {args.source}", file=sys.stderr)
     if ctx is not None:
         # Always surface which store the funnel bands/commits against — the
@@ -351,15 +376,17 @@ def cmd_ingest(args):
     else:
         _ingest_emit(window, start_index=start, total=total)
 
-    # Post-stream report: ingesters can surface observations (extension
+    # Post-stream report: each ingester can surface observations (extension
     # counts, AST-upgrade suggestions, etc.) to stderr. Optional method;
-    # absent or empty → no report.
-    report_fn = getattr(ingester, "report", None)
-    if callable(report_fn):
-        text = report_fn()
-        if isinstance(text, str) and text.strip():
-            print(file=sys.stderr)
-            print(text, file=sys.stderr)
+    # absent or empty → no report. In union mode every ingester that ran
+    # gets to report.
+    for ing, _rows in groups:
+        report_fn = getattr(ing, "report", None)
+        if callable(report_fn):
+            text = report_fn()
+            if isinstance(text, str) and text.strip():
+                print(file=sys.stderr)
+                print(text, file=sys.stderr)
 
 
 def _ingest_emit(window, *, start_index: int, total: int) -> None:

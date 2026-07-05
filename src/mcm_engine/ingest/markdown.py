@@ -87,6 +87,12 @@ class MarkdownDirIngester:
     name = "markdown-dir"
 
     @classmethod
+    def owned_extensions(cls) -> frozenset[str]:
+        """markdown-dir owns .md — the catch-all text-dir skips it in union
+        mode so a note isn't surfaced by both ingesters."""
+        return frozenset({"md"})
+
+    @classmethod
     def matches(cls, source: str) -> bool:
         """True if ``source`` is an existing directory containing at
         least one .md file (recursive)."""
