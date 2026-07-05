@@ -55,3 +55,37 @@ def valid_importance(importance: object) -> bool:
 def normalize_importance(importance: int) -> int:
     """Clamp an importance to the valid ordinal range."""
     return max(IMPORTANCE_MIN, min(IMPORTANCE_MAX, int(importance)))
+
+
+def validated_metadata_updates(
+    importance: object = None,
+    scope: object = None,
+    kind: object = None,
+    category: object = None,
+) -> dict:
+    """Build the dict of hierarchy fields to write, validating each provided
+    value against the vocab. ``None`` means "leave unchanged" and is omitted.
+    Raises ``ValueError`` on any invalid value so the write is rejected before
+    it touches storage. ``category`` is free-form (a topical namespace, no
+    controlled vocabulary). Shared by both storage adapters so the sqlite and
+    postgres write paths validate identically.
+    """
+    updates: dict = {}
+    if importance is not None:
+        if not valid_importance(importance):
+            raise ValueError(
+                f"invalid importance {importance!r}; expected int "
+                f"{IMPORTANCE_MIN}..{IMPORTANCE_MAX}"
+            )
+        updates["importance"] = importance
+    if scope is not None:
+        if not valid_scope(scope):
+            raise ValueError(f"invalid scope {scope!r}; expected one of {SCOPES}")
+        updates["scope"] = scope
+    if kind is not None:
+        if not valid_kind(kind):
+            raise ValueError(f"invalid kind {kind!r}; expected one of {KINDS}")
+        updates["kind"] = kind
+    if category is not None:
+        updates["category"] = category
+    return updates

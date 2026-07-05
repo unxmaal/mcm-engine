@@ -366,6 +366,27 @@ class StorageBackend(Protocol):
     def list_rules_with_file_paths(
         self, *, caller: Optional[str] = None
     ) -> list[RuleRow]: ...
+    def list_rules(
+        self, *, include_archived: bool = False, min_importance: int = 0,
+        limit: Optional[int] = None, caller: Optional[str] = None,
+    ) -> list[RuleRow]:
+        """Full-column rule read for the hierarchy tuning surface (issue #64),
+        ordered importance-first. RuleRow carries the hierarchy axes plus the
+        derived signals the tuning UI shows."""
+        ...
+    def set_rule_metadata(
+        self, rule_id: int, *,
+        importance: Optional[int] = None,
+        scope: Optional[str] = None,
+        kind: Optional[str] = None,
+        category: Optional[str] = None,
+        actor: str = "nobody",
+    ) -> Optional[RuleRow]:
+        """Set the rule hierarchy axes (issue #64). Validates against the vocab,
+        updates only the provided fields, stamps updated_by, and emits an
+        audited 'metadata' rule_events row. Returns the updated row, the
+        unchanged row if nothing was provided, or None if the rule is absent."""
+        ...
     def list_archived_rules(
         self, *, caller: Optional[str] = None
     ) -> list[RuleRow]:

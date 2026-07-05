@@ -592,3 +592,16 @@ Not FTS/tsv-indexed, so no index rebuild.
   postgres now records its schema version the way sqlite's `migrate_core`
   does. The guarded DDL remains the actual migration mechanism; the stamp only
   makes the version legible.
+
+## Addendum — hierarchy read/write surface (issue #64, Phase 2)
+
+Both adapters gain the tuning surface the admin UI and MCP verbs sit on
+(`adapters/sqlite/storage.py`: 56 → 59; `adapters/postgres/storage.py`: 58 → 61):
+
+- `list_rules(include_archived, min_importance, limit)` — one `SELECT * FROM
+  rules ... ORDER BY importance DESC, id ASC` read site. RuleRow already carries
+  the hierarchy axes + derived signals, so no projection change.
+- `set_rule_metadata(rule_id, importance, scope, kind, category, actor)` — two
+  write sites (an `UPDATE rules SET ...` of the validated provided fields +
+  updated_by/updated_at, and an `INSERT INTO rule_events` 'metadata' audit row),
+  run atomically. Vocab validation happens before either write.
