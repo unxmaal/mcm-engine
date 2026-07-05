@@ -51,5 +51,28 @@ services:
     ports:
       - "8080:8080"
 
+  # KB admin tuning UI (issue #64). Same image + same Postgres, different
+  # command: an editable rules grid at http://<host>:8090 for tuning the
+  # hierarchy axes (importance/scope/kind/category) with realtime colorize.
+  # It sits BESIDE the MCP on the shared storage library — reads go direct,
+  # writes go through the audited set_rule_metadata path. Trusted-LAN only:
+  # there is no auth in front of it, so do NOT publish 8090 to the internet.
+  mcm-admin:
+    image: ghcr.io/unxmaal/mcm-engine:main
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "exec mcm-engine admin --host 0.0.0.0 --port 8090"]
+    environment:
+      MCM_PROJECT_NAME: mcm
+      MCM_SOURCE_OF_TRUTH: database
+      MCM_BACKENDS_STORAGE: postgres
+      MCM_BACKENDS_COUNTERS: postgres
+      MCM_BACKENDS_SEARCH: postgres
+      MCM_POSTGRES_DSN: postgresql://mcm:${POSTGRES_PASSWORD}@postgres:5432/mcm
+    ports:
+      - "8090:8090"
+
 volumes:
   pgdata:
