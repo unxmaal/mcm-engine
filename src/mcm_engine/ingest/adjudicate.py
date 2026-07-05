@@ -97,6 +97,7 @@ class CommitReport:
     superseded: int = 0
     reinforced: int = 0
     rejected: int = 0
+    duplicate: int = 0   # ADD whose exact content already exists (net-new guard, #54)
     errors: int = 0
     details: list[dict] = field(default_factory=list)
 
@@ -132,9 +133,18 @@ def commit_verdicts(
                     report.rejected += 1
                     report.details.append({"action": "reject", "source": v.source_topic})
                 elif v.action is Action.ADD:
-                    rid = _insert_rule(storage, v, actor, source_repo, source_ref, source_commit)
-                    report.created += 1
-                    report.details.append({"action": "add", "rule_id": rid, "title": v.title})
+                    # Net-new guard (#54): dedup on exact CONTENT, not just title —
+                    # the same rule body under a different title is not new. This is
+                    # what makes ingest->commit->ingest idempotent.
+                    existing = storage.find_rule_by_content_hash(compute_content_hash(v.content))
+                    if existing is not None:
+                        report.duplicate += 1
+                        report.details.append({"action": "add", "status": "duplicate",
+                                               "rule_id": existing.id, "title": v.title})
+                    else:
+                        rid = _insert_rule(storage, v, actor, source_repo, source_ref, source_commit)
+                        report.created += 1
+                        report.details.append({"action": "add", "rule_id": rid, "title": v.title})
                 elif v.action is Action.REFINE:
                     old = storage.find_by_id(EntityType.RULE, v.target_rule_id)
                     if old is None:

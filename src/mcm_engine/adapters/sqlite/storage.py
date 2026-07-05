@@ -383,6 +383,22 @@ class SqliteStorage:
         ).fetchone()
         return _rule_from_row(r) if r else None
 
+    def find_rule_by_content_hash(
+        self, content_hash: str, *, caller: Optional[str] = None
+    ) -> Optional[RuleRow]:
+        """First ACTIVE rule (not archived, not superseded) with this exact
+        content hash — the net-new guard for ingest (issue #54): same content,
+        even under a different title, is a duplicate, not a new rule."""
+        if not content_hash:
+            return None
+        r = self._db.execute(
+            "SELECT * FROM rules WHERE content_hash = ? "
+            "AND NOT COALESCE(archived, 0) "
+            "AND COALESCE(status, 'active') = 'active' LIMIT 1",
+            (content_hash,),
+        ).fetchone()
+        return _rule_from_row(r) if r else None
+
     def insert_rule(self, row: RuleRow) -> int:
         if row.id:
             cur = self._db.execute_write(

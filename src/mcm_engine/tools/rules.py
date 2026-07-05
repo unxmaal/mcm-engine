@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, RuleRow
 from ..db import log
+from ..destructive import archive_would_storm
 from ..files.watcher import compute_content_hash
 from ..principal import resolve_actor
 from ..rules_links import build_wikilink_relations, extract_wikilinks
@@ -703,11 +704,17 @@ def register_rules_tools(
         source_repo: str = "",
         source_ref: str = "",
         source_commit: str = "",
+        force: bool = False,
     ) -> str:
         """Re-index all .md files. Upserts DB entries; archives orphans
         (soft-delete) for files that no longer exist. Every state change
         emits a rule_events row attributed to `actor` (issue #10), with
-        source_repo/ref/commit propagated to each event."""
+        source_repo/ref/commit propagated to each event.
+
+        Blast-radius guard (issue #20): if the sweep would archive a large
+        fraction of the corpus (a wrong `project_root`, empty/misrooted rules
+        dir), it refuses and archives NOTHING — pass `force=True` to override.
+        This is the same guard the watcher cascade uses."""
         tracker.record_call("sync_rules")
         who = resolve_actor(actor)
         src_repo = source_repo or None
@@ -798,15 +805,27 @@ def register_rules_tools(
                 indexed += 1
 
         # Soft-delete orphans (rules whose backing files are gone). Skip
-        # rows that are already archived — re-archiving inflates the count,
-        # loses the original archived_at timestamp, and is functionally
-        # a no-op anyway.
-        for r in storage.list_rules_with_file_paths():
-            fp = r.file_path
-            if not fp or r.archived:
-                continue
-            full = Path(fp) if Path(fp).is_absolute() else project_root / fp
-            if not full.exists():
+        # rows already archived — re-archiving inflates the count and loses the
+        # original archived_at. Compute the full set FIRST so the blast-radius
+        # guard (issue #20) can see the whole sweep before any write.
+        managed = [
+            r for r in storage.list_rules_with_file_paths()
+            if r.file_path and not r.archived
+        ]
+
+        def _backing_missing(r) -> bool:
+            full = Path(r.file_path) if Path(r.file_path).is_absolute() else project_root / r.file_path
+            return not full.exists()
+
+        orphans = [r for r in managed if _backing_missing(r)]
+
+        archive_blocked = 0
+        if archive_would_storm(len(orphans), len(managed)) and not force:
+            # Almost certainly wrong context (bad project_root, empty rules dir).
+            # Archive NOTHING; the .md upserts above already committed.
+            archive_blocked = len(orphans)
+        else:
+            for r in orphans:
                 storage.soft_delete_rule(r.id)
                 storage.insert_rule_event(
                     r.id, "archived", who,
@@ -820,9 +839,19 @@ def register_rules_tools(
         # lockstep. Additive + idempotent.
         links_created = build_wikilink_relations(storage, project_root)
 
+        guard_note = ""
+        if archive_blocked:
+            guard_note = (
+                f" REFUSED to archive {archive_blocked} of {len(managed)} rules "
+                f"in one sweep (blast-radius guard #20 — likely wrong "
+                f"project_root or an empty rules dir); re-run with force=True "
+                f"if this is intentional."
+            )
+
         return _with_nudge(
             f"Sync complete: {indexed} new, {updated} updated, "
-            f"{archived} orphans archived, {links_created} links created.",
+            f"{archived} orphans archived, {links_created} links created."
+            f"{guard_note}",
             tracker,
         )
 

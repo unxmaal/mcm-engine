@@ -563,3 +563,14 @@ The Claim-shaped columns on `knowledge` (subject_keys, governance_tags,
 scope, status, provenance) are populated through normal `insert_knowledge`
 machinery from the adapter; only the `/v1/claims` shim writes them directly,
 since the existing `insert_knowledge` doesn't take them as parameters.
+
+## Addendum — net-new content-hash guard (issue #54)
+
+Both storage adapters gained one read-only SQL site
+(`adapters/sqlite/storage.py`: 55 → 56; `adapters/postgres/storage.py`: 56 → 57):
+
+- `find_rule_by_content_hash(content_hash)` — `SELECT ... FROM rules WHERE
+  content_hash = ? AND NOT archived AND status='active' LIMIT 1`. The ingest
+  write path (`commit_verdicts`) consults it so the same rule body under a
+  different title is deduped, not minted as net-new — making
+  ingest→commit→ingest idempotent.

@@ -348,6 +348,9 @@ class StorageBackend(Protocol):
     def find_rule_by_title(
         self, title: str, *, caller: Optional[str] = None
     ) -> Optional[RuleRow]: ...
+    def find_rule_by_content_hash(
+        self, content_hash: str, *, caller: Optional[str] = None
+    ) -> Optional[RuleRow]: ...
     def find_rule_by_file_path(
         self, file_path: str, *, caller: Optional[str] = None
     ) -> Optional[RuleRow]: ...
