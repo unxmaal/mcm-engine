@@ -185,9 +185,12 @@ jobs:
           IMAGE=ghcr.io/${{ github.repository_owner }}/mcm-engine
           # Lowercase the owner segment — GHCR requires it.
           IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          # Version is the single source of truth in pyproject.toml.
+          VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
           TAGS="${IMAGE}:sha-${GITHUB_SHA::12}"
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            TAGS="${TAGS},${IMAGE}:main"
+            # main build carries both the floating :main and the declared version.
+            TAGS="${TAGS},${IMAGE}:main,${IMAGE}:${VERSION}"
           fi
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAGS="${TAGS},${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest"
