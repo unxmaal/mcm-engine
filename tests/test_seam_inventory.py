@@ -41,14 +41,14 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "tools/session.py":    0,   # MCM2-02 rewire complete
     # MCM2-02 embedded SQLite adapter — SQL extracted out of tools into the
     # repository. These files are the new authoritative home for SQL.
-    "adapters/sqlite/storage.py":  56,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash)
+    "adapters/sqlite/storage.py":  59,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT)
     "adapters/sqlite/search.py":   5,   # +2 for MCM2-07 search_plugin (FTS + LIKE)
     "adapters/sqlite/counters.py": 4,
     # MCM2-08 Postgres adapter — first non-embedded reference. SQL count
     # matches SqliteStorage's contract surface minus the FTS-table reads
     # (Postgres folds FTS into the same row via tsvector generated columns).
     # +7 MCM2-11 id-preserving inserts, +4 iter, +1 bump_sequences.
-    "adapters/postgres/storage.py": 58,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +1 #64 (_mcm_versions version stamp in ensure_schema)
+    "adapters/postgres/storage.py": 61,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +1 #64 (_mcm_versions version stamp in ensure_schema); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT)
     # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
     "adapters/postgres/counters.py": 5,
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,

@@ -625,6 +625,69 @@ def register_rules_tools(
         return _with_nudge(f"Rule file not found: {file_path}", tracker)
 
     @mcp.tool()
+    def list_rules(
+        include_archived: bool = False, min_importance: int = 0, limit: int = 100,
+    ) -> str:
+        """List rules with their hierarchy axes (importance/scope/kind) and the
+        derived signals (hits, reinforcement, correctness). Ordered
+        importance-first so the highest-binding rules — and any tier inflation —
+        surface at the top (issue #64). `min_importance` filters to a tier and
+        up (2 = invariants only); `limit` caps the output."""
+        tracker.record_call("list_rules")
+        rows = storage.list_rules(
+            include_archived=include_archived,
+            min_importance=min_importance,
+            limit=limit or None,
+        )
+        if not rows:
+            return _with_nudge("(no rules)", tracker)
+        lines = [
+            "# rules — id | importance | scope | kind | category | hits | "
+            "reinf | correct/incorrect | status | title"
+        ]
+        for r in rows:
+            lines.append(
+                f"#{r.id} | imp={r.importance} | {r.scope} | {r.kind} | "
+                f"{r.category or '-'} | h={r.hit_count} | rf={r.reinforcement_count} | "
+                f"{r.correct_count}/{r.incorrect_count} | {r.status} | {r.title}"
+            )
+        return _with_nudge("\n".join(lines), tracker)
+
+    @mcp.tool()
+    def set_rule_metadata(
+        rule_id: int, importance: int = -1, scope: str = "", kind: str = "",
+        category: str = "", actor: str = "",
+    ) -> str:
+        """Tune a rule's hierarchy axes (issue #64): importance (0..2, where
+        2=invariant), scope (universal|conditional), kind (directive|fact),
+        category (free text). Only the arguments you pass are changed — leave
+        importance at -1 and the string fields empty to skip them. Emits an
+        audited 'metadata' event. `actor` falls back to MCM_ACTOR / the
+        transport principal / 'nobody'."""
+        tracker.record_call("set_rule_metadata", topic=str(rule_id))
+        tracker.record_store()
+        who = resolve_actor(actor)
+        try:
+            updated = storage.set_rule_metadata(
+                rule_id,
+                importance=(None if importance < 0 else importance),
+                scope=(scope or None),
+                kind=(kind or None),
+                category=(category or None),
+                actor=who,
+            )
+        except ValueError as e:
+            return _with_nudge(f"set_rule_metadata rejected: {e}", tracker)
+        if updated is None:
+            return _with_nudge(f"rule not found: #{rule_id}", tracker)
+        return _with_nudge(
+            f"rule #{rule_id} updated: importance={updated.importance}, "
+            f"scope={updated.scope}, kind={updated.kind}, "
+            f"category={updated.category or '-'}",
+            tracker,
+        )
+
+    @mcp.tool()
     def promote_to_rule(
         source_type: str,
         source_id: int,

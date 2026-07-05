@@ -909,6 +909,67 @@ class PostgresStorage:
             rows = cur.fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    def list_rules(
+        self, *, include_archived: bool = False, min_importance: int = 0,
+        limit: Optional[int] = None, caller: Optional[str] = None,
+    ) -> list[RuleRow]:
+        """Full-column rule read for the hierarchy tuning surface (issue #64).
+        Ordered importance-first so the highest-binding rules — and any tier
+        inflation — sort to the top."""
+        clauses = ["COALESCE(importance, 0) >= %s"]
+        params: list[Any] = [min_importance]
+        if not include_archived:
+            clauses.append("NOT COALESCE(archived, FALSE)")
+        sql = (
+            f"SELECT * FROM rules WHERE {' AND '.join(clauses)} "
+            f"ORDER BY COALESCE(importance, 0) DESC, id ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT %s"
+            params.append(limit)
+        with self._conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        return [_rule_from_row(r) for r in rows]
+
+    def set_rule_metadata(
+        self, rule_id: int, *,
+        importance: Optional[int] = None,
+        scope: Optional[str] = None,
+        kind: Optional[str] = None,
+        category: Optional[str] = None,
+        actor: str = "nobody",
+    ) -> Optional[RuleRow]:
+        """Set the hierarchy axes (issue #64). Validates against the vocab
+        (raising ValueError before any write), updates only the provided
+        fields, stamps updated_by, and emits an audited 'metadata' rule_events
+        row. Atomic. Returns the updated row, the unchanged row if nothing was
+        provided, or None if the rule is absent."""
+        from ...hierarchy import validated_metadata_updates
+
+        updates = validated_metadata_updates(importance, scope, kind, category)
+        if self.find_by_id(EntityType.RULE, rule_id) is None:
+            return None
+        if not updates:
+            return self.find_by_id(EntityType.RULE, rule_id)
+        cols = ", ".join(f"{k} = %s" for k in updates)
+        note = ", ".join(f"{k}={v}" for k, v in updates.items())
+        values = tuple(updates.values()) + (actor or "nobody", rule_id)
+        with self.transaction():
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE rules SET {cols}, updated_by = %s, "
+                    f"updated_at = now() WHERE id = %s",
+                    values,
+                )
+                cur.execute(
+                    "INSERT INTO rule_events (rule_id, event_type, actor, note) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (rule_id, "metadata", actor or "nobody", note),
+                )
+            self._commit()
+        return self.find_by_id(EntityType.RULE, rule_id)
+
     def list_archived_rules(
         self, *, caller: Optional[str] = None,
     ) -> list[RuleRow]:
