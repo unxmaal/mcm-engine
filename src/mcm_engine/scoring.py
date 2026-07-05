@@ -31,15 +31,24 @@ from __future__ import annotations
 import math
 from typing import Optional
 
+from .hierarchy import IMPORTANCE_MAX
+
 # --- weights (on the NORMALIZED [0,1]/[-1,1] terms) -------------------------
-# Relevance must exceed the sum of the other non-pinned weights (0.1+0.3+0.5+0.3
-# = 1.2) so a top-of-batch match is never swamped by maxed-out counters.
+# Relevance must exceed the sum of the other non-pinned weights
+# (0.1+0.3+0.5+0.3 + importance 0.5 + scope 0.1 = 1.8) so a top-of-batch match
+# is never swamped by maxed-out counters or a high hierarchy tier.
 W_RELEVANCE = 2.0
 W_HIT = 0.1
 W_REINFORCEMENT = 0.3
 W_CORRECTNESS = 0.5
 W_RECENCY = 0.3
 PINNED_WEIGHT = 2.0
+# Hierarchy (issue #64): importance is the dominant of the two — an invariant
+# (importance 2) universal rule gets +0.6, comparable to a strong correctness
+# signal, enough to reorder similar-relevance rules but not override a clearly
+# better text match. Rules-only: knowledge callers omit both -> zero effect.
+W_IMPORTANCE = 0.5
+W_SCOPE = 0.1
 
 # --- normalization tunables -------------------------------------------------
 HIT_SATURATION = 10.0          # hit_count == HIT_SATURATION -> 0.5 contribution
@@ -82,6 +91,20 @@ def _correctness_term(correct_count: Optional[int], incorrect_count: Optional[in
     return math.tanh(net / CORRECTNESS_SCALE)
 
 
+def _importance_term(importance: Optional[int]) -> float:
+    """Ordinal importance (0..IMPORTANCE_MAX) -> [0,1]. None/absent -> 0."""
+    if not IMPORTANCE_MAX:
+        return 0.0
+    i = max(0, min(IMPORTANCE_MAX, int(importance or 0)))
+    return i / IMPORTANCE_MAX
+
+
+def _scope_term(scope: Optional[str]) -> float:
+    """Universal rules are always-live; give them a small lift over
+    situational (conditional) ones. None/anything-else -> 0."""
+    return 1.0 if scope == "universal" else 0.0
+
+
 def recency_bonus(age_days: Optional[float]) -> float:
     """Linear decay over RECENCY_WINDOW_DAYS, clamped at 0. Unchanged from v1."""
     if age_days is None:
@@ -102,13 +125,15 @@ def compose_rank(
     age_days: Optional[float],
     correct_count: Optional[int] = None,
     incorrect_count: Optional[int] = None,
+    importance: Optional[int] = None,
+    scope: Optional[str] = None,
 ) -> float:
     """Additive-hybrid composite for knowledge + rules entities.
 
     `relevance` is a pre-normalized [0,1] lexical score (batch min-max, computed
     by the search layer — see `minmax_normalize`). `correct_count`/
-    `incorrect_count` (issue #21) default to None so non-rule callers are
-    unchanged.
+    `incorrect_count` (issue #21) and `importance`/`scope` (issue #64) default
+    to None so non-rule callers are unchanged.
     """
     base = (
         W_RELEVANCE * float(relevance)
@@ -116,6 +141,8 @@ def compose_rank(
         + W_REINFORCEMENT * _saturate(reinforcement_count, REINFORCEMENT_SATURATION)
         + W_CORRECTNESS * _correctness_term(correct_count, incorrect_count)
         + W_RECENCY * recency_bonus(age_days)
+        + W_IMPORTANCE * _importance_term(importance)
+        + W_SCOPE * _scope_term(scope)
     )
     return base + (PINNED_WEIGHT if pinned else 0.0)
 
