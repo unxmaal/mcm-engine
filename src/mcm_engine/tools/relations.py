@@ -4,6 +4,8 @@ Rewired in MCM2-02 (Phase 0): all SQL routes through SqliteStorage.
 """
 from __future__ import annotations
 
+from typing import Literal, get_args
+
 from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, RelationRow, StorageBackend
@@ -11,7 +13,13 @@ from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
 VALID_TYPES = {e.value for e in EntityType}
-VALID_RELATIONS = {"fixes", "causes", "supersedes", "contradicts", "related"}
+
+# The sealed relation vocabulary. Declared as a Literal so it surfaces as an
+# enum in the MCP tool schema (issue #49 — callers couldn't discover the allowed
+# values), and VALID_RELATIONS is derived from it so the runtime check and the
+# schema can never drift apart.
+RelationType = Literal["causes", "contradicts", "fixes", "related", "supersedes"]
+VALID_RELATIONS = set(get_args(RelationType))
 
 
 def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) -> str:
@@ -56,10 +64,16 @@ def register_relations_tools(
         source_id: int,
         target_type: str,
         target_id: int,
-        relation: str,
+        relation: RelationType,
         note: str = "",
     ) -> str:
-        """Create a typed relationship between two knowledge entries."""
+        """Create a typed relationship between two knowledge entries.
+
+        relation must be one of: causes, contradicts, fixes, related, supersedes.
+        source_type / target_type are entity types: knowledge, rule, negative,
+        error. Look up the numeric ids in `search` output — every result is
+        tagged with its id, e.g. `[RULE #84]` / `[KNOWLEDGE/FINDING #12]`.
+        """
         tracker.record_call("link_knowledge", topic=f"{source_type}->{target_type}")
 
         if source_type not in VALID_TYPES:
