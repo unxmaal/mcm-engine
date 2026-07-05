@@ -803,6 +803,23 @@ class PostgresStorage:
             r = cur.fetchone()
         return _rule_from_row(r) if r else None
 
+    def find_rule_by_content_hash(
+        self, content_hash: str, *, caller: Optional[str] = None,
+    ) -> Optional[RuleRow]:
+        """First ACTIVE rule with this exact content hash (issue #54): same
+        content under any title is a duplicate, not a new rule."""
+        if not content_hash:
+            return None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM rules WHERE content_hash = %s "
+                "AND NOT COALESCE(archived, false) "
+                "AND COALESCE(status, 'active') = 'active' LIMIT 1",
+                (content_hash,),
+            )
+            r = cur.fetchone()
+        return _rule_from_row(r) if r else None
+
     def insert_rule(self, row: RuleRow) -> int:
         with self._conn.cursor() as cur:
             if row.id:

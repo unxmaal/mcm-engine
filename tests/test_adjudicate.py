@@ -137,6 +137,43 @@ def test_one_bad_verdict_does_not_block_the_rest(store):
 
 
 # ---------------------------------------------------------------------------
+# Net-new guard / idempotency (#54)
+# ---------------------------------------------------------------------------
+
+
+def test_add_dedups_on_content_not_just_title(store):
+    """The same rule BODY under a DIFFERENT title is not net-new. Title-only
+    dedup missed this; content-hash dedup catches it."""
+    storage, counters = store
+    body = "SGI machines netboot via BOOTP, not plain DHCP."
+    r1 = adjudicate.commit_verdicts(
+        storage, counters,
+        [Verdict(action=Action.ADD, title="Booterizer BOOTP", keywords="k", content=body)])
+    r2 = adjudicate.commit_verdicts(
+        storage, counters,
+        [Verdict(action=Action.ADD, title="totally different title", keywords="k2", content=body)])
+    assert r1.created == 1
+    assert r2.created == 0 and r2.duplicate == 1
+    active = [r for r in storage.iter_entries(EntityType.RULE)
+              if not getattr(r, "archived", False)]
+    assert len(active) == 1
+
+
+def test_ingest_commit_is_idempotent(store):
+    """Regression for #54: commit a batch, commit it again -> zero net-new. If
+    this goes red, ingest is minting duplicates it labels 'novel'."""
+    storage, counters = store
+    verdicts = [
+        Verdict(action=Action.ADD, title="R1", keywords="k", content="body one"),
+        Verdict(action=Action.ADD, title="R2", keywords="k", content="body two"),
+    ]
+    first = adjudicate.commit_verdicts(storage, counters, verdicts)
+    second = adjudicate.commit_verdicts(storage, counters, verdicts)
+    assert first.created == 2
+    assert second.created == 0 and second.duplicate == 2
+
+
+# ---------------------------------------------------------------------------
 # HarnessDelegation — render request / parse verdicts
 # ---------------------------------------------------------------------------
 
