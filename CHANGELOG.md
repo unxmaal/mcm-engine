@@ -6,13 +6,65 @@ versioning.
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-07-05
+
+The "rule hierarchy" release: rules stop being a flat pile — they gain
+importance/scope/kind, those axes drive behavior, and a co-located admin UI lets
+you tune them. Plus safer ingestion and fail-closed store integrity.
+
 ### Added
-- Example deployment Compose stack at `examples/docker-compose.yml` (Postgres plus the
-  daemon, database-authoritative posture) with an `examples/.env.example`.
-- Helm chart at `deploy/helm/mcm-engine/` for Kubernetes. Bundles a minimal first-party
-  Postgres StatefulSet and PVC by default, or targets an external database via
-  `postgresql.enabled=false`. ClusterIP service with an optional Ingress; probes wired to
-  `/healthz` and `/readyz`; Postgres DSN assembled into a Secret.
+- **Rule hierarchy.** Every rule gains `importance` (ordinal 0–2), `scope`
+  (`universal`/`conditional`), and `kind` (`directive`/`fact`) — schema v11,
+  orthogonal to the correctness/lifecycle axis. `set_rule_metadata` is the audited
+  write (validates, stamps `updated_by`, emits a `metadata` event); `list_rules`
+  returns every column importance-first. Both mirrored as MCP verbs.
+- **The hierarchy drives behavior.** The invariant tier (importance 2) is injected
+  into every `session_start`; `importance`/`scope` are weighted into search ranking
+  (below relevance, so a strong match still wins); and `find_conflicting_rules` uses
+  importance as the tiebreak, naming the higher tier the keeper.
+- **Admin tuning UI** (`mcm-engine admin`). A small co-located web app — no external
+  dependencies (stdlib server, self-contained pages): an editable rules grid with
+  realtime colorize as the KB changes, and a node-graph structure view (rules colored
+  by importance, clustered by category, edges from relations). Reads go direct; writes
+  go through `set_rule_metadata`. An `mcm-admin` service is wired into the example
+  Compose stack (trusted-LAN only).
+- **Automatic rules-ingestion funnel.** A model-free mechanical funnel (`rulesift`:
+  span extraction → rule-shaped gate → MinHash novelty banding → intra-run dedup) plus
+  provider-agnostic adjudication (harness-delegation or a standalone cheap model), so
+  `ingest --rules`/`--auto` surface or commit only net-new, rule-shaped candidates.
+- **Full-coverage ingestion.** `text-dir` detects text by content-sniff (retires the
+  strict extension allowlist), and one `ingest` run unions **all** matching ingesters
+  (`find_all`) instead of just the first, so a polyglot repo no longer silently drops
+  its Markdown or other-language files.
+- **Example Compose stack** (`examples/docker-compose.yml`, Postgres + daemon,
+  database-authoritative) with `examples/.env.example`, and a **Helm chart**
+  (`deploy/helm/mcm-engine/`) — bundled Postgres StatefulSet by default or an external
+  DB via `postgresql.enabled=false`, ClusterIP + optional Ingress, `/healthz`+`/readyz`.
+
+### Changed
+- **Migration-framework parity.** Postgres now version-stamps `_mcm_versions` (in
+  `ensure_schema`, after its idempotent guarded DDL) the way SQLite's `migrate_core`
+  does, so both backends report a legible `CORE_VERSION` (now 11).
+- **Fail-closed store integrity.** A `StorageIdentity` plus an `authoritative_store`
+  binding (`build_verified_context`, the composition-root choke point) makes every
+  entrypoint refuse to run against a store other than the pinned one — closing the
+  two-DB "stray database" class of bug.
+- **Idempotent ingest + blast-radius guard.** Net-new detection dedups on a content
+  hash at the write path (`ingest → commit → ingest` is a no-op), and rule archival
+  (`sync_rules` + the watcher) refuses to storm-delete a large fraction of the corpus
+  without `force`.
+- **`link_knowledge`** relation types are a validated enum with docstring guidance;
+  CI bumped to Node 24 actions.
+
+### Fixed
+- **Hooks no longer read a shadow database.** `SessionStart` injects a directive to
+  call the MCP `session_start` tool instead of reading a local DB; ambient recall is
+  transport-adaptive (HTTP → MCP-over-HTTP, stdio → the local authoritative store).
+- **`link_knowledge` deadlock** from nudge escalation blocking every tool (including
+  the reads needed to recover) — the periodic nudge advises but never hard-blocks.
+- **Admin UI defects** — the sticky header no longer overlaps rows (a wrapper's
+  `overflow-x` had nested a scroll context), and the 2-second poll no longer clobbers
+  an in-progress edit (keyed reconciliation that skips the focused control).
 
 ## [3.0.0] — 2026-07-03
 

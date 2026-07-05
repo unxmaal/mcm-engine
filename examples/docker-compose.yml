@@ -27,7 +27,7 @@ services:
       retries: 10
 
   mcm-engine:
-    # :main tracks the latest build. Pin to a released tag (e.g. :3.0.0) for a
+    # :main tracks the latest build. Pin to a released tag (e.g. :3.5.0) for a
     # reproducible deployment.
     image: ghcr.io/unxmaal/mcm-engine:main
     restart: unless-stopped

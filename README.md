@@ -59,9 +59,10 @@ mcm-engine makes different design choices, tuned for coding agents.
 
 **Retrieval**
 - **Deterministic FTS search.** One `search` tool across all scopes, ranked by a composite
-  of lexical relevance, hit frequency, reinforcement, correctness, and recency. Relevance
-  is batch-min-max normalized, so ranking behaves identically on SQLite bm25 and Postgres
-  `ts_rank_cd`.
+  of lexical relevance, hit frequency, reinforcement, correctness, recency, and rule
+  importance/scope. Relevance is batch-min-max normalized, so ranking behaves identically
+  on SQLite bm25 and Postgres `ts_rank_cd`, and is weighted above the other signals so a
+  strong match is never out-voted.
 - **Spreading activation.** A search hit also surfaces its one-hop linked neighbors
   (`[related]`), so a rule connected to a match appears even when the query missed its
   keywords. Value scales with how many links exist.
@@ -76,10 +77,21 @@ mcm-engine makes different design choices, tuned for coding agents.
 - **Supersession.** `supersede_rule(old, new)` soft-expires the old rule; superseded rules
   drop out of default search but remain for audit.
 
+**Rule hierarchy** (rules are not a flat pile)
+- **Three axes** on every rule: `importance` (ordinal 0–2: reference / default /
+  invariant), `scope` (`universal` vs `conditional`), and `kind` (`directive` vs `fact`) —
+  orthogonal to the correctness/lifecycle axis. Tune them with `set_rule_metadata` or the
+  admin UI; `list_rules` returns them all, importance-first.
+- **The hierarchy drives behavior.** The invariant tier is injected into every
+  `session_start` (in front of the agent, not waiting to be recalled); importance/scope
+  lift a rule in search ranking; and `find_conflicting_rules` uses importance as the
+  tiebreak — the higher tier is named the keeper, the lower yields.
+
 **KB hygiene** (deterministic, read-only, surfacing-only; nothing auto-mutates)
 - **`find_duplicate_rules`.** MinHash/LSH near-duplicate detection.
 - **`find_conflicting_rules`.** Topic-similar but body-divergent pairs (same subject,
-  opposite story), labeled `contradictory`, `subsumes`, or `subsumed`.
+  opposite story), labeled `contradictory`, `subsumes`, or `subsumed`, with the
+  higher-importance rule named as the keeper.
 - **`consolidation_report` and the `consolidate` CLI.** One report combining merge
   candidates, conflict candidates, and stale rules. Suitable for a nightly job.
 
@@ -99,6 +111,11 @@ mcm-engine makes different design choices, tuned for coding agents.
   instructions", and similar) without rejecting.
 
 **Operations**
+- **Admin tuning UI.** `mcm-engine admin` serves a small co-located web app: an editable
+  rules grid (tune importance/scope/kind/category, with realtime colorize as the KB
+  changes) plus a node-graph structure view (rules colored by importance, clustered by
+  category, edges from relations). Reads go direct; writes go through the audited
+  `set_rule_metadata` path. No external dependencies (stdlib server, self-contained page).
 - **DB→git review mirror.** `export-mirror` renders active rules to a git repo (one-way,
   read-only) for diffable review.
 - **Source-of-authority axis.** `source_of_truth: files` (Markdown files win; the DB is a
@@ -258,6 +275,7 @@ find_duplicate_rules / find_conflicting_rules   →   review   →   supersede_r
 |---------|--------------|
 | `mcm-engine run` | Run the MCP server over **stdio** (the spawn flow). |
 | `mcm-engine serve` | Run the **HTTP/SSE** daemon (`--host/--port/--transport/--allowed-host`). |
+| `mcm-engine admin` | Serve the **admin tuning UI** — editable rules grid + structure graph (`--host/--port`). |
 | `mcm-engine init --project NAME` | Scaffold `mcm-engine.yaml`, `.claude/knowledge.db`, `rules/`. |
 | `mcm-engine hook` | The PreToolUse enforcement hook (reads one event on stdin). |
 | `mcm-engine session-start` | The SessionStart hook (prints resume context as `additionalContext`). |
@@ -455,9 +473,10 @@ Verify after upgrading:
 
 - **SQLite** tracks the schema version: `SELECT version FROM _mcm_versions WHERE component='core';`
   should equal the current `CORE_VERSION`.
-- **Postgres** does not maintain that core-version row. Verify by table or column
-  existence, for example `SELECT to_regclass('public.token_ledger');` (non-null) and
-  `SELECT count(*) FROM rules;` (unchanged).
+- **Postgres** also stamps that row as of 3.5.0 (its `ensure_schema` upserts
+  `_mcm_versions` after applying the idempotent guarded DDL), so the same query works.
+  Column existence still confirms a specific migration, e.g.
+  `SELECT to_regclass('public.token_ledger');` (non-null).
 
 ### Moving between backends
 
