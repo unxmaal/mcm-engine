@@ -1,10 +1,12 @@
 """Tests for the text-dir generic-fallback ingester.
 
 Contract this suite locks down:
-  - text-dir matches any directory containing text-like files
-  - text-dir does NOT claim .md files (markdown-dir owns those)
+  - text-dir matches any directory containing text-like files, detected by
+    CONTENT SNIFFING (not a strict extension allowlist) — #51. Any file that
+    reads as text is surfaced; binaries are skipped.
   - text-dir is the catch-all (registered last), so language-specific
-    ingesters get first crack
+    ingesters get first crack. In union mode it honors ``exclude_extensions``
+    so it doesn't re-surface files a more-specific ingester already owns.
   - report() surfaces what was seen + suggests AST upgrades for langs
     where the count is high enough to matter
 """
@@ -17,7 +19,7 @@ import pytest
 
 from mcm_engine.backends import KnowledgeRow
 from mcm_engine.ingest import find, registered
-from mcm_engine.ingest.text_dir import TEXT_EXTENSIONS, TextDirIngester
+from mcm_engine.ingest.text_dir import TextDirIngester
 
 
 # ---------------------------------------------------------------------------
@@ -65,11 +67,13 @@ def test_does_not_match_dir_with_only_binaries(tmp_path):
     assert TextDirIngester.matches(str(tmp_path)) is False
 
 
-def test_does_not_match_dir_with_only_md(tmp_path):
-    """Markdown is owned by markdown-dir — text-dir leaves it alone so
-    the two ingesters don't double-claim the same files."""
+def test_matches_dir_with_only_md_via_content_sniff(tmp_path):
+    """After #51 text-dir sniffs content, so a .md file reads as text and
+    text-dir matches it standalone. In the DISPATCHER, markdown-dir still wins
+    precedence and passes 'md' to text-dir's exclude set — this test is about
+    text-dir's own content-sniff, not dispatch precedence."""
     (tmp_path / "note.md").write_text("# hi", encoding="utf-8")
-    assert TextDirIngester.matches(str(tmp_path)) is False
+    assert TextDirIngester.matches(str(tmp_path)) is True
 
 
 def test_does_not_match_empty_dir(tmp_path):
@@ -129,14 +133,55 @@ def test_one_candidate_per_text_file(tmp_path):
     assert {r.topic for r in rows} == {"a.py", "b.rs", "c.go"}
 
 
-def test_md_files_not_picked_up(tmp_path):
-    """text-dir's contract is to leave markdown for markdown-dir."""
+def test_md_files_surfaced_standalone_after_content_sniff(tmp_path):
+    """Standalone (no exclusion), text-dir now surfaces .md too — it's text.
+    The markdown/text-dir handoff is enforced by the union driver via
+    exclude_extensions, not by text-dir refusing .md on its own (#51)."""
     (tmp_path / "a.py").write_text("a", encoding="utf-8")
     (tmp_path / "b.md").write_text("# b", encoding="utf-8")
     rows = _ingest_all(tmp_path)
     topics = {r.topic for r in rows}
     assert "a.py" in topics
-    assert "b.md" not in topics
+    assert "b.md" in topics
+
+
+def test_exclude_extensions_skips_owned_types(tmp_path):
+    """Union mode: text-dir is told which extensions a higher-precedence
+    ingester already owns and leaves them alone (#53)."""
+    (tmp_path / "a.py").write_text("a", encoding="utf-8")
+    (tmp_path / "b.md").write_text("# b", encoding="utf-8")
+    (tmp_path / "c.rs").write_text("fn x() {}", encoding="utf-8")
+    rows = _ingest_all(tmp_path, {"exclude_extensions": {"py", "md"}})
+    topics = {r.topic for r in rows}
+    assert topics == {"c.rs"}
+
+
+def test_content_sniff_surfaces_unknown_extension(tmp_path):
+    """A text file with an extension not in any historic allowlist (e.g.
+    a .zzz config) is now surfaced — that's the #51 point: we can't know
+    where net-new signal lives, so ingest all readable text."""
+    (tmp_path / "weird.zzz").write_text("key = value  # a real setting\n", encoding="utf-8")
+    rows = _ingest_all(tmp_path)
+    assert "weird.zzz" in {r.topic for r in rows}
+
+
+def test_content_sniff_surfaces_extensionless_text(tmp_path):
+    """An extension-less text file (not just Dockerfile/Makefile) is text
+    and gets surfaced."""
+    (tmp_path / "AUTHORS").write_text("Eric Dodd <e@example.com>\n", encoding="utf-8")
+    rows = _ingest_all(tmp_path)
+    assert "AUTHORS" in {r.topic for r in rows}
+
+
+def test_content_sniff_skips_binary_with_texty_extension(tmp_path):
+    """A file whose extension looks textual but whose bytes are binary
+    (embedded NUL) must be skipped — sniff the content, not the name."""
+    (tmp_path / "real.py").write_text("import os\n", encoding="utf-8")
+    (tmp_path / "fake.json").write_bytes(b"{\x00\x01binary\xff\xfe}")
+    rows = _ingest_all(tmp_path)
+    topics = {r.topic for r in rows}
+    assert "real.py" in topics
+    assert "fake.json" not in topics
 
 
 def test_binary_files_skipped(tmp_path):

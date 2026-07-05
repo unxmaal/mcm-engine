@@ -23,32 +23,39 @@ from ..backends import KnowledgeRow
 from . import IngestError, register
 
 
-# Text-like extensions we surface as candidates. Lowercase, no leading dot.
-# Deliberately excludes .md (markdown-dir owns it) so each ingester has
-# clear, non-overlapping ownership of its formats.
-TEXT_EXTENSIONS = frozenset({
-    # source code
-    "py", "js", "jsx", "ts", "tsx", "mjs", "cjs",
-    "rs", "go", "java", "kt", "swift",
-    "c", "h", "cpp", "hpp", "cc", "cxx",
-    "rb", "pl", "pm", "php",
-    "sh", "bash", "zsh", "fish",
-    "lua", "r", "scala", "clj", "ex", "exs",
-    # templates (jinja/go/handlebars) — hold config + rules in IaC repos
-    "j2", "jinja", "jinja2", "tmpl", "tpl",
-    # markup / config (not .md — that belongs to markdown-dir)
-    "txt", "rst", "adoc", "tex",
-    "json", "yaml", "yml", "toml", "ini", "conf", "cfg", "service",
-    "xml", "html", "htm", "css", "scss", "sass",
-    # tabular / data
-    "csv", "tsv",
-    # SQL + queries
-    "sql",
-    # build / project files
-    "dockerfile", "makefile",
-    # infrastructure-as-code
-    "tf", "hcl", "tfvars",
+# Content-sniff, not an allowlist (#51). We can't know which extension holds
+# the net-new signal, so we surface ANY file that reads as text. The only
+# extension gate is a DENYLIST of formats that are always binary — reading a
+# huge .png or .mp4 to sniff it is wasteful and pointless. Lowercase, no dot.
+_BINARY_EXTENSIONS = frozenset({
+    # images
+    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "ico", "webp",
+    "heic", "heif", "avif", "psd",
+    # audio / video
+    "mp3", "wav", "flac", "ogg", "m4a", "aac", "opus",
+    "mp4", "mkv", "mov", "avi", "webm", "wmv", "flv", "m4v",
+    # archives / compressed
+    "zip", "tar", "gz", "bz2", "xz", "zst", "7z", "rar", "lz4", "tgz",
+    # compiled / binary artifacts
+    "o", "a", "so", "dylib", "dll", "exe", "bin", "obj", "lib",
+    "class", "jar", "pyc", "pyo", "wasm", "wat",
+    # fonts
+    "ttf", "otf", "woff", "woff2", "eot",
+    # binary documents / databases
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "db", "sqlite", "sqlite3", "mdb",
+    # disk / media images, misc binary
+    "iso", "img", "dmg", "pkg", "deb", "rpm",
 })
+
+# Sniff at most this many bytes to classify a file as text vs binary.
+_SNIFF_BYTES = 8192
+
+# The classic "is this text?" byte set: printable ASCII plus the common
+# whitespace/control chars, plus all high bytes (utf-8 / latin-1 payload).
+# A file is text if <=30% of its sniffed bytes fall outside this set and it
+# has no embedded NUL.
+_TEXT_CHARS = bytes({7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F})
 
 # Languages worth recommending an AST upgrade for. Map ext → (lang_name,
 # whether we already have an AST ingester).
@@ -100,6 +107,12 @@ class TextDirIngester:
         self._extensions_skipped: Counter[str] = Counter()
 
     @classmethod
+    def owned_extensions(cls) -> frozenset[str]:
+        """text-dir is the catch-all; it owns no extension exclusively, so it
+        never blocks a more-specific ingester in union mode (#53)."""
+        return frozenset()
+
+    @classmethod
     def matches(cls, source: str) -> bool:
         p = Path(source)
         if not p.is_dir():
@@ -121,13 +134,17 @@ class TextDirIngester:
 
     @staticmethod
     def _is_text_file(path: Path) -> bool:
+        """Classify by CONTENT, not extension (#51). A denylist rejects known
+        binary formats cheaply; everything else is sniffed."""
         ext = path.suffix.lstrip(".").lower()
-        if ext in TEXT_EXTENSIONS:
-            return True
-        # No extension? Match by exact lowercase name for a few well-knowns.
-        if not ext:
-            return path.name.lower() in {"dockerfile", "makefile"}
-        return False
+        if ext in _BINARY_EXTENSIONS:
+            return False
+        try:
+            with open(path, "rb") as fh:
+                chunk = fh.read(_SNIFF_BYTES)
+        except OSError:
+            return False
+        return _looks_like_text(chunk)
 
     def stream(
         self, source: str, opts: dict[str, Any]
@@ -136,6 +153,11 @@ class TextDirIngester:
         kind = opts.get("kind") or "knowledge"
         project = opts.get("project") or None
         skip = set(opts.get("skip") or _DEFAULT_SKIP_DIRS)
+        # Union mode (#53): a more-specific ingester already owns these
+        # extensions — leave them alone so no file is surfaced twice.
+        exclude = {
+            e.lstrip(".").lower() for e in (opts.get("exclude_extensions") or ())
+        }
 
         for path in sorted(root.rglob("*")):
             try:
@@ -151,6 +173,8 @@ class TextDirIngester:
                 continue
 
             ext = path.suffix.lstrip(".").lower()
+            if ext in exclude:
+                continue
             if not self._is_text_file(path):
                 if ext:
                     self._extensions_skipped[ext] += 1
@@ -222,6 +246,22 @@ class TextDirIngester:
                     f"would give per-function candidates."
                 )
         return out
+
+
+def _looks_like_text(chunk: bytes) -> bool:
+    """Heuristic text/binary classifier over a sniffed byte prefix.
+
+    Empty file -> not text (nothing to ingest). An embedded NUL is a strong
+    binary signal. Otherwise a file is text if at most 30% of its bytes fall
+    outside the printable/whitespace/high-byte set — which admits UTF-8 and
+    Latin-1 prose while rejecting binary blobs.
+    """
+    if not chunk:
+        return False
+    if b"\x00" in chunk:
+        return False
+    nontext = chunk.translate(None, _TEXT_CHARS)
+    return len(nontext) / len(chunk) <= 0.30
 
 
 def _first_content_line(text: str) -> str:

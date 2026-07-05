@@ -52,6 +52,15 @@ class Ingester(Protocol):
         registration order and picks the first that says yes."""
         ...
 
+    @classmethod
+    def owned_extensions(cls) -> frozenset[str]:
+        """Extensions (lowercase, no dot) this ingester claims exclusively.
+        In union mode (``find_all``) the driver hands the accumulated set of
+        already-owned extensions to lower-precedence ingesters so the same
+        file is never surfaced twice. The catch-all text-dir owns nothing.
+        Default: empty set (claims no extension)."""
+        return frozenset()
+
     def stream(
         self, source: str, opts: dict[str, Any]
     ) -> Iterator[KnowledgeRow]:
@@ -147,6 +156,38 @@ def find(source: str, *, explicit_name: Optional[str] = None) -> Ingester:
         f"no registered ingester matches source '{source}'. "
         f"Try --type with one of: {names}"
     )
+
+
+def find_all(
+    source: str, *, explicit_name: Optional[str] = None
+) -> list[Ingester]:
+    """Pick EVERY ingester that matches ``source`` (#53 union ingestion).
+
+    - If ``explicit_name`` is given, return just that single ingester (or raise
+      ``UnknownIngester``) — ``--type`` is the single-ingester escape hatch.
+    - Otherwise return every registered ingester whose ``matches`` says yes,
+      in registration (= precedence) order. A polyglot repo — Python code +
+      markdown docs + other-language files — is thus covered by all of
+      python-ast, markdown-dir, and text-dir in one run instead of just the
+      first match.
+    - Raise ``NoMatchingIngester`` if nothing matches.
+
+    The caller is responsible for precedence-based extension exclusion: walk
+    the returned list in order, accumulating ``owned_extensions()``, and pass
+    the running set to each ingester's ``stream`` as ``exclude_extensions`` so
+    no file is surfaced twice.
+    """
+    if explicit_name:
+        return [find(source, explicit_name=explicit_name)]
+
+    matched = [cls() for cls in _REGISTERED if cls.matches(source)]
+    if not matched:
+        names = ", ".join(c.name for c in _REGISTERED) or "(none registered)"
+        raise NoMatchingIngester(
+            f"no registered ingester matches source '{source}'. "
+            f"Try --type with one of: {names}"
+        )
+    return matched
 
 
 # Eager-import the built-in ingesters so they self-register on package

@@ -58,6 +58,12 @@ class PythonAstIngester:
         self._candidates_emitted = 0
 
     @classmethod
+    def owned_extensions(cls) -> frozenset[str]:
+        """python-ast owns .py — in union mode the catch-all text-dir skips
+        it so a Python file isn't surfaced both per-function and whole-file."""
+        return frozenset({"py"})
+
+    @classmethod
     def matches(cls, source: str) -> bool:
         p = Path(source)
         if not p.is_dir():
