@@ -23,18 +23,23 @@ _STATIC = Path(__file__).parent / "static"
 _METADATA_RE = re.compile(r"^/api/rules/(\d+)/metadata$")
 
 
+def _load_static(name: str) -> str:
+    return (_STATIC / name).read_text(encoding="utf-8")
+
+
 def _load_index() -> str:
-    return (_STATIC / "index.html").read_text(encoding="utf-8")
+    return _load_static("index.html")
 
 
 def _truthy(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
-def make_handler(storage, *, index_html: str | None = None):
-    """Build a request handler class bound to ``storage``. ``index_html`` is
+def make_handler(storage, *, index_html: str | None = None, graph_html: str | None = None):
+    """Build a request handler class bound to ``storage``. The static pages are
     read once at construction (override in tests)."""
     html = index_html if index_html is not None else _load_index()
+    graph = graph_html if graph_html is not None else _load_static("graph.html")
 
     class Handler(BaseHTTPRequestHandler):
         # Quiet by default — the container's stdout is for real events.
@@ -56,6 +61,20 @@ def make_handler(storage, *, index_html: str | None = None):
             parsed = urlparse(self.path)
             if parsed.path in ("/", "/index.html"):
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if parsed.path in ("/graph", "/graph.html"):
+                self._send(200, graph.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if parsed.path == "/api/graph":
+                q = parse_qs(parsed.query)
+                include_archived = _truthy(q.get("include_archived", ["0"])[0])
+                try:
+                    payload = service.graph_payload(
+                        storage, include_archived=include_archived)
+                except Exception as e:
+                    self._json(500, {"error": str(e)})
+                    return
+                self._json(200, payload)
                 return
             if parsed.path == "/api/rules":
                 q = parse_qs(parsed.query)

@@ -117,3 +117,25 @@ def test_unknown_path_404(server):
         assert False, "expected 404"
     except urllib.error.HTTPError as e:
         assert e.code == 404
+
+
+def test_graph_route_serves_html(server):
+    status, ctype, body = _get(server["base"] + "/graph")
+    assert status == 200 and "text/html" in ctype
+    assert "canvas" in body.lower()
+    assert "/api/graph" in body
+    # nav back to the grid is present
+    assert 'href="/"' in body
+
+
+def test_api_graph_returns_nodes_and_edges(server):
+    status, ctype, body = _get(server["base"] + "/api/graph")
+    assert status == 200 and "application/json" in ctype
+    payload = json.loads(body)
+    assert "nodes" in payload and "edges" in payload
+    assert payload["nodes"][0]["title"] == "uv rule"
+
+
+def test_grid_links_to_graph(server):
+    _, _, body = _get(server["base"] + "/")
+    assert 'href="/graph"' in body
