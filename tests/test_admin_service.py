@@ -5,7 +5,7 @@ import pytest
 
 from mcm_engine.admin import service
 from mcm_engine.adapters.sqlite.storage import SqliteStorage
-from mcm_engine.backends import EntityType, RuleRow
+from mcm_engine.backends import EntityType, RelationRow, RuleRow
 
 
 @pytest.fixture
@@ -66,3 +66,47 @@ def test_apply_metadata_invalid_is_400_no_write(storage):
 def test_apply_metadata_unknown_is_404(storage):
     status, body = service.apply_metadata(storage, 999999, importance=1)
     assert status == 404 and "error" in body
+
+
+# ---------------------------------------------------------------------------
+# graph_payload (structure view)
+# ---------------------------------------------------------------------------
+
+
+def test_graph_payload_nodes_are_rules(storage):
+    g = service.graph_payload(storage)
+    assert {n["title"] for n in g["nodes"]} == {"uv rule", "minecraft port"}
+    assert "vocab" in g and "store" in g
+    n = g["nodes"][0]
+    for key in ("id", "importance", "scope", "kind", "category"):
+        assert key in n
+
+
+def test_graph_payload_edges_are_rule_to_rule_only(storage):
+    r1 = storage.find_rule_by_title("uv rule").id
+    r2 = storage.find_rule_by_title("minecraft port").id
+    storage.insert_relation(RelationRow(
+        id=0, source_type=EntityType.RULE, source_id=r1,
+        target_type=EntityType.RULE, target_id=r2, relation="related"))
+    # a rule->knowledge edge must be excluded from the rules graph
+    storage.insert_relation(RelationRow(
+        id=0, source_type=EntityType.RULE, source_id=r1,
+        target_type=EntityType.KNOWLEDGE, target_id=999, relation="fixes"))
+    g = service.graph_payload(storage)
+    assert g["edges"] == [
+        {"source": r1, "target": r2, "relation": "related", "note": None}
+    ]
+
+
+def test_graph_payload_drops_edges_to_excluded_nodes(storage):
+    """An edge to an archived rule (absent from the default node set) is not
+    emitted, so the frontend never draws a dangling edge."""
+    r1 = storage.find_rule_by_title("uv rule").id
+    gone = storage.find_rule_by_title("minecraft port").id
+    storage.insert_relation(RelationRow(
+        id=0, source_type=EntityType.RULE, source_id=r1,
+        target_type=EntityType.RULE, target_id=gone, relation="related"))
+    storage.soft_delete_rule(gone)
+    g = service.graph_payload(storage)  # include_archived defaults False
+    assert {n["id"] for n in g["nodes"]} == {r1}
+    assert g["edges"] == []

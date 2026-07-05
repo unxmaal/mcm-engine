@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KB Rules — structure graph</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
+    --muted: #8b93a7; --accent: #6ea8fe;
+    --ref: #4b515f; --def: #3f7cc4; --inv: #d98c2b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { background: var(--bg); color: var(--fg);
+         font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  nav.nav { display: inline-flex; gap: 2px; }
+  nav.nav a { color: var(--muted); text-decoration: none; font-size: 12px;
+              padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  nav.nav a.active { color: var(--fg); background: #0c0e13; border-color: var(--accent); }
+  label.chk { color: var(--muted); font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+  button { background: #0c0e13; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 6px; padding: 5px 11px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #stage { position: relative; width: 100%; height: calc(100vh - 53px); }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #info { position: absolute; left: 14px; bottom: 14px; max-width: 340px;
+          background: rgba(23,26,33,0.94); border: 1px solid var(--line); border-radius: 8px;
+          padding: 10px 12px; font-size: 12px; pointer-events: none; display: none; }
+  #info h3 { margin: 0 0 6px; font-size: 13px; }
+  #info .row { color: var(--muted); }
+  #info b { color: var(--fg); }
+  #legend { position: absolute; right: 14px; top: 14px;
+            background: rgba(23,26,33,0.9); border: 1px solid var(--line); border-radius: 8px;
+            padding: 9px 12px; font-size: 12px; color: var(--muted); }
+  #legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KB Rules</h1>
+  <nav class="nav"><a href="/">grid</a><a href="/graph" class="active">graph</a></nav>
+  <span class="meta" id="store">—</span>
+  <span class="meta" id="count">—</span>
+  <div class="spacer"></div>
+  <label class="chk"><input type="checkbox" id="arch"> archived</label>
+  <button id="relayout">re-layout</button>
+</header>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="legend">
+    <div><span class="dot" style="background:var(--inv)"></span>importance 2 · invariant</div>
+    <div><span class="dot" style="background:var(--def)"></span>importance 1 · default</div>
+    <div><span class="dot" style="background:var(--ref)"></span>importance 0 · reference</div>
+    <div style="margin-top:6px">nodes cluster by category · edges = relations</div>
+  </div>
+  <div id="info"></div>
+</div>
+<script>
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const infoEl = document.getElementById("info");
+let W = 0, H = 0, DPR = window.devicePixelRatio || 1;
+const IMP = { 0: getVar("--ref"), 1: getVar("--def"), 2: getVar("--inv") };
+function getVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+const state = { nodes: [], edges: [], byId: new Map(), anchors: new Map(),
+                alpha: 1, hover: null, drag: null };
+
+function resize() {
+  const stage = document.getElementById("stage");
+  W = stage.clientWidth; H = stage.clientHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+async function load() {
+  const arch = document.getElementById("arch").checked ? "1" : "0";
+  const r = await fetch(`/api/graph?include_archived=${arch}`);
+  if (!r.ok) return;
+  setup(await r.json());
+}
+
+function setup(data) {
+  resize();
+  const cats = [...new Set(data.nodes.map(n => n.category || "(none)"))].sort();
+  const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.36;
+  state.anchors = new Map();
+  cats.forEach((c, i) => {
+    const a = cats.length === 1 ? 0 : (i / cats.length) * 2 * Math.PI;
+    state.anchors.set(c, { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a), label: c });
+  });
+  state.nodes = data.nodes.map(n => ({
+    ...n, cat: n.category || "(none)",
+    x: cx + (Math.random() - 0.5) * R, y: cy + (Math.random() - 0.5) * R,
+    vx: 0, vy: 0,
+  }));
+  state.byId = new Map(state.nodes.map(n => [n.id, n]));
+  state.edges = data.edges.filter(e => state.byId.has(e.source) && state.byId.has(e.target));
+  state.alpha = 1;
+  document.getElementById("store").textContent = "store: " + (data.store || "?");
+  document.getElementById("count").textContent =
+    `${data.nodes.length} rules · ${state.edges.length} relations · ${cats.length} categories`;
+}
+
+function radius(n) { return 5 + n.importance * 3; }
+
+function tick() {
+  const ns = state.nodes, a = state.alpha;
+  for (let i = 0; i < ns.length; i++) {
+    for (let j = i + 1; j < ns.length; j++) {
+      const p = ns[i], q = ns[j];
+      let dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy || 0.01, d = Math.sqrt(d2);
+      const rep = 1400 / d2, fx = (dx / d) * rep, fy = (dy / d) * rep;
+      p.vx += fx; p.vy += fy; q.vx -= fx; q.vy -= fy;
+    }
+  }
+  for (const n of ns) {
+    const anc = state.anchors.get(n.cat);
+    if (anc) { n.vx += (anc.x - n.x) * 0.012; n.vy += (anc.y - n.y) * 0.012; }
+  }
+  for (const e of state.edges) {
+    const p = state.byId.get(e.source), q = state.byId.get(e.target);
+    let dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const f = (d - 90) * 0.03, fx = (dx / d) * f, fy = (dy / d) * f;
+    p.vx += fx; p.vy += fy; q.vx -= fx; q.vy -= fy;
+  }
+  for (const n of ns) {
+    if (n === state.drag) { n.vx = 0; n.vy = 0; continue; }
+    n.vx *= 0.85; n.vy *= 0.85;
+    n.x += Math.max(-25, Math.min(25, n.vx)) * a;
+    n.y += Math.max(-25, Math.min(25, n.vy)) * a;
+    n.x = Math.max(16, Math.min(W - 16, n.x));
+    n.y = Math.max(16, Math.min(H - 16, n.y));
+  }
+  state.alpha = Math.max(0.03, state.alpha * 0.99);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  // category anchor labels
+  ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillStyle = "#6b7385";
+  for (const [, anc] of state.anchors) ctx.fillText(anc.label, anc.x + 6, anc.y - 8);
+  // edges
+  ctx.lineWidth = 1.2;
+  for (const e of state.edges) {
+    const p = state.byId.get(e.source), q = state.byId.get(e.target);
+    const lit = state.hover && (p === state.hover || q === state.hover);
+    ctx.strokeStyle = lit ? "#6ea8fe" : "#3a4150";
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    ctx.fillStyle = lit ? "#9cc2ff" : "#59617400";
+    if (lit) ctx.fillText(e.relation, (p.x + q.x) / 2 + 4, (p.y + q.y) / 2);
+  }
+  // nodes
+  for (const n of state.nodes) {
+    ctx.beginPath(); ctx.arc(n.x, n.y, radius(n), 0, 2 * Math.PI);
+    ctx.fillStyle = IMP[n.importance] || IMP[0];
+    ctx.globalAlpha = n.archived ? 0.4 : 1;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    if (n === state.hover) { ctx.lineWidth = 2; ctx.strokeStyle = "#e6e9ef"; ctx.stroke(); }
+  }
+}
+
+function nodeAt(mx, my) {
+  let best = null, bestD = Infinity;
+  for (const n of state.nodes) {
+    const dx = n.x - mx, dy = n.y - my, d = Math.hypot(dx, dy);
+    if (d <= radius(n) + 4 && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+
+function showInfo(n) {
+  if (!n) { infoEl.style.display = "none"; return; }
+  infoEl.innerHTML =
+    `<h3>#${n.id} ${escapeHtml(n.title)}</h3>` +
+    `<div class="row">importance <b>${n.importance}</b> · scope <b>${n.scope}</b> · kind <b>${n.kind}</b></div>` +
+    `<div class="row">category <b>${escapeHtml(n.category || "(none)")}</b> · status <b>${n.status}</b></div>` +
+    `<div class="row">hits <b>${n.hit_count}</b> · reinforced <b>${n.reinforcement_count}</b></div>`;
+  infoEl.style.display = "block";
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function mouse(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener("mousemove", (e) => {
+  const m = mouse(e);
+  if (state.drag) { state.drag.x = m.x; state.drag.y = m.y; return; }
+  state.hover = nodeAt(m.x, m.y);
+  showInfo(state.hover);
+});
+cv.addEventListener("mousedown", (e) => {
+  const m = mouse(e);
+  const n = nodeAt(m.x, m.y);
+  if (n) { state.drag = n; cv.classList.add("dragging"); state.alpha = Math.max(state.alpha, 0.4); }
+});
+window.addEventListener("mouseup", () => { state.drag = null; cv.classList.remove("dragging"); });
+cv.addEventListener("mouseleave", () => { state.hover = null; showInfo(null); });
+
+document.getElementById("relayout").addEventListener("click", () => setup({
+  nodes: state.nodes.map(n => ({ ...n })), edges: state.edges,
+  store: document.getElementById("store").textContent.replace("store: ", ""),
+}));
+document.getElementById("arch").addEventListener("change", load);
+window.addEventListener("resize", () => { resize(); });
+
+function frame() { tick(); draw(); requestAnimationFrame(frame); }
+load().then(() => requestAnimationFrame(frame));
+</script>
+</body>
+</html>

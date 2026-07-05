@@ -21,6 +21,10 @@
   header h1 { font-size: 15px; margin: 0; font-weight: 650; }
   header .meta { color: var(--muted); font-size: 12px; }
   header .spacer { flex: 1; }
+  nav.nav { display: inline-flex; gap: 2px; }
+  nav.nav a { color: var(--muted); text-decoration: none; font-size: 12px;
+              padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  nav.nav a.active { color: var(--fg); background: #0c0e13; border-color: var(--accent); }
   input[type=search], input.cat {
     background: #0c0e13; color: var(--fg); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 9px; font: inherit; }
@@ -52,6 +56,7 @@
 <body>
 <header>
   <h1>KB Rules</h1>
+  <nav class="nav"><a href="/" class="active">grid</a><a href="/graph">graph</a></nav>
   <span class="meta" id="store">—</span>
   <span class="meta" id="count">—</span>
   <div class="spacer"></div>

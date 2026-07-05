@@ -10,7 +10,16 @@ from datetime import datetime
 from typing import Any, Optional
 
 from .. import hierarchy
-from ..backends import RuleRow
+from ..backends import EntityType, RuleRow
+
+
+def _vocab() -> dict:
+    return {
+        "scopes": list(hierarchy.SCOPES),
+        "kinds": list(hierarchy.KINDS),
+        "importance_min": hierarchy.IMPORTANCE_MIN,
+        "importance_max": hierarchy.IMPORTANCE_MAX,
+    }
 
 
 def _iso(v: Any) -> Optional[str]:
@@ -59,13 +68,53 @@ def rules_payload(
     return {
         "store": str(getattr(storage, "identity", "") or ""),
         "count": len(rows),
-        "vocab": {
-            "scopes": list(hierarchy.SCOPES),
-            "kinds": list(hierarchy.KINDS),
-            "importance_min": hierarchy.IMPORTANCE_MIN,
-            "importance_max": hierarchy.IMPORTANCE_MAX,
-        },
+        "vocab": _vocab(),
         "rules": [serialize_rule(r) for r in rows],
+    }
+
+
+def _node(r: RuleRow) -> dict:
+    return {
+        "id": r.id,
+        "title": r.title,
+        "category": r.category,
+        "importance": r.importance,
+        "scope": r.scope,
+        "kind": r.kind,
+        "status": r.status,
+        "hit_count": r.hit_count,
+        "reinforcement_count": r.reinforcement_count,
+        "archived": bool(r.archived),
+    }
+
+
+def graph_payload(storage, *, include_archived: bool = False) -> dict:
+    """Structure view (issue #64, Phase 3 Display 2): rules as nodes, and the
+    rule<->rule rows of the relations table as edges. Only edges whose BOTH
+    endpoints are rules present in the node set are included, so no edge dangles
+    to a knowledge/error entity or an excluded (archived) rule."""
+    rows = storage.list_rules(include_archived=include_archived)
+    ids = {r.id for r in rows}
+    edges: list[dict] = []
+    for rel in storage.iter_relations():
+        if (
+            rel.source_type == EntityType.RULE
+            and rel.target_type == EntityType.RULE
+            and rel.source_id in ids
+            and rel.target_id in ids
+        ):
+            edges.append({
+                "source": rel.source_id,
+                "target": rel.target_id,
+                "relation": rel.relation,
+                "note": rel.note,
+            })
+    return {
+        "store": str(getattr(storage, "identity", "") or ""),
+        "count": len(rows),
+        "vocab": _vocab(),
+        "nodes": [_node(r) for r in rows],
+        "edges": edges,
     }
 
 
