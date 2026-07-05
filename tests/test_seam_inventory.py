@@ -32,7 +32,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # Original v1 surface — tools still hold their SQL directly until the
     # tool-side refactor lands (a follow-up step of MCM2-02).
     "db.py":               7,
-    "schema.py":           56,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE
+    "schema.py":           59,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE; +3 issue #64 v10→v11 hierarchy ALTERs
     "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
     "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
@@ -48,7 +48,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # matches SqliteStorage's contract surface minus the FTS-table reads
     # (Postgres folds FTS into the same row via tsvector generated columns).
     # +7 MCM2-11 id-preserving inserts, +4 iter, +1 bump_sequences.
-    "adapters/postgres/storage.py": 57,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash)
+    "adapters/postgres/storage.py": 58,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +1 #64 (_mcm_versions version stamp in ensure_schema)
     # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
     "adapters/postgres/counters.py": 5,
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
