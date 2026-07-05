@@ -165,6 +165,8 @@ def _score_and_format_rule(
         age_days=_age_days(row.created_at),
         correct_count=correct,
         incorrect_count=incorrect,
+        importance=getattr(row, "importance", 0),
+        scope=getattr(row, "scope", None),
     )
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)

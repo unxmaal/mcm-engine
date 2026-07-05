@@ -174,6 +174,25 @@ def register_session_tools(
         except Exception:
             pass
 
+        # Invariants (issue #64): the top importance tier, surfaced every
+        # session so the highest-binding rules are in front of the agent
+        # instead of waiting to be recalled. Capped so tier inflation can't
+        # flood the summary; a truncation note fires if the cap is hit.
+        try:
+            from .. import hierarchy
+
+            cap = 25
+            invariants = storage.list_rules(
+                min_importance=hierarchy.IMPORTANCE_INVARIANT, limit=cap + 1)
+            if invariants:
+                shown = invariants[:cap]
+                lines = [f"  [#{r.id}] {r.title}" for r in shown]
+                if len(invariants) > cap:
+                    lines.append(f"  … and more (showing first {cap} — review importance tiering)")
+                parts.append("Invariants (importance=2 — always apply):\n" + "\n".join(lines))
+        except Exception:
+            pass
+
         # Last handoff (most recent session row).
         handoff = storage.get_last_session()
         if handoff is not None:

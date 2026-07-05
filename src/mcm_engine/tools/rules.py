@@ -247,18 +247,21 @@ def _apply_import_batch(
 
 
 def _active_conflict_items(storage):
-    """(items, titles) over ACTIVE rules for conflict detection (issue #32).
-    items = [(id, topic=title+keywords, body=content)]."""
+    """(items, titles, importances) over ACTIVE rules for conflict detection
+    (issue #32). items = [(id, topic=title+keywords, body=content)];
+    importances = {id: importance} for the #64 tiebreak."""
     items = []
     titles = {}
+    importances = {}
     for row in storage.iter_entries(EntityType.RULE):
         if getattr(row, "archived", False):
             continue
         if getattr(row, "status", "active") == "superseded":
             continue
         titles[row.id] = row.title
+        importances[row.id] = getattr(row, "importance", 0) or 0
         items.append((row.id, f"{row.title} {row.keywords or ''}", row.content or ""))
-    return items, titles
+    return items, titles, importances
 
 
 def _conflict_note_for(storage, new_id):
@@ -267,7 +270,7 @@ def _conflict_note_for(storage, new_id):
     Surfacing only: never supersedes, no LLM."""
     from ..dedup import find_conflicts
 
-    items, titles = _active_conflict_items(storage)
+    items, titles, _importances = _active_conflict_items(storage)
     pairs = find_conflicts(items)
     conflicting: dict = {}
     for a, b, label in pairs:
@@ -983,7 +986,7 @@ def register_rules_tools(
         tracker.record_call("find_conflicting_rules")
         from ..dedup import find_conflicts
 
-        items, titles = _active_conflict_items(storage)
+        items, titles, importances = _active_conflict_items(storage)
         pairs = find_conflicts(items, topic_threshold=topic_threshold,
                                body_threshold=body_threshold)
         if not pairs:
@@ -991,7 +994,23 @@ def register_rules_tools(
         lines = [f"Found {len(pairs)} conflict candidate(s) "
                  f"(topic>={topic_threshold}, body<={body_threshold}):"]
         for a, b, label in pairs:
-            lines.append(f"  [{label}] #{a} '{titles.get(a, '')}'  <->  #{b} '{titles.get(b, '')}'")
+            ta, tb = titles.get(a, ""), titles.get(b, "")
+            ia, ib = importances.get(a, 0), importances.get(b, 0)
+            # #64 tiebreak: the higher-importance rule is the keeper; the lower
+            # yields. Equal importance stays a human/agent call.
+            if ia != ib:
+                keep, yield_, ik, iy = (a, b, ia, ib) if ia > ib else (b, a, ib, ia)
+                tk = titles.get(keep, "")
+                ty = titles.get(yield_, "")
+                lines.append(
+                    f"  [{label}] #{keep} '{tk}' (importance {ik}) OVERRIDES "
+                    f"#{yield_} '{ty}' (importance {iy}) — supersede #{yield_}"
+                )
+            else:
+                lines.append(
+                    f"  [{label}] #{a} '{ta}'  <->  #{b} '{tb}'  "
+                    f"(equal importance {ia} — you decide)"
+                )
         lines.append("  Review; if one supersedes the other, call supersede_rule.")
         return _with_nudge("\n".join(lines), tracker)
 
