@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -105,6 +106,20 @@ def cmd_serve(args):
         allowed_hosts=allowed_hosts,
         dns_rebinding_protection=protection,
     )
+
+
+def cmd_admin(args):
+    """Run the KB admin tuning UI (issue #64, Phase 3).
+
+    A small co-located HTTP service: an editable grid of the rules with
+    realtime colorize, reading directly from storage and writing hierarchy
+    metadata through set_rule_metadata (the audited shared write path)."""
+    from .admin.app import serve as admin_serve
+
+    config_path = Path(args.config) if args.config else None
+    project_root = Path(args.project_root) if args.project_root else None
+    config = load_config(config_path=config_path, project_root=project_root)
+    admin_serve(config, host=args.host, port=args.port)
 
 
 def cmd_migrate(args):
@@ -639,6 +654,24 @@ def main():
              "network; leaves the daemon open to DNS-rebinding attacks.",
     )
     serve_parser.set_defaults(func=cmd_serve)
+
+    # admin (KB hierarchy tuning UI — issue #64)
+    admin_parser = subparsers.add_parser(
+        "admin",
+        help="Run the KB admin tuning UI (editable rules grid, issue #64)",
+    )
+    admin_parser.add_argument("--config", help="Path to mcm-engine.yaml")
+    admin_parser.add_argument("--project-root", help="Project root directory")
+    admin_parser.add_argument(
+        "--host", default=os.environ.get("MCM_ADMIN_HOST", "127.0.0.1"),
+        help="Bind address (default 127.0.0.1; pass 0.0.0.0 for all interfaces "
+             "/ container deploys). Env: MCM_ADMIN_HOST.",
+    )
+    admin_parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("MCM_ADMIN_PORT", "8090")),
+        help="Bind port (default 8090). Env: MCM_ADMIN_PORT.",
+    )
+    admin_parser.set_defaults(func=cmd_admin)
 
     # migrate
     migrate_parser = subparsers.add_parser(
