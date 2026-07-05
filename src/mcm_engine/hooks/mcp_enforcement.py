@@ -378,10 +378,91 @@ def _ambient_query(tool_name: str, event: dict) -> Optional[str]:
 
 
 def _default_ambient_search(query: str, cwd: Path):
-    """Best-effort KB rule search from the hook. Returns ``(title, file_path)``
-    of the top hit or None. HEAVY (loads config + opens storage) — the caller
-    runs it under a timeout and swallows every exception, so it must be safe to
-    abandon mid-flight."""
+    """Best-effort ambient recall — returns ``(title, file_path)`` of the top
+    rule hit or None. Adapts to how the KB is reached (issue #57/#58):
+
+    - If ``.mcp.json`` declares an HTTP transport (a local OR remote mcm-engine
+      server), go through the MCP `search` tool over HTTP. The hook never opens
+      a database in this case — the server owns the KB.
+    - Otherwise (stdio transport / no server, i.e. an embedded local store), the
+      KB *is* a local database on this machine and reading it directly is reading
+      the authoritative store, not a shadow. The stray-db `authoritative_store`
+      guard keeps that honest.
+
+    The caller bounds this with a timeout and swallows every exception."""
+    url = _mcp_http_url(cwd)
+    if url:
+        return _mcp_http_recall(url, query)
+    return _local_recall(query, cwd)
+
+
+def _mcp_http_url(cwd: Path) -> Optional[str]:
+    """The mcm-engine MCP URL if the session talks to an HTTP server (from
+    ``MCM_MCP_URL`` or a `type: http` entry in `.mcp.json`), else None — meaning
+    stdio / no server, so the KB is a local store."""
+    env = os.environ.get("MCM_MCP_URL", "").strip()
+    if env:
+        return env
+    seen = set()
+    for base in (cwd, _find_project_root(cwd)):
+        p = base / ".mcp.json"
+        if p in seen or not p.exists():
+            continue
+        seen.add(p)
+        try:
+            servers = (json.loads(p.read_text(encoding="utf-8")) or {}).get("mcpServers", {})
+        except Exception:
+            continue
+        for entry in servers.values():
+            if (isinstance(entry, dict) and entry.get("url")
+                    and entry.get("type", "http") == "http"):
+                return entry["url"]
+    return None
+
+
+def _mcp_http_recall(url: str, query: str):
+    """Call the remote `search` tool over the MCP HTTP transport and parse the
+    top rule hit. Never opens a local db. Best-effort; may raise (caller guards)."""
+    import asyncio
+
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async def _run():
+        async with streamablehttp_client(url) as (reader, writer, _):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                res = await session.call_tool(
+                    "search", {"query": query, "scope": "rules", "limit": 1}
+                )
+                for block in (res.content or []):
+                    if getattr(block, "type", None) == "text":
+                        return _parse_top_rule(block.text)
+        return None
+
+    return asyncio.run(_run())
+
+
+def _parse_top_rule(text: str):
+    """Pull ``(title, file_path)`` out of the `search` tool's rendered text —
+    the first `[RULE #id] Title (category)` line and a `File:` line if present."""
+    if not text:
+        return None
+    title = file_path = None
+    for line in text.splitlines():
+        s = line.strip()
+        if title is None and s.startswith("["):
+            after = s.split("]", 1)[1].strip() if "]" in s else s
+            title = re.sub(r"\s*\([^)]*\)\s*$", "", after).strip() or None
+        elif s.startswith("File:"):
+            file_path = s.split(":", 1)[1].strip() or None
+    return (title, file_path) if title else None
+
+
+def _local_recall(query: str, cwd: Path):
+    """Ambient recall against a local embedded store (stdio / no-server case).
+    Reads the AUTHORITATIVE local KB directly — legitimate on the machine that
+    owns it. Guarded by stray-db (authoritative_store) via build_verified_context."""
     from ..backends import EntityType
     from ..config import load_config
     from ..wiring import build_verified_context
