@@ -574,3 +574,21 @@ Both storage adapters gained one read-only SQL site
   write path (`commit_verdicts`) consults it so the same rule body under a
   different title is deduped, not minted as net-new — making
   ingest→commit→ingest idempotent.
+
+## Addendum — rule hierarchy axes + postgres version tracking (issue #64)
+
+Phase 1 adds three additive columns to `rules` — `importance` (ordinal
+blast-radius rank), `scope` (universal/conditional), `kind` (directive/fact).
+Not FTS/tsv-indexed, so no index rebuild.
+
+- `schema.py`: 56 → 59. The v10→v11 migration `_migrate_v10_to_v11` adds the
+  three columns via three guarded `ALTER TABLE rules ADD COLUMN ...`
+  `execute_write` sites (CORE_VERSION bumped 10 → 11). Fresh installs get the
+  columns from CORE_SCHEMA.
+- `adapters/postgres/storage.py`: 57 → 58. The three columns are added to the
+  `CREATE TABLE rules` DDL and to a guarded `DO $$ ... $$` block for existing
+  deployments (both inside `_DDL_STATEMENTS`, no new `.execute` site). The +1
+  site is a new `_mcm_versions` upsert in `ensure_schema` (issue #64 Phase 0):
+  postgres now records its schema version the way sqlite's `migrate_core`
+  does. The guarded DDL remains the actual migration mechanism; the stamp only
+  makes the version legible.

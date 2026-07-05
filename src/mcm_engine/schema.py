@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 10
+CORE_VERSION = 11
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -174,7 +174,12 @@ CREATE TABLE IF NOT EXISTS rules (
     incorrect_count INTEGER DEFAULT 0,
     valid_until TEXT,
     superseded_by INTEGER,
-    status TEXT DEFAULT 'active'
+    status TEXT DEFAULT 'active',
+    -- v11: rule hierarchy axes (issue #64). Not FTS-indexed. Conservative
+    -- defaults: a fresh rule is a low-importance, situational fact.
+    importance INTEGER DEFAULT 0,
+    scope TEXT DEFAULT 'conditional',
+    kind TEXT DEFAULT 'fact'
 );
 
 -- The FTS column is named `content` to match the rules.content column
@@ -606,6 +611,27 @@ def _migrate_v9_to_v10(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v10_to_v11(db: KnowledgeDB) -> None:
+    """v10 -> v11: rule hierarchy axes (issue #64).
+
+    Adds rules.importance / scope / kind — orthogonal to the correctness and
+    lifecycle columns. None are FTS-indexed, so rules_fts is left untouched.
+    Existing rows get the conservative defaults (importance 0, scope
+    'conditional', kind 'fact'): a rule is a low-importance situational fact
+    until deliberately promoted.
+    """
+    if not _has_column(db, "rules", "importance"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN importance INTEGER DEFAULT 0")
+        log("Migration v10->v11: added rules.importance")
+    if not _has_column(db, "rules", "scope"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN scope TEXT DEFAULT 'conditional'")
+        log("Migration v10->v11: added rules.scope")
+    if not _has_column(db, "rules", "kind"):
+        db.execute_write("ALTER TABLE rules ADD COLUMN kind TEXT DEFAULT 'fact'")
+        log("Migration v10->v11: added rules.kind")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -617,6 +643,7 @@ _MIGRATIONS = [
     (7, 8, _migrate_v7_to_v8),
     (8, 9, _migrate_v8_to_v9),
     (9, 10, _migrate_v9_to_v10),
+    (10, 11, _migrate_v10_to_v11),
 ]
 
 

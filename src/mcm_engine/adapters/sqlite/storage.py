@@ -131,6 +131,9 @@ def _rule_from_row(r: sqlite3.Row) -> RuleRow:
         valid_until=_parse_dt(_col(r, "valid_until")),
         superseded_by=_col(r, "superseded_by"),
         status=_col(r, "status", "active") or "active",
+        importance=_col(r, "importance", 0) or 0,
+        scope=_col(r, "scope", "conditional") or "conditional",
+        kind=_col(r, "kind", "fact") or "fact",
     )
 
 

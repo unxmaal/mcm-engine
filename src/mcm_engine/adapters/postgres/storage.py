@@ -30,6 +30,7 @@ from ...backends import (
     SnapshotRow,
     StorageIdentity,
 )
+from ...schema import CORE_VERSION
 
 
 def _scrub_dsn(dsn: str) -> str:
@@ -178,6 +179,9 @@ _DDL_STATEMENTS: list[str] = [
         valid_until          TIMESTAMPTZ,
         superseded_by        BIGINT,
         status               TEXT NOT NULL DEFAULT 'active',
+        importance           INTEGER NOT NULL DEFAULT 0,
+        scope                TEXT NOT NULL DEFAULT 'conditional',
+        kind                 TEXT NOT NULL DEFAULT 'fact',
         tsv  tsvector GENERATED ALWAYS AS (
             setweight(to_tsvector('english', coalesce(title, '')),       'A') ||
             setweight(to_tsvector('english', coalesce(keywords, '')),    'B') ||
@@ -233,6 +237,23 @@ _DDL_STATEMENTS: list[str] = [
             ALTER TABLE rules ADD COLUMN valid_until     TIMESTAMPTZ;
             ALTER TABLE rules ADD COLUMN superseded_by   BIGINT;
             ALTER TABLE rules ADD COLUMN status          TEXT NOT NULL DEFAULT 'active';
+        END IF;
+    END$$
+    """,
+
+    # v11: rule hierarchy axes (issue #64) migration for EXISTING postgres
+    # deployments: importance / scope / kind. Idempotent (a pure catalog read
+    # after the first apply). None are in the tsv generated column, so no tsv
+    # rebuild. Conservative NOT NULL defaults backfill existing rows as
+    # low-importance situational facts.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'rules' AND column_name = 'importance') THEN
+            ALTER TABLE rules ADD COLUMN importance INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE rules ADD COLUMN scope      TEXT NOT NULL DEFAULT 'conditional';
+            ALTER TABLE rules ADD COLUMN kind       TEXT NOT NULL DEFAULT 'fact';
         END IF;
     END$$
     """,
@@ -523,6 +544,9 @@ def _rule_from_row(r: dict[str, Any]) -> RuleRow:
         valid_until=_as_dt(r.get("valid_until")),
         superseded_by=r.get("superseded_by"),
         status=r.get("status") or "active",
+        importance=r.get("importance", 0) or 0,
+        scope=r.get("scope") or "conditional",
+        kind=r.get("kind") or "fact",
     )
 
 
@@ -658,6 +682,17 @@ class PostgresStorage:
         with self._conn.cursor() as cur:
             for stmt in _DDL_STATEMENTS:
                 cur.execute(stmt)
+            # Record the schema version so postgres tracks it the way sqlite's
+            # migrate_core does (issue #64 Phase 0). The idempotent guarded
+            # DDL above is the actual migration mechanism; this stamp makes the
+            # DB's version legible to a single source of truth. Advance only —
+            # never regress a version that is already higher.
+            cur.execute(
+                "INSERT INTO _mcm_versions (component, version) VALUES ('core', %s) "
+                "ON CONFLICT (component) DO UPDATE SET version = EXCLUDED.version, "
+                "updated_at = now() WHERE _mcm_versions.version < EXCLUDED.version",
+                (CORE_VERSION,),
+            )
         self._commit()
 
     def truncate_all(self) -> None:

@@ -178,6 +178,13 @@ class RuleRow:
     valid_until: Optional[datetime] = None
     superseded_by: Optional[int] = None
     status: str = "active"
+    # Issue #64 (v11): rule hierarchy axes — importance (ordinal blast-radius
+    # rank), scope (universal/conditional), kind (directive/fact). Orthogonal to
+    # the confidence/lifecycle columns above. See mcm_engine.hierarchy for the
+    # vocab. Conservative defaults: a fresh rule is a low-importance fact.
+    importance: int = 0
+    scope: str = "conditional"
+    kind: str = "fact"
 
 
 @dataclass
