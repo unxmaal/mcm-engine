@@ -27,6 +27,7 @@ from watchdog.observers import Observer
 
 from ..backends import EntityType, RuleRow, StorageBackend
 from ..db import log
+from ..destructive import archive_would_storm
 from ..rules_links import build_wikilink_relations
 
 
@@ -245,10 +246,12 @@ class RulesWatcher:
 
         # Layer 3 circuit breaker: a sweep archiving a suspicious fraction of
         # managed rules at once is almost certainly a transient empty dir, not
-        # a real bulk deletion. Refuse and log loudly rather than wipe.
-        if (
-            len(orphans) > self._archive_circuit_floor
-            and len(orphans) / max(1, len(managed)) > self._archive_circuit_fraction
+        # a real bulk deletion. Refuse and log loudly rather than wipe. Shared
+        # predicate with the sync_rules tool (issue #20) so both guard alike.
+        if archive_would_storm(
+            len(orphans), len(managed),
+            floor=self._archive_circuit_floor,
+            fraction=self._archive_circuit_fraction,
         ):
             log(
                 f"watcher: REFUSING to archive {len(orphans)} of {len(managed)} "
