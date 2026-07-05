@@ -81,6 +81,34 @@ def build_context(
     )
 
 
+def build_verified_context(
+    config: MCMConfig,
+    *,
+    registry: Optional[AdapterRegistry] = None,
+) -> Context:
+    """``build_context`` + the authoritative-store guard, in one call.
+
+    This is the choke point every composition root should use so the check can't
+    be forgotten: if ``config.authoritative_store`` is pinned, the resolved
+    storage's ``StorageIdentity`` must match it (fail closed via
+    ``authority.verify_store``). Unpinned config is unchanged behavior.
+    """
+    from .authority import WrongStoreError, verify_store
+
+    ctx = build_context(config, registry=registry)
+    expected = getattr(config, "authoritative_store", "") or ""
+    if expected:
+        identity = getattr(ctx.storage, "identity", None)
+        if identity is None:
+            raise WrongStoreError(
+                f"authoritative_store is pinned to {expected}, but the "
+                f"{type(ctx.storage).__name__} backend reports no StorageIdentity "
+                f"to verify against."
+            )
+        verify_store(identity, expected)
+    return ctx
+
+
 def coerce_context(value: Any) -> Context:
     """Accept either a Context or a raw ``KnowledgeDB`` and return a
     Context. The db→Context path is a backward-compat shim for tests

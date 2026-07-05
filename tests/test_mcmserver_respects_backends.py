@@ -48,18 +48,19 @@ class _RecordingStorage(SqliteStorage):
 
 
 def test_mcmserver_uses_build_context_with_loaded_config(monkeypatch, tmp_path):
-    """MCMServer MUST call wiring.build_context with the loaded config."""
+    """MCMServer MUST build its context (via the verified wrapper) with the
+    loaded config."""
     from mcm_engine import server as server_mod
     from mcm_engine import wiring as wiring_mod
 
     called_with: dict[str, Any] = {}
-    real = wiring_mod.build_context
+    real = wiring_mod.build_verified_context
 
     def spy(config, *, registry: Optional[AdapterRegistry] = None):
         called_with["config"] = config
         return real(config, registry=registry)
 
-    monkeypatch.setattr(server_mod, "build_context", spy)
+    monkeypatch.setattr(server_mod, "build_verified_context", spy)
 
     config = MCMConfig(
         project_name="t",
@@ -68,7 +69,7 @@ def test_mcmserver_uses_build_context_with_loaded_config(monkeypatch, tmp_path):
     MCMServer(config, project_root=tmp_path)
 
     assert called_with.get("config") is config, (
-        "MCMServer.__init__ did NOT call build_context(config) — the "
+        "MCMServer.__init__ did NOT build its context from config — the "
         "backends config in YAML is being silently ignored. Defect #5."
     )
 

@@ -28,7 +28,33 @@ from ...backends import (
     RuleRow,
     SessionRow,
     SnapshotRow,
+    StorageIdentity,
 )
+
+
+def _scrub_dsn(dsn: str) -> str:
+    """Reduce a Postgres DSN to host[:port]/dbname, dropping credentials, so a
+    StorageIdentity never leaks a password. Best-effort for both URL and
+    key=value DSN forms; falls back to a stable non-credential token."""
+    from urllib.parse import urlparse
+
+    try:
+        if "://" in dsn:
+            u = urlparse(dsn)
+            host = u.hostname or "localhost"
+            port = f":{u.port}" if u.port else ""
+            db = (u.path or "/").lstrip("/") or "?"
+            return f"{host}{port}/{db}"
+        # key=value form: pull host/port/dbname tokens only.
+        parts = dict(
+            p.split("=", 1) for p in dsn.split() if "=" in p
+        )
+        host = parts.get("host", "localhost")
+        port = f":{parts['port']}" if "port" in parts else ""
+        db = parts.get("dbname", parts.get("database", "?"))
+        return f"{host}{port}/{db}"
+    except Exception:
+        return "(unparseable-dsn)"
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +617,11 @@ class PostgresStorage:
         self._conn = conn
         # >0 while a transaction() block is open — see _commit / transaction.
         self._tx_depth = 0
+
+    @property
+    def identity(self) -> StorageIdentity:
+        """host/dbname with credentials scrubbed — never the raw DSN."""
+        return StorageIdentity("postgres", _scrub_dsn(self._dsn))
 
     # ---- Transactions ----
 
