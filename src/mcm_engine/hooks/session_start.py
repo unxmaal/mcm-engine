@@ -72,7 +72,7 @@ def _load_storage(cwd: Path) -> tuple[Any, str]:
     Mirrors the db_path resolution MCMServer / cmd_ingest do so the embedded
     SQLite adapter sees an absolute path."""
     from ..config import load_config
-    from ..wiring import build_context
+    from ..wiring import build_verified_context
 
     config = load_config(project_root=cwd)
     resolved_db = config.resolve_db_path(cwd)
@@ -85,7 +85,7 @@ def _load_storage(cwd: Path) -> tuple[Any, str]:
         if getattr(backends, axis_name) == "embedded" and "db_path" not in axis_opts:
             axis_opts["db_path"] = str(resolved_db)
 
-    ctx = build_context(config)
+    ctx = build_verified_context(config)
     return ctx.storage, config.project_name
 
 

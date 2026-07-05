@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ...backends import (
@@ -23,6 +24,7 @@ from ...backends import (
     RuleRow,
     SessionRow,
     SnapshotRow,
+    StorageIdentity,
 )
 from ...db import KnowledgeDB
 from ...schema import migrate_core
@@ -202,6 +204,12 @@ class SqliteStorage:
         # Either share a KnowledgeDB instance with sibling adapters, or
         # open our own from db_path.
         self._db = db if db is not None else KnowledgeDB(db_path)
+
+    @property
+    def identity(self) -> StorageIdentity:
+        p = str(self._db.db_path)
+        location = p if p == ":memory:" else str(Path(p).resolve())
+        return StorageIdentity("sqlite", location)
 
     # ---- Schema management ----
 

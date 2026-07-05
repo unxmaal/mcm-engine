@@ -19,7 +19,7 @@ from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
 from .tools.search import register_search_tools
 from .tools.session import register_session_tools
-from .wiring import Context, build_context
+from .wiring import Context, build_verified_context
 
 
 def _load_plugin(spec: str) -> MCMPlugin:
@@ -98,7 +98,7 @@ class MCMServer:
         if backends.search == "embedded" and "db_path" not in backends.search_options:
             backends.search_options["db_path"] = str(db_path)
 
-        self.ctx: Context = build_context(config, registry=registry)
+        self.ctx: Context = build_verified_context(config, registry=registry)
 
         # Apply the storage adapter's DDL on first boot. SQLite's
         # legacy path runs migrate_core(self.db) above; non-embedded

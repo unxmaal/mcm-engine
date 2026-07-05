@@ -384,10 +384,10 @@ def _default_ambient_search(query: str, cwd: Path):
     abandon mid-flight."""
     from ..backends import EntityType
     from ..config import load_config
-    from ..wiring import build_context
+    from ..wiring import build_verified_context
 
     config = load_config(project_root=_find_project_root(cwd))
-    ctx = build_context(config)
+    ctx = build_verified_context(config)
     hits = ctx.search.search(query, entity_types={EntityType.RULE}, limit=1)
     if not hits:
         return None

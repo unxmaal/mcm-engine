@@ -270,6 +270,21 @@ class SearchHit:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class StorageIdentity:
+    """What store a backend is actually bound to. ``kind`` is the adapter family
+    ("sqlite" / "postgres"); ``location`` is the resolved, credential-free
+    address (absolute db path, or host/dbname). Every backend self-reports one
+    so that "which database did this write land in" is a mechanical fact, and so
+    a configured authoritative store can be verified rather than assumed."""
+
+    kind: str
+    location: str
+
+    def __str__(self) -> str:
+        return f"{self.kind}:{self.location}"
+
+
 @runtime_checkable
 class StorageBackend(Protocol):
     """Durable persistence for knowledge, rules, sessions, and relations.
@@ -281,6 +296,9 @@ class StorageBackend(Protocol):
 
     CONTRACT_VERSION: int
     capabilities: set[Capability]
+
+    #: The store this backend is bound to (self-reported, credential-free).
+    identity: StorageIdentity
 
     # ---- Schema management ----
     def ensure_schema(self) -> None:

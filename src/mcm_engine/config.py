@@ -119,6 +119,12 @@ class MCMConfig:
     # prefer the DB (World B / always-on pod). Default "files" leaves local
     # behavior unchanged. Validated to the sealed set in load_config.
     source_of_truth: str = "files"
+    # Authoritative-store binding (stray-db): the StorageIdentity string this
+    # project is pinned to, e.g. "sqlite:/abs/knowledge.db" or "postgres:host/db".
+    # Empty = unpinned (historical behavior). When set, every entrypoint verifies
+    # the store it resolved matches this and fails closed otherwise — so a
+    # wrong cwd / stale local db / fabricated db can't be used silently.
+    authoritative_store: str = ""
     rules_path: Union[str, list[str]] = "rules/"
     server_name: str = ""
     server_instructions: str = ""

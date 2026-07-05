@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from . import __version__
+from .authority import WrongStoreError
 from .config import MCMConfig, load_config
 from .migrate import format_report, migrate, open_storage
 from .server import MCMServer
@@ -222,7 +223,7 @@ def cmd_ingest(args):
         find as find_ingester,
         registered as list_registered,
     )
-    from .wiring import build_context
+    from .wiring import build_verified_context
 
     if args.list_types:
         names = [cls.name for cls in list_registered()]
@@ -292,10 +293,10 @@ def cmd_ingest(args):
     ctx = None
     if args.rules or args.auto:
         from .ingest import rulesift
-        from .wiring import build_context
+        from .wiring import build_verified_context
 
         _ensure_embedded_schema(config)
-        ctx = build_context(config)
+        ctx = build_verified_context(config)
         existing = rulesift.load_existing_rules(ctx.storage)
         existing_by_id = dict(existing)
         raw_code = ingester.name == "text-dir"
@@ -310,6 +311,10 @@ def cmd_ingest(args):
 
     print(f"# ingester: {ingester.name}", file=sys.stderr)
     print(f"# source:   {args.source}", file=sys.stderr)
+    if ctx is not None:
+        # Always surface which store the funnel bands/commits against — the
+        # thing whose absence let the two-DB split go unnoticed (stray-db).
+        print(f"# store:    {ctx.storage.identity}", file=sys.stderr)
     if args.auto:
         print(f"# mode:     auto (model adjudication -> writes)", file=sys.stderr)
         print(f"# funnel:   {raw_total} raw candidates -> {total} rule candidates", file=sys.stderr)
@@ -416,7 +421,7 @@ def cmd_apply_rules(args):
     is and wherever it lives. This is the commit half of the harness-delegation
     loop and the same path a standalone (Slice 3) adjudicator will feed."""
     from .ingest import adjudicate
-    from .wiring import build_context
+    from .wiring import build_verified_context
 
     project_root = Path(args.project_root) if args.project_root else Path.cwd()
     config = load_config(
@@ -437,7 +442,8 @@ def cmd_apply_rules(args):
         sys.exit(2)
 
     _ensure_embedded_schema(config)
-    ctx = build_context(config)
+    ctx = build_verified_context(config)
+    print(f"# store: {ctx.storage.identity}", file=sys.stderr)
     report = adjudicate.commit_verdicts(
         ctx.storage, ctx.counters, verdicts,
         actor=args.actor or "ingest",
@@ -508,10 +514,11 @@ def _ensure_embedded_schema(config) -> None:
 def _ingest_bulk(window, config, *, dry_run: bool, total: int) -> None:
     """--bulk mode: write every candidate. Same path the v1 ingest used.
     For declared-authoritative corpora only."""
-    from .wiring import build_context
+    from .wiring import build_verified_context
 
     _ensure_embedded_schema(config)
-    ctx = build_context(config)
+    ctx = build_verified_context(config)
+    print(f"# store: {ctx.storage.identity}", file=sys.stderr)
     inserted = updated = errors = 0
     for i, row in enumerate(window, 1):
         existing = ctx.storage.find_knowledge_by_topic_kind(row.topic, row.kind)
@@ -794,7 +801,13 @@ def main():
     apply_parser.set_defaults(func=cmd_apply_rules)
 
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except WrongStoreError as e:
+        # Authoritative-store binding tripped — fail closed with a clean message,
+        # not a traceback (stray-db).
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
