@@ -57,6 +57,27 @@ def test_index_serves_html_grid(server):
     assert "setInterval" in body
 
 
+def test_index_has_nonclobbering_poll_and_coordinated_sticky(server):
+    """Regression guard for the three Phase-3 UI defects:
+
+      1. sticky thead overlapped rows because a wrapper's overflow made a
+         nested scroll context — the JS-driven --head-top offset replaces the
+         hardcoded guess and there is no overflow wrapper.
+      2/3. the 2s poll rebuilt every row (tbody.innerHTML = "") and destroyed
+         the control being edited, so `kind` changes and `category` typing were
+         lost. The poll now reconciles keyed rows and skips document.activeElement.
+    """
+    _, _, body = _get(server["base"] + "/")
+    # Non-destructive poll: no blanket tbody wipe; keyed reconciliation + a
+    # focus guard so an in-progress edit is never clobbered.
+    assert 'innerHTML = ""' not in body
+    assert "rowsById" in body
+    assert "activeElement" in body
+    # Coordinated sticky: dynamic header offset, no overflow-wrapper scroll context.
+    assert "--head-top" in body
+    assert "overflow-x: auto" not in body
+
+
 def test_api_rules_returns_payload(server):
     status, ctype, body = _get(server["base"] + "/api/rules")
     assert status == 200 and "application/json" in ctype

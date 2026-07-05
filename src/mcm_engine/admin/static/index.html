@@ -9,12 +9,15 @@
     --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
     --muted: #8b93a7; --accent: #6ea8fe; --flash: #2e7d32; --err: #b3261e;
     --inv: #d98c2b; --def: #3f7cc4; --ref: #4b515f;
+    --head-top: 53px;   /* set from JS to the live header height */
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--fg);
          font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
   header { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
-           display: flex; gap: 16px; align-items: center; flex-wrap: wrap; position: sticky; top: 0; z-index: 2; }
+           display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+           position: sticky; top: 0; z-index: 3; }
   header h1 { font-size: 15px; margin: 0; font-weight: 650; }
   header .meta { color: var(--muted); font-size: 12px; }
   header .spacer { flex: 1; }
@@ -23,28 +26,26 @@
     border-radius: 6px; padding: 6px 9px; font: inherit; }
   input[type=search] { min-width: 240px; }
   label.chk { color: var(--muted); font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
-  .wrap { overflow-x: auto; }
+  /* Single page scroll context: the table drives horizontal scroll via the
+     body, so header + thead both stick to the viewport and stay coordinated.
+     (A wrapper with overflow-x:auto silently forces overflow-y:auto too, which
+     would nest a scroll context and decouple the sticky thead — the bug.) */
   table { border-collapse: collapse; width: 100%; min-width: 900px; }
   th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { position: sticky; top: 53px; background: var(--panel); color: var(--muted);
+  th { position: sticky; top: var(--head-top); background: var(--panel); color: var(--muted);
        font-weight: 600; font-size: 12px; z-index: 1; }
   td.title { white-space: normal; min-width: 280px; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
   tr:hover td { background: #12151c; }
   select, input.cat { background: #0c0e13; color: var(--fg); border: 1px solid var(--line);
                       border-radius: 5px; padding: 3px 6px; font: inherit; }
-  input.cat { width: 120px; }
-  .imp { display: inline-block; min-width: 18px; text-align: center; border-radius: 4px;
-         padding: 1px 6px; font-size: 12px; font-weight: 650; color: #0c0e13; }
-  .imp0 { background: var(--ref); color: var(--fg); }
-  .imp1 { background: var(--def); }
-  .imp2 { background: var(--inv); }
+  input.cat { width: 130px; }
   .id { color: var(--muted); font-variant-numeric: tabular-nums; }
   .flash { animation: flash 1.6s ease-out; }
   @keyframes flash { 0% { background: var(--flash); } 100% { background: transparent; } }
   .flash-err { animation: flasherr 1.6s ease-out; }
   @keyframes flasherr { 0% { background: var(--err); } 100% { background: transparent; } }
-  .archived td { opacity: 0.5; }
+  tr.archived td { opacity: 0.5; }
   #status { color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -58,119 +59,140 @@
   <label class="chk"><input type="checkbox" id="arch"> archived</label>
   <span id="status"></span>
 </header>
-<div class="wrap">
-  <table>
-    <thead><tr>
-      <th>id</th><th>importance</th><th>scope</th><th>kind</th><th>category</th>
-      <th>title</th><th class="num">hits</th><th class="num">reinf</th>
-      <th class="num">ok/no</th><th>status</th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
-</div>
+<table>
+  <thead><tr>
+    <th>id</th><th>importance</th><th>scope</th><th>kind</th><th>category</th>
+    <th>title</th><th class="num">hits</th><th class="num">reinf</th>
+    <th class="num">ok/no</th><th>status</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
 <script>
 const POLL_MS = 2000;
 let vocab = { scopes: ["universal","conditional"], kinds: ["directive","fact"], importance_min: 0, importance_max: 2 };
-let lastSeen = {};          // id -> serialized rule (to diff for colorize)
 let filter = "";
+// Keyed reconciliation: rows persist across polls (id -> entry) so we never
+// destroy the control the user is editing. The old full innerHTML rebuild is
+// what lost select changes and wiped keystrokes.
+const rowsById = new Map();
 const $ = (id) => document.getElementById(id);
+const headerEl = document.querySelector("header");
 
 function setStatus(t) { $("status").textContent = t; }
+
+// Keep the sticky thead flush under the (wrappable, variable-height) header.
+function syncHeadOffset() {
+  document.documentElement.style.setProperty("--head-top", headerEl.offsetHeight + "px");
+}
 
 async function fetchRules() {
   const arch = $("arch").checked ? "1" : "0";
   const r = await fetch(`/api/rules?include_archived=${arch}`);
-  if (!r.ok) { setStatus("load error"); return null; }
+  if (!r.ok) { setStatus("load error " + r.status); return null; }
   return r.json();
 }
 
-// The fields we watch for external changes (agent/ingest activity + tuning).
+// Fields we watch for external (agent/ingest/other-admin) changes, to flash.
 const WATCH = ["importance","scope","kind","category","hit_count","reinforcement_count","correct_count","incorrect_count","status"];
 
-function render(payload, { flashChanges }) {
+function td(cls) { const el = document.createElement("td"); if (cls) el.className = cls; return el; }
+function mkSelect(options) {
+  const sel = document.createElement("select");
+  for (const opt of options) { const o = document.createElement("option"); o.value = opt; o.textContent = opt; sel.appendChild(o); }
+  return sel;
+}
+function mkImportance() {
+  const sel = document.createElement("select");
+  for (let i = vocab.importance_min; i <= vocab.importance_max; i++) {
+    const o = document.createElement("option"); o.value = i; o.textContent = i; sel.appendChild(o);
+  }
+  return sel;
+}
+
+function makeRow(rule) {
+  const tr = document.createElement("tr");
+  const idTd = td(); idTd.innerHTML = `<span class="id">#${rule.id}</span>`;
+  const impTd = td(); impTd.dataset.field = "importance"; const impSel = mkImportance(); impTd.appendChild(impSel);
+  const scopeTd = td(); scopeTd.dataset.field = "scope"; const scopeSel = mkSelect(vocab.scopes); scopeTd.appendChild(scopeSel);
+  const kindTd = td(); kindTd.dataset.field = "kind"; const kindSel = mkSelect(vocab.kinds); kindTd.appendChild(kindSel);
+  const catTd = td(); catTd.dataset.field = "category"; const catInp = document.createElement("input"); catInp.className = "cat"; catTd.appendChild(catInp);
+  const titleTd = td("title");
+  const hitsTd = td("num"), reinfTd = td("num"), okTd = td("num"), statusTd = td();
+  tr.append(idTd, impTd, scopeTd, kindTd, catTd, titleTd, hitsTd, reinfTd, okTd, statusTd);
+
+  const entry = { tr, impSel, scopeSel, kindSel, catInp,
+                  titleTd, hitsTd, reinfTd, okTd, statusTd,
+                  tds: { importance: impTd, scope: scopeTd, kind: kindTd, category: catTd,
+                         hit_count: hitsTd, reinforcement_count: reinfTd,
+                         correct_count: okTd, incorrect_count: okTd, status: statusTd },
+                  last: null };
+
+  impSel.onchange = () => save(rule.id, { importance: Number(impSel.value) }, impTd, entry);
+  scopeSel.onchange = () => save(rule.id, { scope: scopeSel.value }, scopeTd, entry);
+  kindSel.onchange = () => save(rule.id, { kind: kindSel.value }, kindTd, entry);
+  catInp.onkeydown = (e) => { if (e.key === "Enter") catInp.blur(); };
+  catInp.onblur = () => {
+    const cur = (entry.last && entry.last.category) || "";
+    if (cur !== catInp.value) save(rule.id, { category: catInp.value }, catTd, entry);
+  };
+  return entry;
+}
+
+// Update a control only when the user isn't editing it, so a background poll
+// never clobbers an open dropdown or in-progress typing.
+function setControl(el, value) {
+  if (document.activeElement === el) return;
+  const v = String(value);
+  if (el.value !== v) el.value = v;
+}
+
+function flashCell(node) { node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); }
+
+function updateRow(entry, rule, flashChanges) {
+  const prev = entry.last;
+  setControl(entry.impSel, rule.importance);
+  setControl(entry.scopeSel, rule.scope);
+  setControl(entry.kindSel, rule.kind);
+  setControl(entry.catInp, rule.category || "");
+  entry.titleTd.textContent = rule.title;
+  entry.hitsTd.textContent = rule.hit_count;
+  entry.reinfTd.textContent = rule.reinforcement_count;
+  entry.okTd.textContent = `${rule.correct_count}/${rule.incorrect_count}`;
+  entry.statusTd.textContent = rule.status;
+  entry.tr.classList.toggle("archived", !!rule.archived);
+  if (flashChanges && prev) {
+    for (const f of WATCH) {
+      if (String(prev[f]) !== String(rule[f])) { const t = entry.tds[f]; if (t) flashCell(t); }
+    }
+  }
+  entry.last = rule;
+  applyFilter(entry);
+}
+
+function applyFilter(entry) {
+  const title = (entry.last && entry.last.title || "").toLowerCase();
+  entry.tr.style.display = (filter && !title.includes(filter)) ? "none" : "";
+}
+
+function render(payload, flashChanges) {
   vocab = payload.vocab || vocab;
   $("store").textContent = "store: " + (payload.store || "?");
   $("count").textContent = payload.count + " rules";
   const tbody = $("rows");
-  tbody.innerHTML = "";
+  const seen = new Set();
   for (const rule of payload.rules) {
-    if (filter && !rule.title.toLowerCase().includes(filter)) continue;
-    const prev = lastSeen[rule.id];
-    const tr = document.createElement("tr");
-    if (rule.archived) tr.className = "archived";
-    tr.appendChild(cell("id", `<span class="id">#${rule.id}</span>`));
-    tr.appendChild(impCell(rule));
-    tr.appendChild(selectCell(rule, "scope", vocab.scopes));
-    tr.appendChild(selectCell(rule, "kind", vocab.kinds));
-    tr.appendChild(catCell(rule));
-    tr.appendChild(cell("title", escapeHtml(rule.title)));
-    tr.appendChild(numCell(rule.hit_count));
-    tr.appendChild(numCell(rule.reinforcement_count));
-    tr.appendChild(numCell(`${rule.correct_count}/${rule.incorrect_count}`));
-    tr.appendChild(cell("", escapeHtml(rule.status)));
-    tbody.appendChild(tr);
-    if (flashChanges && prev) {
-      WATCH.forEach((f, i) => {
-        if (String(prev[f]) !== String(rule[f])) flashByField(tr, f);
-      });
-    }
+    seen.add(rule.id);
+    let entry = rowsById.get(rule.id);
+    if (!entry) { entry = makeRow(rule); rowsById.set(rule.id, entry); tbody.appendChild(entry.tr); }
+    updateRow(entry, rule, flashChanges);
   }
-  // refresh baseline
-  const next = {};
-  for (const rule of payload.rules) next[rule.id] = rule;
-  lastSeen = next;
-}
-
-function cell(cls, html) { const td = document.createElement("td"); if (cls) td.className = cls; td.innerHTML = html; return td; }
-function numCell(v) { return cell("num", String(v)); }
-
-function impCell(rule) {
-  const td = document.createElement("td");
-  td.dataset.field = "importance";
-  const sel = document.createElement("select");
-  for (let i = vocab.importance_min; i <= vocab.importance_max; i++) {
-    const o = document.createElement("option"); o.value = i; o.textContent = i;
-    if (i === rule.importance) o.selected = true; sel.appendChild(o);
+  for (const [id, entry] of rowsById) {
+    if (!seen.has(id)) { entry.tr.remove(); rowsById.delete(id); }
   }
-  sel.onchange = () => save(rule.id, { importance: Number(sel.value) }, td);
-  const badge = document.createElement("span");
-  badge.className = "imp imp" + rule.importance; badge.textContent = rule.importance;
-  td.appendChild(sel);
-  return td;
+  syncHeadOffset();
 }
 
-function selectCell(rule, field, options) {
-  const td = document.createElement("td");
-  td.dataset.field = field;
-  const sel = document.createElement("select");
-  for (const opt of options) {
-    const o = document.createElement("option"); o.value = opt; o.textContent = opt;
-    if (opt === rule[field]) o.selected = true; sel.appendChild(o);
-  }
-  sel.onchange = () => save(rule.id, { [field]: sel.value }, td);
-  td.appendChild(sel);
-  return td;
-}
-
-function catCell(rule) {
-  const td = document.createElement("td");
-  td.dataset.field = "category";
-  const inp = document.createElement("input");
-  inp.className = "cat"; inp.value = rule.category || "";
-  const commit = () => { if ((rule.category || "") !== inp.value) save(rule.id, { category: inp.value }, td); };
-  inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); };
-  inp.onblur = commit;
-  td.appendChild(inp);
-  return td;
-}
-
-function flashByField(tr, field) {
-  const td = tr.querySelector(`td[data-field="${field}"]`) ||
-             tr.children[{hit_count:6,reinforcement_count:7,correct_count:8,incorrect_count:8,status:9}[field]];
-  if (td) { td.classList.remove("flash"); void td.offsetWidth; td.classList.add("flash"); }
-}
-
-async function save(id, patch, td) {
+async function save(id, patch, cell, entry) {
   setStatus("saving…");
   try {
     const r = await fetch(`/api/rules/${id}/metadata`, {
@@ -180,28 +202,30 @@ async function save(id, patch, td) {
     const data = await r.json();
     if (!r.ok) {
       setStatus("rejected: " + (data.error || r.status));
-      td.classList.remove("flash-err"); void td.offsetWidth; td.classList.add("flash-err");
+      cell.classList.remove("flash-err"); void cell.offsetWidth; cell.classList.add("flash-err");
       return;
     }
     setStatus("saved #" + id);
-    if (data.rule) lastSeen[id] = data.rule;   // own edit: update baseline so poll doesn't re-flash it
-    td.classList.remove("flash"); void td.offsetWidth; td.classList.add("flash");
+    if (entry && data.rule) entry.last = data.rule;  // own edit -> new baseline, so the poll won't re-flash it
+    flashCell(cell);
   } catch (e) {
     setStatus("error: " + e);
   }
 }
 
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
 async function tick(flashChanges) {
   const payload = await fetchRules();
-  if (payload) render(payload, { flashChanges });
+  if (payload) render(payload, flashChanges);
 }
 
-$("q").addEventListener("input", (e) => { filter = e.target.value.trim().toLowerCase(); tick(false); });
-$("arch").addEventListener("change", () => { lastSeen = {}; tick(false); });
+$("q").addEventListener("input", (e) => {
+  filter = e.target.value.trim().toLowerCase();
+  for (const [, entry] of rowsById) applyFilter(entry);
+});
+$("arch").addEventListener("change", () => tick(false));
+window.addEventListener("resize", syncHeadOffset);
 
-tick(false).then(() => setInterval(() => tick(true), POLL_MS));
+tick(false).then(() => { syncHeadOffset(); setInterval(() => tick(true), POLL_MS); });
 </script>
 </body>
 </html>
