@@ -6,6 +6,16 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **Remote codebase ingestion** (`ingest --remote`). Ingest a local codebase into
+  a remote (pod) KB over MCP, without giving the client direct DB access. The
+  client walks the repo, extracts spans, and applies the rule-like gate locally
+  (corpus-free); it ships only the rule-like **spans** — never whole files — to
+  the new **`sift_candidates`** MCP tool, which MinHash-bands them against the live
+  corpus and returns the net-new survivors (NOVEL + REFINE) for the agent to
+  adjudicate. Read-only; nothing is auto-written. Closes the co-location gap where
+  the CLI ingester only worked when it sat on the same machine as the storage.
+
 ## [3.5.0] — 2026-07-05
 
 The "rule hierarchy" release: rules stop being a flat pile — they gain

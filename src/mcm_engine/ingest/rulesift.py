@@ -232,6 +232,36 @@ def sift_groups(
     return _collapse_duplicates(combined)
 
 
+def sift_spans(
+    spans: Iterable[tuple[str, str]],
+    existing_rules: Iterable[tuple[int, str]],
+) -> list[RuleCandidate]:
+    """Sift already-extracted spans against the corpus (remote ingestion, #72).
+
+    The file-walking + span extraction ran client-side (`extract_spans`); this is
+    the corpus-dependent tail — the rule-like gate, MinHash novelty banding, and
+    intra-run dedup — so it runs server-side where the rule corpus lives. ``spans``
+    is an iterable of ``(text, source_topic)``. Returns the non-KNOWN survivors
+    (NOVEL + REFINE), REFINE carrying the id of the existing rule to compare.
+    """
+    existing = list(existing_rules)
+    survivors: list[RuleCandidate] = []
+    for text, source_topic in spans:
+        span = (text or "").strip()
+        if not span or not is_rule_like(span):
+            continue
+        band, matched = classify_novelty(span, existing)
+        if band is Band.KNOWN:
+            continue
+        survivors.append(RuleCandidate(
+            text=span,
+            source_topic=source_topic or "",
+            band=band,
+            matched_rule_id=matched,
+        ))
+    return _collapse_duplicates(survivors)
+
+
 def _collapse_duplicates(survivors: list[RuleCandidate]) -> list[RuleCandidate]:
     """Drop intra-run near-duplicate spans, keeping the first of each cluster
     (order preserved). Reuses dedup's deterministic MinHash clustering."""

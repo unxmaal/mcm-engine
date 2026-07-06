@@ -281,6 +281,7 @@ find_duplicate_rules / find_conflicting_rules   →   review   →   supersede_r
 | `mcm-engine session-start` | The SessionStart hook (prints resume context as `additionalContext`). |
 | `mcm-engine migrate --from DSN --to DSN` | Copy every row between backends, IDs preserved. |
 | `mcm-engine ingest SOURCE` | Import from an external corpus (e.g. a Markdown vault). |
+| `mcm-engine ingest SOURCE --remote` | Sift a **local** codebase against a **remote** KB over MCP — spans (not files) go to `sift_candidates`; no direct DB access. |
 | `mcm-engine export-mirror --from DSN --out DIR` | One-way DB→git review mirror of active rules. |
 | `mcm-engine consolidate --from DSN [--max-age-days N]` | Print the KB-hygiene report (cron-friendly). |
 | `mcm-engine mint-token --principal NAME` | Mint a bearer token (Postgres storage; HTTP auth). |

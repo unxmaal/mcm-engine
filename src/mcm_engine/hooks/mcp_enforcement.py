@@ -443,6 +443,30 @@ def _mcp_http_recall(url: str, query: str):
     return asyncio.run(_run())
 
 
+def mcp_http_call_tool(url: str, name: str, arguments: dict) -> str:
+    """Call an arbitrary MCP tool over the streamable-HTTP transport and return
+    its concatenated text content. The generic sibling of `_mcp_http_recall`;
+    used by `ingest --remote` to reach `sift_candidates`. Never opens a local
+    db. Best-effort; may raise (caller guards)."""
+    import asyncio
+
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async def _run() -> str:
+        async with streamablehttp_client(url) as (reader, writer, _):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                res = await session.call_tool(name, arguments)
+                parts = [
+                    block.text for block in (res.content or [])
+                    if getattr(block, "type", None) == "text"
+                ]
+                return "\n".join(parts)
+
+    return asyncio.run(_run())
+
+
 def _parse_top_rule(text: str):
     """Pull ``(title, file_path)`` out of the `search` tool's rendered text —
     the first `[RULE #id] Title (category)` line and a `File:` line if present."""

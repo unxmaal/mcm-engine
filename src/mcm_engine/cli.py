@@ -215,6 +215,62 @@ def cmd_session_start(args):
     sys.exit(ss_main())
 
 
+def _collect_remote_spans(groups) -> list[dict]:
+    """Client side of remote ingest (#72): extract rule-like spans locally from
+    the already-walked ingester rows. Pure/corpus-free — only the spans that
+    pass the rule-like gate are kept, so we ship candidates, never whole files."""
+    from .ingest import rulesift
+
+    spans: list[dict] = []
+    for ing, rows in groups:
+        raw_code = ing.name == "text-dir"
+        for row in rows:
+            detail = getattr(row, "detail", "") or ""
+            for span in rulesift.extract_spans(detail, raw_code=raw_code):
+                if rulesift.is_rule_like(span):
+                    spans.append({"text": span, "source_topic": getattr(row, "topic", "")})
+    return spans
+
+
+def _remote_mcp_url(project_root):
+    """Resolve the remote MCP HTTP endpoint (MCM_MCP_URL or a type:http entry in
+    .mcp.json). Indirection so tests can stub it."""
+    from .hooks.mcp_enforcement import _mcp_http_url
+
+    return _mcp_http_url(project_root or Path.cwd())
+
+
+def _sift_remote_call(url, spans):
+    """Call the remote sift_candidates tool over MCP. Indirection so tests can
+    stub the transport."""
+    from .hooks.mcp_enforcement import mcp_http_call_tool
+
+    return mcp_http_call_tool(url, "sift_candidates", {"candidates": spans})
+
+
+def _ingest_remote(groups, project_root, raw_total: int) -> None:
+    spans = _collect_remote_spans(groups)
+    print("# mode:     remote sift (spans -> sift_candidates over MCP)", file=sys.stderr)
+    print(f"# funnel:   {raw_total} raw candidates -> {len(spans)} rule-like span(s)",
+          file=sys.stderr)
+    if not spans:
+        print("# result:   nothing rule-shaped to sift", file=sys.stderr)
+        return
+    url = _remote_mcp_url(project_root)
+    if not url:
+        print("error: --remote needs an MCP HTTP endpoint — set MCM_MCP_URL or a "
+              "`type: http` server in .mcp.json", file=sys.stderr)
+        sys.exit(2)
+    print(f"# server:   {url}", file=sys.stderr)
+    print(file=sys.stderr)
+    try:
+        result = _sift_remote_call(url, spans)
+    except Exception as e:
+        print(f"error: sift_candidates call failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(result)
+
+
 def cmd_ingest(args):
     """Surface candidates from an external source for agent evaluation.
 
@@ -264,6 +320,10 @@ def cmd_ingest(args):
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(2)
 
+    if getattr(args, "remote", False) and (args.bulk or args.auto or args.adjudicate):
+        print("error: --remote is a curated remote sift (over MCP); it is "
+              "incompatible with --bulk / --auto / --adjudicate", file=sys.stderr)
+        sys.exit(2)
     if args.rules and args.bulk:
         print("error: --rules and --bulk are incompatible (rules mode is "
               "curated / no-write)", file=sys.stderr)
@@ -322,6 +382,14 @@ def cmd_ingest(args):
             _seen_topics.add(key)
             candidates.append(row)
     raw_total = len(candidates)
+
+    # --remote (#72): the KB is a remote MCP server and the code is local. Walk +
+    # extract + gate here; ship only the rule-like spans to the sift_candidates
+    # tool, which bands them against the live corpus. No local DB is touched — the
+    # branch returns before build_verified_context.
+    if getattr(args, "remote", False):
+        _ingest_remote(groups, project_root, raw_total)
+        return
 
     # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
     # raw files) — the whole point is that far fewer things come out than went in.
@@ -817,6 +885,15 @@ def main():
              "[adjudicator] model -> commit high-confidence verdicts and queue "
              "the rest for review. Requires an adjudicator in mcm-engine.yaml. "
              "Writes to the KB. Incompatible with --bulk / --adjudicate.",
+    )
+    ingest_parser.add_argument(
+        "--remote", action="store_true",
+        help="Ingest a LOCAL codebase into a REMOTE KB over MCP (#72). Walks + "
+             "extracts + gates locally, then ships only the rule-like spans to "
+             "the `sift_candidates` tool, which bands them against the live "
+             "corpus and returns net-new survivors for you to adjudicate. Needs "
+             "an MCP endpoint (MCM_MCP_URL or a type:http server in .mcp.json). "
+             "No local DB access. Incompatible with --bulk / --auto / --adjudicate.",
     )
     ingest_parser.add_argument(
         "--batch", type=int, default=25,
