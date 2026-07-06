@@ -45,8 +45,9 @@ def test_http_config_uses_mcp_never_local(tmp_path, monkeypatch):
     _write_mcp_json(tmp_path, {"type": "http", "url": "http://x/mcp"})
     seen = {}
 
-    def fake_http(url, q):
+    def fake_http(url, q, **kwargs):
         seen["url"] = url
+        seen["headers"] = kwargs.get("headers")
         return ("T", "f")
 
     monkeypatch.setattr(enf, "_mcp_http_recall", fake_http)

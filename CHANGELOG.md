@@ -15,6 +15,16 @@ versioning.
   corpus and returns the net-new survivors (NOVEL + REFINE) for the agent to
   adjudicate. Read-only; nothing is auto-written. Closes the co-location gap where
   the CLI ingester only worked when it sat on the same machine as the storage.
+  - **Auth** (#74): the client honors a `headers` block in `.mcp.json` and an
+    `MCM_MCP_TOKEN` env var (`Authorization: Bearer …`), so it works against an
+    auth-required server, not just `authRequired=false`.
+  - **Resilient transport** (#75): spans are chunked (`--remote-batch`, default 5)
+    with per-batch timeout (`--remote-batch-timeout`, default 30s), retry-with-
+    backoff on transient errors, timeout-driven batch splitting, a resume state
+    file (`.mcm-engine/ingest-state.json`), and fail-open skip-and-continue — one
+    giant call no longer dies on a ~60s transport ceiling.
+  - **Server cap** (#76): `sift_candidates` refuses more than `MCM_SIFT_MAX_SPANS`
+    (default 25) per call and documents its O(spans × rules) cost.
 
 ## [3.5.0] — 2026-07-05
 

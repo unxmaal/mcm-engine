@@ -8,7 +8,9 @@ direction (MCM2-23) and the v7 schema columns.
 """
 from __future__ import annotations
 
+import os
 import re
+import time
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -244,6 +246,19 @@ def _apply_import_batch(
         results.append({"title": title, "status": "created", "rule_id": rule_id})
 
     return results
+
+
+_DEFAULT_SIFT_MAX_SPANS = 25
+
+
+def _sift_max_spans() -> int:
+    """Per-call span ceiling for sift_candidates (issue #76). Env-tunable via
+    MCM_SIFT_MAX_SPANS; falls back to the default on a missing/invalid value."""
+    try:
+        v = int(os.environ.get("MCM_SIFT_MAX_SPANS", "") or _DEFAULT_SIFT_MAX_SPANS)
+        return v if v > 0 else _DEFAULT_SIFT_MAX_SPANS
+    except ValueError:
+        return _DEFAULT_SIFT_MAX_SPANS
 
 
 def _active_conflict_items(storage):
@@ -988,16 +1003,33 @@ def register_rules_tools(
         `supersede_rule`/`reinforce_rule` (REFINE).
 
         `candidates`: `[{"text": "<span>", "source_topic": "<path or symbol>"}, ...]`.
-        Files never traverse the wire — only the extracted spans do."""
+        Files never traverse the wire — only the extracted spans do.
+
+        COMPLEXITY: one MinHash comparison per (span, active rule), so wall time
+        is O(spans x rules). Batch spans into small groups (the `ingest --remote`
+        client does; default 5); the tool is idempotent and safe to call
+        repeatedly. Refuses more than `MCM_SIFT_MAX_SPANS` (default 25) per call
+        so a single request can't outrun the transport (issue #76)."""
         tracker.record_call("sift_candidates")
         from ..ingest import rulesift
+
+        raw = candidates or []
+        cap = _sift_max_spans()
+        if len(raw) > cap:
+            return _with_nudge(
+                f"sift_candidates: refused {len(raw)} spans — per-call cap is {cap}. "
+                f"Batch into groups <= {cap} (the tool is idempotent, so call it "
+                f"repeatedly), or raise MCM_SIFT_MAX_SPANS.", tracker)
 
         existing = rulesift.load_existing_rules(storage)
         spans = [
             ((c or {}).get("text", ""), (c or {}).get("source_topic", ""))
-            for c in (candidates or [])
+            for c in raw
         ]
+        _t0 = time.perf_counter()
         survivors = rulesift.sift_spans(spans, existing)
+        log(f"sift_candidates: spans={len(spans)} corpus={len(existing)} "
+            f"survivors={len(survivors)} elapsed={time.perf_counter() - _t0:.2f}s")
         if not survivors:
             return _with_nudge(
                 f"sift_candidates: {len(spans)} span(s) in, 0 net-new "
