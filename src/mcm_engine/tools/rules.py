@@ -976,6 +976,53 @@ def register_rules_tools(
         return _with_nudge("\n".join(lines), tracker)
 
     @mcp.tool()
+    def sift_candidates(candidates: list[dict]) -> str:
+        """Server-side tail of the ingest funnel for a REMOTE codebase (issue #72).
+
+        The local `mcm-engine ingest --remote` client walks the repo, extracts
+        spans, and applies the rule-like gate; this tool bands each span against
+        the LIVE rule corpus (MinHash) and returns the net-new survivors — NOVEL
+        (nothing close exists) and REFINE (same subject as an existing rule, body
+        diverges; the existing rule id is named). READ-ONLY: nothing is written —
+        the agent decides per survivor via `add_rule` (NOVEL) or
+        `supersede_rule`/`reinforce_rule` (REFINE).
+
+        `candidates`: `[{"text": "<span>", "source_topic": "<path or symbol>"}, ...]`.
+        Files never traverse the wire — only the extracted spans do."""
+        tracker.record_call("sift_candidates")
+        from ..ingest import rulesift
+
+        existing = rulesift.load_existing_rules(storage)
+        spans = [
+            ((c or {}).get("text", ""), (c or {}).get("source_topic", ""))
+            for c in (candidates or [])
+        ]
+        survivors = rulesift.sift_spans(spans, existing)
+        if not survivors:
+            return _with_nudge(
+                f"sift_candidates: {len(spans)} span(s) in, 0 net-new "
+                f"(all KNOWN or not rule-shaped).", tracker)
+
+        existing_by_id = dict(existing)
+        lines = [
+            f"sift_candidates: {len(spans)} span(s) -> {len(survivors)} "
+            f"net-new candidate(s):"
+        ]
+        for i, c in enumerate(survivors, 1):
+            head = f"  === candidate {i}/{len(survivors)} [{c.band.value}]"
+            if c.source_topic:
+                head += f" from {c.source_topic}"
+            lines.append(head + " ===")
+            if c.band is rulesift.Band.REFINE and c.matched_rule_id:
+                snippet = (existing_by_id.get(c.matched_rule_id, "") or "")[:200]
+                lines.append(f"  refines rule #{c.matched_rule_id}: {snippet}")
+            lines.append("  " + c.text.replace("\n", "\n  "))
+        lines.append(
+            "  Decide per candidate: add_rule (NOVEL) / "
+            "supersede_rule|reinforce_rule (REFINE) / skip.")
+        return _with_nudge("\n".join(lines), tracker)
+
+    @mcp.tool()
     def find_conflicting_rules(topic_threshold: float = 0.5,
                                body_threshold: float = 0.4) -> str:
         """Surface CONFLICT candidates (issue #32): active rules that are
