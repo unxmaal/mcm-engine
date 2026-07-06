@@ -390,20 +390,24 @@ def _default_ambient_search(query: str, cwd: Path):
       guard keeps that honest.
 
     The caller bounds this with a timeout and swallows every exception."""
-    url = _mcp_http_url(cwd)
+    url, headers = _mcp_http_endpoint(cwd)
     if url:
-        return _mcp_http_recall(url, query)
+        return _mcp_http_recall(url, query, headers=headers)
     return _local_recall(query, cwd)
 
 
-def _mcp_http_url(cwd: Path) -> Optional[str]:
-    """The mcm-engine MCP URL if the session talks to an HTTP server (from
-    ``MCM_MCP_URL`` or a `type: http` entry in `.mcp.json`), else None — meaning
-    stdio / no server, so the KB is a local store."""
-    env = os.environ.get("MCM_MCP_URL", "").strip()
-    if env:
-        return env
-    seen = set()
+def _mcp_http_endpoint(cwd: Path) -> tuple[Optional[str], dict]:
+    """Resolve the MCP HTTP endpoint as ``(url, headers)`` (headers may be empty).
+
+    URL precedence: ``MCM_MCP_URL`` env, else the first ``type: http`` server in
+    ``.mcp.json``. Headers come from that server entry's ``headers`` block (so a
+    per-user bearer token in `.mcp.json` is honored), and ``MCM_MCP_TOKEN`` adds
+    ``Authorization: Bearer <token>`` when no auth header is otherwise present
+    (issue #74). Returns ``(None, {})`` for stdio / no server."""
+    env_url = os.environ.get("MCM_MCP_URL", "").strip()
+    url: Optional[str] = env_url or None
+    headers: dict = {}
+    seen: set = set()
     for base in (cwd, _find_project_root(cwd)):
         p = base / ".mcp.json"
         if p in seen or not p.exists():
@@ -414,13 +418,33 @@ def _mcp_http_url(cwd: Path) -> Optional[str]:
         except Exception:
             continue
         for entry in servers.values():
-            if (isinstance(entry, dict) and entry.get("url")
+            if not (isinstance(entry, dict) and entry.get("url")
                     and entry.get("type", "http") == "http"):
-                return entry["url"]
-    return None
+                continue
+            # With an env-fixed URL, only adopt headers from the matching entry;
+            # otherwise take the first http entry's url + headers.
+            if env_url and entry["url"] != env_url:
+                continue
+            url = url or entry["url"]
+            h = entry.get("headers")
+            if isinstance(h, dict):
+                headers = {str(k): str(v) for k, v in h.items()}
+            break
+        else:
+            continue
+        break
+    token = os.environ.get("MCM_MCP_TOKEN", "").strip()
+    if token and not any(k.lower() == "authorization" for k in headers):
+        headers["Authorization"] = f"Bearer {token}"
+    return (url, headers) if url else (None, {})
 
 
-def _mcp_http_recall(url: str, query: str):
+def _mcp_http_url(cwd: Path) -> Optional[str]:
+    """Back-compat shim: the URL only. Prefer ``_mcp_http_endpoint`` for auth."""
+    return _mcp_http_endpoint(cwd)[0]
+
+
+def _mcp_http_recall(url: str, query: str, *, headers: Optional[dict] = None):
     """Call the remote `search` tool over the MCP HTTP transport and parse the
     top rule hit. Never opens a local db. Best-effort; may raise (caller guards)."""
     import asyncio
@@ -429,7 +453,7 @@ def _mcp_http_recall(url: str, query: str):
     from mcp.client.streamable_http import streamablehttp_client
 
     async def _run():
-        async with streamablehttp_client(url) as (reader, writer, _):
+        async with streamablehttp_client(url, headers=headers or None) as (reader, writer, _):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
                 res = await session.call_tool(
@@ -443,18 +467,22 @@ def _mcp_http_recall(url: str, query: str):
     return asyncio.run(_run())
 
 
-def mcp_http_call_tool(url: str, name: str, arguments: dict) -> str:
+def mcp_http_call_tool(
+    url: str, name: str, arguments: dict, *,
+    headers: Optional[dict] = None, timeout: Optional[float] = None,
+) -> str:
     """Call an arbitrary MCP tool over the streamable-HTTP transport and return
     its concatenated text content. The generic sibling of `_mcp_http_recall`;
-    used by `ingest --remote` to reach `sift_candidates`. Never opens a local
-    db. Best-effort; may raise (caller guards)."""
+    used by `ingest --remote` to reach `sift_candidates`. ``headers`` carries
+    auth (issue #74); ``timeout`` bounds the whole call (issue #75). Never opens
+    a local db. Best-effort; may raise (caller guards)."""
     import asyncio
 
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
     async def _run() -> str:
-        async with streamablehttp_client(url) as (reader, writer, _):
+        async with streamablehttp_client(url, headers=headers or None) as (reader, writer, _):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
                 res = await session.call_tool(name, arguments)
@@ -464,7 +492,10 @@ def mcp_http_call_tool(url: str, name: str, arguments: dict) -> str:
                 ]
                 return "\n".join(parts)
 
-    return asyncio.run(_run())
+    coro = _run()
+    if timeout:
+        coro = asyncio.wait_for(coro, timeout)
+    return asyncio.run(coro)
 
 
 def _parse_top_rule(text: str):

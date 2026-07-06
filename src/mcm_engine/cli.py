@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -232,23 +235,147 @@ def _collect_remote_spans(groups) -> list[dict]:
     return spans
 
 
-def _remote_mcp_url(project_root):
-    """Resolve the remote MCP HTTP endpoint (MCM_MCP_URL or a type:http entry in
-    .mcp.json). Indirection so tests can stub it."""
-    from .hooks.mcp_enforcement import _mcp_http_url
-
-    return _mcp_http_url(project_root or Path.cwd())
+_REMOTE_ATTEMPTS = 4
+_sleep = time.sleep  # indirection so tests can neutralize backoff
 
 
-def _sift_remote_call(url, spans):
-    """Call the remote sift_candidates tool over MCP. Indirection so tests can
-    stub the transport."""
+class _RemoteAuthError(Exception):
+    """A 4xx (auth / malformed) — not transient. Abort the run, don't retry."""
+
+
+class _RemoteTimeout(Exception):
+    """A per-batch timeout tripped — split the batch and retry (issue #75)."""
+
+
+class _RemoteBatchError(Exception):
+    """A batch that failed permanently after retries — skip it, fail-open."""
+
+
+def _remote_endpoint(project_root):
+    """(url, headers) for the remote KB, or (None, {}). Indirection for tests."""
+    from .hooks.mcp_enforcement import _mcp_http_endpoint
+
+    return _mcp_http_endpoint(project_root or Path.cwd())
+
+
+def _sift_remote_call(url, spans, *, headers=None, timeout=None):
+    """Call the remote sift_candidates tool. Indirection so tests stub transport."""
     from .hooks.mcp_enforcement import mcp_http_call_tool
 
-    return mcp_http_call_tool(url, "sift_candidates", {"candidates": spans})
+    return mcp_http_call_tool(
+        url, "sift_candidates", {"candidates": spans}, headers=headers, timeout=timeout)
 
 
-def _ingest_remote(groups, project_root, raw_total: int) -> None:
+def _span_hash(span) -> str:
+    h = hashlib.sha1()
+    h.update((span.get("text", "") + "\x00" + span.get("source_topic", "")).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _chunk(seq, n):
+    step = max(1, n)
+    for i in range(0, len(seq), step):
+        yield seq[i:i + step]
+
+
+def _classify_remote_error(exc) -> str:
+    """Classify a transport failure, unwrapping ExceptionGroup / __cause__:
+    'timeout' | 'transient' (retry) | 'auth' (abort) | 'other' (skip batch)."""
+    import asyncio
+
+    try:
+        import httpx
+    except Exception:
+        httpx = None
+
+    stack = [exc]
+    seen: set = set()
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen.add(e)
+        if isinstance(e, asyncio.TimeoutError):
+            return "timeout"
+        if httpx is not None:
+            if isinstance(e, httpx.TimeoutException):
+                return "timeout"
+            if isinstance(e, httpx.HTTPStatusError):
+                code = e.response.status_code
+                if 400 <= code < 500:
+                    return "auth"
+                if 500 <= code < 600:
+                    return "transient"
+            if isinstance(e, httpx.TransportError):
+                return "transient"
+        for attr in ("exceptions", "__cause__", "__context__"):
+            v = getattr(e, attr, None)
+            if isinstance(v, (list, tuple)):
+                stack.extend(v)
+            elif v is not None:
+                stack.append(v)
+    return "other"
+
+
+def _backoff(attempt: int) -> float:
+    return min(8.0, 0.5 * (2 ** (attempt - 1)))
+
+
+def _sift_batch_retry(url, headers, batch, timeout):
+    """Sift one batch with retry-on-transient. Returns the result text, or raises
+    _RemoteAuthError (abort) / _RemoteTimeout (split) / _RemoteBatchError (skip)."""
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return _sift_remote_call(url, batch, headers=headers, timeout=timeout)
+        except (_RemoteAuthError, _RemoteTimeout, _RemoteBatchError):
+            raise
+        except BaseException as e:
+            kind = _classify_remote_error(e)
+            if kind == "auth":
+                raise _RemoteAuthError(str(e) or "4xx")
+            if kind == "timeout":
+                raise _RemoteTimeout(str(e) or "timeout")
+            if kind == "transient" and attempt < _REMOTE_ATTEMPTS:
+                _sleep(_backoff(attempt))
+                continue
+            raise _RemoteBatchError(str(e) or type(e).__name__)
+
+
+def _ingest_state_path(project_root) -> Path:
+    root = Path(project_root) if project_root else Path.cwd()
+    return root / ".mcm-engine" / "ingest-state.json"
+
+
+def _load_ingest_state(path: Path, source_key: str) -> set:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("source") == source_key:
+            return set(data.get("done", []))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_ingest_state(path: Path, source_key: str, done: set) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"source": source_key, "done": sorted(done)}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_ingest_state(path: Path) -> None:
+    try:
+        path.unlink()
+    except Exception:
+        pass
+
+
+def _ingest_remote(groups, project_root, raw_total: int, *, source_key: str,
+                   batch_size: int = 5, batch_timeout: float = 30.0) -> None:
     spans = _collect_remote_spans(groups)
     print("# mode:     remote sift (spans -> sift_candidates over MCP)", file=sys.stderr)
     print(f"# funnel:   {raw_total} raw candidates -> {len(spans)} rule-like span(s)",
@@ -256,19 +383,71 @@ def _ingest_remote(groups, project_root, raw_total: int) -> None:
     if not spans:
         print("# result:   nothing rule-shaped to sift", file=sys.stderr)
         return
-    url = _remote_mcp_url(project_root)
+    url, headers = _remote_endpoint(project_root)
     if not url:
         print("error: --remote needs an MCP HTTP endpoint — set MCM_MCP_URL or a "
               "`type: http` server in .mcp.json", file=sys.stderr)
         sys.exit(2)
     print(f"# server:   {url}", file=sys.stderr)
+
+    state_path = _ingest_state_path(project_root)
+    done = _load_ingest_state(state_path, source_key)
+    pending = [s for s in spans if _span_hash(s) not in done]
+    if len(pending) < len(spans):
+        print(f"# resume:   {len(spans) - len(pending)} span(s) already sifted — skipping",
+              file=sys.stderr)
+    if not pending:
+        print("# result:   nothing new to sift (all done in a prior run)", file=sys.stderr)
+        _clear_ingest_state(state_path)
+        return
+
+    stack = list(reversed(list(_chunk(pending, batch_size))))
+    print(f"# batches:  up to {batch_size} span(s) each, {batch_timeout:.0f}s timeout",
+          file=sys.stderr)
     print(file=sys.stderr)
-    try:
-        result = _sift_remote_call(url, spans)
-    except Exception as e:
-        print(f"error: sift_candidates call failed: {e}", file=sys.stderr)
+
+    n = 0
+    failed_topics: list[str] = []
+    while stack:
+        batch = stack.pop()
+        n += 1
+        try:
+            result = _sift_batch_retry(url, headers, batch, batch_timeout)
+        except _RemoteAuthError as e:
+            print(f"error: authentication failed ({e}) — set MCM_MCP_TOKEN or a "
+                  "`headers` block in .mcp.json", file=sys.stderr)
+            _save_ingest_state(state_path, source_key, done)
+            sys.exit(1)
+        except _RemoteTimeout:
+            if len(batch) > 1:
+                mid = len(batch) // 2
+                stack.append(batch[mid:])
+                stack.append(batch[:mid])  # popped next
+                print(f"# batch {n}: timed out — split into "
+                      f"{mid}+{len(batch) - mid} span(s)", file=sys.stderr)
+                n -= 1
+                continue
+            failed_topics.append(batch[0].get("source_topic", "?"))
+            print(f"# batch {n}: single span timed out — skipped "
+                  f"({batch[0].get('source_topic', '?')})", file=sys.stderr)
+            continue
+        except _RemoteBatchError as e:
+            failed_topics.extend(s.get("source_topic", "?") for s in batch)
+            print(f"# batch {n}: failed after retries — skipped ({e})", file=sys.stderr)
+            continue
+        for s in batch:
+            done.add(_span_hash(s))
+        _save_ingest_state(state_path, source_key, done)
+        print(result)
+        print(f"# batch {n}: ok ({len(batch)} span(s)), {len(stack)} batch(es) left",
+              file=sys.stderr)
+
+    if failed_topics:
+        print(f"# done with {len(failed_topics)} permanently-failed span(s); "
+              f"re-run --remote to resume: {failed_topics}", file=sys.stderr)
         sys.exit(1)
-    print(result)
+    _clear_ingest_state(state_path)
+    print("# done:     all batches sifted", file=sys.stderr)
 
 
 def cmd_ingest(args):
@@ -388,7 +567,9 @@ def cmd_ingest(args):
     # tool, which bands them against the live corpus. No local DB is touched — the
     # branch returns before build_verified_context.
     if getattr(args, "remote", False):
-        _ingest_remote(groups, project_root, raw_total)
+        _ingest_remote(
+            groups, project_root, raw_total, source_key=str(args.source),
+            batch_size=args.remote_batch, batch_timeout=args.remote_batch_timeout)
         return
 
     # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
@@ -892,8 +1073,20 @@ def main():
              "extracts + gates locally, then ships only the rule-like spans to "
              "the `sift_candidates` tool, which bands them against the live "
              "corpus and returns net-new survivors for you to adjudicate. Needs "
-             "an MCP endpoint (MCM_MCP_URL or a type:http server in .mcp.json). "
-             "No local DB access. Incompatible with --bulk / --auto / --adjudicate.",
+             "an MCP endpoint (MCM_MCP_URL or a type:http server in .mcp.json; "
+             "auth via a headers block there or MCM_MCP_TOKEN). No local DB "
+             "access. Incompatible with --bulk / --auto / --adjudicate.",
+    )
+    ingest_parser.add_argument(
+        "--remote-batch", type=int, default=5,
+        help="--remote: spans per sift_candidates call (default 5). Small batches "
+             "survive transport hiccups; the server caps at MCM_SIFT_MAX_SPANS.",
+    )
+    ingest_parser.add_argument(
+        "--remote-batch-timeout", type=float, default=30.0,
+        help="--remote: per-batch timeout in seconds (default 30). On a timeout "
+             "the batch is halved and retried; transport errors are retried with "
+             "backoff; a permanently-failed batch is skipped (fail-open, resumable).",
     )
     ingest_parser.add_argument(
         "--batch", type=int, default=25,
