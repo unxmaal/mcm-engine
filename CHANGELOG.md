@@ -19,6 +19,19 @@ versioning.
   transaction. A threaded regression harness (`tests/test_db_concurrency.py`)
   proves the serialization and fails without the lock. (Postgres adapters carry
   the same latent hazard and are hardened in a follow-up.)
+- **Concurrent clients no longer corrupt each other's governance state**
+  (issue #83). `SessionTracker` was process-global, so two clients on one server
+  shared a single set of nudge/escalation counters — one client's tool calls
+  advanced the state that then blocked the other, and a `session_handoff` from
+  one wiped the others'. Tracker state is now **per-session**, keyed on the
+  FastMCP session object in a `WeakKeyDictionary` (one stable object per client
+  connection for both stdio and streamable-HTTP; auto-evicts on disconnect).
+  Secondary hardening in the same change: read-only query tools
+  (`sift_candidates`, `find_duplicate_rules`, `find_conflicting_rules`,
+  `consolidation_report`, `list_rules`, `get_related`) no longer advance the
+  write-hygiene gates, so a single `ingest --remote` run's `sift_candidates`
+  burst can't self-escalate and block its own follow-up `import_rules` write.
+  (`search` still counts — it resolves the look-first `rules_check`.)
 - **`search` no longer stalls ~20s on a SQLite lock** (issue #79). The embedded
   storage/counters/search adapters each opened their **own** connection to the
   same SQLite file, so the best-effort post-search hit-count bumps (writes on the

@@ -1,7 +1,9 @@
 """SessionTracker — behavioral nudges to prevent context exhaustion."""
 from __future__ import annotations
 
+import threading
 import time
+from weakref import WeakKeyDictionary
 
 from .config import NudgeConfig
 
@@ -47,6 +49,20 @@ class SessionTracker:
         }),
     }
 
+    # Read-only query tools (issue #83 secondary hardening). These surface
+    # existing knowledge; they are neither a mutation (nothing to store) nor a
+    # checkpoint-worthy step. They advance turn_count (telemetry, hyper-focus,
+    # rules-check) but MUST NOT advance the write-hygiene deficits
+    # (store_reminder / checkpoint / mandatory_stop) or accrue nudge-ignore
+    # counts — otherwise a long read burst (e.g. one `ingest --remote` run's many
+    # `sift_candidates` batches) self-escalates and blocks the caller's own
+    # follow-up write. `search` is deliberately NOT here: it resolves rules_check
+    # and is part of the look-first contract.
+    READ_ONLY_TOOLS: frozenset[str] = frozenset({
+        "sift_candidates", "find_duplicate_rules", "find_conflicting_rules",
+        "consolidation_report", "list_rules", "get_related",
+    })
+
     # Targeted guidance for per-tool deficit nudges. Generic fallback below.
     PERIODIC_HINTS: dict[str, str] = {
         "link_knowledge": (
@@ -90,6 +106,8 @@ class SessionTracker:
 
         Exempt tools (session_handoff, save_snapshot, etc.) are never blocked.
         """
+        is_read_only = tool_name in self.READ_ONLY_TOOLS
+
         self.turn_count += 1
         if topic:
             key = topic.lower().strip()
@@ -112,9 +130,19 @@ class SessionTracker:
         for nudge_type in resolved:
             self.pending_nudges.discard(nudge_type)
             self.ignored_counts.pop(nudge_type, None)
-        # Unresolved pending nudges: increment ignored count
-        for nudge_type in list(self.pending_nudges - resolved):
-            self.ignored_counts[nudge_type] = self.ignored_counts.get(nudge_type, 0) + 1
+        # Unresolved pending nudges: increment ignored count — but a read-only
+        # query is not "ignoring" a write-hygiene nudge, so it never accrues one.
+        if not is_read_only:
+            for nudge_type in list(self.pending_nudges - resolved):
+                self.ignored_counts[nudge_type] = self.ignored_counts.get(nudge_type, 0) + 1
+
+        if is_read_only:
+            # Keep the write-hygiene deltas flat across this call (turn_count went
+            # up, so bump both watermarks in lockstep) and never block on a read.
+            # A subsequent WRITE tool still sees the real, preserved deficit.
+            self.last_store_turn += 1
+            self.last_checkpoint_turn += 1
+            return
 
         if self.is_blocked(tool_name):
             raise MandatoryStopError(
@@ -289,3 +317,103 @@ class SessionTracker:
         self.pending_nudges.update(fired)
 
         return "\n\n".join(messages) if messages else None
+
+
+class ScopedTracker:
+    """Per-session facade over ``SessionTracker`` (issue #83).
+
+    One ``SessionTracker`` is process-global by construction, but the server
+    process serves MANY client sessions. Sharing one tracker collapses every
+    client's governance state onto a single set of counters, so one client's
+    tool calls advance the nudge/escalation state that then blocks another
+    client (and a ``session_handoff`` from one wipes the others' counters).
+
+    This facade presents the exact same surface as ``SessionTracker`` but routes
+    every call/attribute to a per-session tracker resolved from a caller-supplied
+    ``key_provider``. Trackers are keyed in a ``WeakKeyDictionary`` on the session
+    object (the FastMCP ``ServerSession`` — one stable, weak-referenceable object
+    per connection, per the SDK), so they evict automatically when the session
+    ends; no manual TTL. When ``key_provider`` yields ``None`` (stdio outside a
+    request, tests, startup) a single shared default tracker is used.
+
+    ``key_provider`` is injected (not hard-wired to the MCP SDK) so this module
+    stays dependency-light and unit-testable: the server passes a closure that
+    reads the FastMCP request context; tests pass a controllable one.
+    """
+
+    def __init__(self, config: NudgeConfig | None = None, *, key_provider=None) -> None:
+        self._config = config
+        self._key_provider = key_provider or (lambda: None)
+        self._trackers: "WeakKeyDictionary[object, SessionTracker]" = WeakKeyDictionary()
+        self._default_tracker: SessionTracker | None = None
+        self._plugin_nudge_fns: list = []
+        self._lock = threading.RLock()
+
+    def _new_tracker(self) -> SessionTracker:
+        t = SessionTracker(self._config)
+        for fn in self._plugin_nudge_fns:
+            t.register_plugin_nudge(fn)
+        return t
+
+    def _key(self):
+        try:
+            return self._key_provider()
+        except Exception:
+            return None
+
+    def _current(self) -> SessionTracker:
+        key = self._key()
+        with self._lock:
+            if key is None:
+                if self._default_tracker is None:
+                    self._default_tracker = self._new_tracker()
+                return self._default_tracker
+            t = self._trackers.get(key)
+            if t is None:
+                t = self._new_tracker()
+                self._trackers[key] = t
+            return t
+
+    def register_plugin_nudge(self, fn) -> None:
+        """Register a plugin nudge for EVERY session — the ones that already
+        exist and any created later (fns are replayed into each new tracker)."""
+        with self._lock:
+            self._plugin_nudge_fns.append(fn)
+            for t in list(self._trackers.values()):
+                t.register_plugin_nudge(fn)
+            if self._default_tracker is not None:
+                self._default_tracker.register_plugin_nudge(fn)
+
+    # --- delegate the mutating surface to the current session's tracker ---
+    def record_call(self, *args, **kwargs):
+        return self._current().record_call(*args, **kwargs)
+
+    def record_store(self, *args, **kwargs):
+        return self._current().record_store(*args, **kwargs)
+
+    def get_nudge(self, *args, **kwargs):
+        return self._current().get_nudge(*args, **kwargs)
+
+    def reset_all(self, *args, **kwargs):
+        return self._current().reset_all(*args, **kwargs)
+
+    def is_blocked(self, *args, **kwargs):
+        return self._current().is_blocked(*args, **kwargs)
+
+    def elapsed_seconds(self, *args, **kwargs):
+        return self._current().elapsed_seconds(*args, **kwargs)
+
+    # --- delegate attribute reads/writes (turn_count, last_checkpoint_turn,
+    #     topic_freq, config, ...) to the current session's tracker ---
+    def __getattr__(self, name):
+        # Only reached for names not found normally. Internal names must never
+        # recurse here (they're all set in __init__).
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._current(), name)
+
+    def __setattr__(self, name, value):
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._current(), name, value)
