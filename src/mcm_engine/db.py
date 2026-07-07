@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # --- Logging (file only, never stderr) ---
@@ -113,6 +115,18 @@ class KnowledgeDB:
         # calls are deferred so a multi-write batch is one atomic unit; the
         # outermost end_transaction() performs the single real commit/rollback.
         self._tx_depth = 0
+        # One re-entrant lock serializes ALL access to the single shared
+        # connection (issue #83 hardening). Post-#79 one connection is shared
+        # across every embedded adapter, and it is also driven by real
+        # background threads (the watcher cascade's Timer threads). Without this
+        # lock, `_tx_depth`, the implicit transaction, and `_reconnect`'s
+        # connection swap are read-modify-written from multiple threads: a
+        # concurrent write's commit() no-ops inside another thread's open
+        # transaction (silent lost write / cross-thread rollback), and a
+        # reconnect closes the connection out from under an in-flight statement.
+        # Re-entrant so a transaction()'s inner writes on the same thread nest
+        # freely; other threads block until the block completes.
+        self._lock = threading.RLock()
 
     def _open_connection(self) -> sqlite3.Connection:
         """Open a fresh SQLite connection with correct pragmas.
@@ -133,12 +147,13 @@ class KnowledgeDB:
 
     def _reconnect(self):
         """Close and reopen the connection. Called on readonly/locked errors."""
-        log("Reconnecting to DB (previous connection went stale)")
-        try:
-            self.conn.close()
-        except Exception:
-            pass
-        self.conn = self._open_connection()
+        with self._lock:
+            log("Reconnecting to DB (previous connection went stale)")
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = self._open_connection()
 
     def execute_write(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a write statement with one retry on readonly/locked errors.
@@ -148,65 +163,95 @@ class KnowledgeDB:
         prior writes. Inside a batch we let the lock error propagate so the
         transaction rolls back cleanly rather than committing a partial batch.
         """
-        try:
-            return self.conn.execute(sql, params)
-        except sqlite3.OperationalError as e:
-            err = str(e).lower()
-            if ("readonly" in err or "locked" in err) and self._tx_depth == 0:
-                log(f"Write failed ({e}), reconnecting and retrying")
-                self._reconnect()
+        with self._lock:
+            try:
                 return self.conn.execute(sql, params)
-            raise
+            except sqlite3.OperationalError as e:
+                err = str(e).lower()
+                if ("readonly" in err or "locked" in err) and self._tx_depth == 0:
+                    log(f"Write failed ({e}), reconnecting and retrying")
+                    self._reconnect()
+                    return self.conn.execute(sql, params)
+                raise
 
     def commit(self):
         """Commit with one retry on readonly/locked errors.
 
         Deferred while a transaction() block is open — the outermost
         end_transaction(commit=True) performs the single real commit."""
-        if self._tx_depth > 0:
-            return
-        try:
-            self.conn.commit()
-        except sqlite3.OperationalError as e:
-            err = str(e).lower()
-            if "readonly" in err or "locked" in err:
-                log(f"Commit failed ({e}), reconnecting and retrying")
-                self._reconnect()
-                # Re-raise — the transaction was lost, caller needs to re-execute
+        with self._lock:
+            if self._tx_depth > 0:
+                return
+            try:
+                self.conn.commit()
+            except sqlite3.OperationalError as e:
+                err = str(e).lower()
+                if "readonly" in err or "locked" in err:
+                    log(f"Commit failed ({e}), reconnecting and retrying")
+                    self._reconnect()
+                    # Re-raise — the transaction was lost, caller needs to re-execute
+                    raise
                 raise
-            raise
 
     def begin_transaction(self) -> None:
-        """Enter a deferred-commit scope. Nestable via a depth counter."""
-        self._tx_depth += 1
+        """Enter a deferred-commit scope. Nestable via a depth counter.
+
+        Prefer the ``transaction()`` context manager, which holds the
+        connection lock across the whole block; this pair is retained for
+        callers that manage begin/end explicitly."""
+        with self._lock:
+            self._tx_depth += 1
 
     def end_transaction(self, *, commit: bool) -> None:
         """Leave a deferred-commit scope. The outermost exit commits (or rolls
         back) the accumulated writes exactly once."""
-        if self._tx_depth == 0:
-            return
-        self._tx_depth -= 1
-        if self._tx_depth > 0:
-            return
-        if commit:
-            self.commit()
-        else:
+        with self._lock:
+            if self._tx_depth == 0:
+                return
+            self._tx_depth -= 1
+            if self._tx_depth > 0:
+                return
+            if commit:
+                self.commit()
+            else:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+
+    @contextmanager
+    def transaction(self):
+        """Group writes into one atomic unit, holding the connection lock for the
+        ENTIRE block. This is what makes a multi-write batch safe against other
+        threads (the watcher cascade; any future threaded dispatch): no other
+        thread can execute a write, commit, or reconnect while the transaction is
+        open, so a sibling write can't be folded into — and lost with — this
+        block. Re-entrant, so nested transaction()/execute_write on the same
+        thread work."""
+        with self._lock:
+            self.begin_transaction()
             try:
-                self.conn.rollback()
-            except Exception:
-                pass
+                yield
+            except BaseException:
+                self.end_transaction(commit=False)
+                raise
+            else:
+                self.end_transaction(commit=True)
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a read query."""
-        return self.conn.execute(sql, params)
+        with self._lock:
+            return self.conn.execute(sql, params)
 
     def executescript(self, sql: str) -> None:
         """Execute a multi-statement SQL script."""
-        self.conn.executescript(sql)
+        with self._lock:
+            self.conn.executescript(sql)
 
     def close(self):
         """Close the connection."""
-        try:
-            self.conn.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass

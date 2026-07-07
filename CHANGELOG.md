@@ -7,6 +7,18 @@ versioning.
 ## [Unreleased]
 
 ### Fixed
+- **The shared SQLite connection is now thread-safe** (issue #83 hardening).
+  Post-#79 one `KnowledgeDB` connection is shared by every embedded adapter and
+  is also driven by real background threads (the watcher cascade), but its
+  `_tx_depth`, deferred-commit protocol, and swappable `self.conn` had no lock —
+  so a watcher write's `commit()` could no-op inside a request's open transaction
+  (silent lost write, or discarded on that block's rollback), and `_reconnect`
+  could swap the connection out mid-statement. A single re-entrant lock now guards
+  all connection access and is held across the *whole* `transaction()` block, so
+  no other thread can interleave a write/commit/reconnect into an open
+  transaction. A threaded regression harness (`tests/test_db_concurrency.py`)
+  proves the serialization and fails without the lock. (Postgres adapters carry
+  the same latent hazard and are hardened in a follow-up.)
 - **`search` no longer stalls ~20s on a SQLite lock** (issue #79). The embedded
   storage/counters/search adapters each opened their **own** connection to the
   same SQLite file, so the best-effort post-search hit-count bumps (writes on the

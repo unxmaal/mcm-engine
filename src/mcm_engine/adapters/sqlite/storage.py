@@ -226,15 +226,11 @@ class SqliteStorage:
     def transaction(self) -> Iterator[None]:
         """Group writes into one atomic unit. The per-method commits that
         normally fire after each write are deferred; the whole block commits
-        once on clean exit and rolls back on any exception."""
-        self._db.begin_transaction()
-        try:
+        once on clean exit and rolls back on any exception. Delegates to
+        ``KnowledgeDB.transaction`` so the connection lock is held across the
+        whole block (issue #83 — no sibling thread can interleave a write)."""
+        with self._db.transaction():
             yield
-        except BaseException:
-            self._db.end_transaction(commit=False)
-            raise
-        else:
-            self._db.end_transaction(commit=True)
 
     # ---- Knowledge ----
 
