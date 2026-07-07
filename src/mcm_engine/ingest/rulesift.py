@@ -146,6 +146,50 @@ def is_rule_like(text: str) -> bool:
     return _NORMATIVE_RE.search(text) is not None
 
 
+# A loose span needs more substance than the strict floor: the strict gate leans
+# on the normative marker for precision, so 3 tokens is fine there; the loose
+# gate has no marker to lean on, so it wants enough prose to be a real fact.
+MIN_SUBSTANCE_TOKENS = 6
+
+# Pure API-doc / navigation boilerplate — lines that are ONLY a section header
+# ("Args:", "Returns:", "See also"). A span made of nothing but these carries no
+# knowledge; drop it even in loose mode.
+_BOILERPLATE_LINE_RE = re.compile(
+    r"^\s*(args|arguments|returns?|raises?|yields?|parameters|params|"
+    r"attributes|examples?|see also|todo|fixme|note)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_substantive(text: str) -> bool:
+    """Loose rule-likeness gate (issue #80): admit descriptive-but-substantive
+    spans — architecture facts, module/contract descriptions, "X does Y" prose —
+    that carry no normative marker, while still dropping trivially short spans and
+    pure API-doc boilerplate. Precision moves downstream to the adjudicator
+    (LLM/human); this gate only keeps the obvious noise out."""
+    if len(dedup.normalize(text).split()) < MIN_SUBSTANCE_TOKENS:
+        return False
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines and all(_BOILERPLATE_LINE_RE.match(ln) for ln in lines):
+        return False
+    return True
+
+
+def passes_gate(text: str, *, strict: bool) -> bool:
+    """The rule-likeness gate, selectable by mode (issue #80).
+
+    ``strict=True`` (default everywhere): the tight normative-marker gate
+    (``is_rule_like``) — precision here, for curated rule ingest.
+
+    ``strict=False``: loose mode — anything the strict gate admits PLUS
+    descriptive-but-substantive spans (``is_substantive``), so a downstream
+    adjudicator, not this gate, becomes the precision stage. Loose is a strict
+    superset, so switching modes never drops a span strict would have kept."""
+    if strict:
+        return is_rule_like(text)
+    return is_rule_like(text) or is_substantive(text)
+
+
 # --- C. novelty banding -----------------------------------------------------
 
 
@@ -235,6 +279,8 @@ def sift_groups(
 def sift_spans(
     spans: Iterable[tuple[str, str]],
     existing_rules: Iterable[tuple[int, str]],
+    *,
+    strict: bool = True,
 ) -> list[RuleCandidate]:
     """Sift already-extracted spans against the corpus (remote ingestion, #72).
 
@@ -243,12 +289,17 @@ def sift_spans(
     intra-run dedup — so it runs server-side where the rule corpus lives. ``spans``
     is an iterable of ``(text, source_topic)``. Returns the non-KNOWN survivors
     (NOVEL + REFINE), REFINE carrying the id of the existing rule to compare.
+
+    ``strict`` selects the rule-likeness gate (issue #80): ``True`` (default)
+    keeps the tight normative-marker gate; ``False`` also admits descriptive-but-
+    substantive spans and leaves precision to a downstream adjudicator. Novelty
+    banding and intra-run dedup are unchanged in either mode.
     """
     existing = list(existing_rules)
     survivors: list[RuleCandidate] = []
     for text, source_topic in spans:
         span = (text or "").strip()
-        if not span or not is_rule_like(span):
+        if not span or not passes_gate(span, strict=strict):
             continue
         band, matched = classify_novelty(span, existing)
         if band is Band.KNOWN:
