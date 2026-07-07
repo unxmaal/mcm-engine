@@ -13,7 +13,7 @@ from .files.watcher import RulesWatcher
 from .plugin import MCMPlugin, SearchScope
 from .registry import AdapterRegistry
 from .schema import migrate_core, migrate_plugin
-from .tracker import SessionTracker
+from .tracker import ScopedTracker
 from .tools.knowledge import register_knowledge_tools
 from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
@@ -116,8 +116,11 @@ class MCMServer:
             except Exception as e:
                 log(f"ensure_schema failed: {type(e).__name__}: {e}")
 
-        # Tracker
-        self.tracker = SessionTracker(config.nudges)
+        # Tracker — per-session, keyed on the FastMCP session (issue #83). The
+        # provider reads the current request's session object; it is only called
+        # at tool-call time (never during construction), by which point self.mcp
+        # exists and a request context is active.
+        self.tracker = ScopedTracker(config.nudges, key_provider=self._session_key)
 
         # FastMCP server
         instructions = config.server_instructions or (
@@ -211,6 +214,19 @@ class MCMServer:
         )
 
         log("MCM Engine ready")
+
+    def _session_key(self):
+        """The current request's session object (the key for per-session tracker
+        state, issue #83), or None outside a request. Keying on the FastMCP
+        ``ServerSession`` gives one stable, weak-referenceable object per client
+        connection for both stdio and streamable-HTTP, so trackers evict when the
+        session ends. Never raises — a resolution failure falls back to the shared
+        default tracker rather than taking down a tool call."""
+        try:
+            ctx = self.mcp.get_context()
+            return getattr(ctx, "session", None)
+        except Exception:
+            return None
 
     def start_watcher(self) -> None:
         """Daemon-mode startup: run a one-shot sync and then begin the
