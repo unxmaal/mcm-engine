@@ -56,9 +56,10 @@ def test_mcmserver_uses_build_context_with_loaded_config(monkeypatch, tmp_path):
     called_with: dict[str, Any] = {}
     real = wiring_mod.build_verified_context
 
-    def spy(config, *, registry: Optional[AdapterRegistry] = None):
+    def spy(config, *, registry: Optional[AdapterRegistry] = None, shared_db=None):
         called_with["config"] = config
-        return real(config, registry=registry)
+        called_with["shared_db"] = shared_db
+        return real(config, registry=registry, shared_db=shared_db)
 
     monkeypatch.setattr(server_mod, "build_verified_context", spy)
 

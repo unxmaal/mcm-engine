@@ -98,7 +98,12 @@ class MCMServer:
         if backends.search == "embedded" and "db_path" not in backends.search_options:
             backends.search_options["db_path"] = str(db_path)
 
-        self.ctx: Context = build_verified_context(config, registry=registry)
+        # Hand build_context the SAME connection so the embedded adapters share
+        # it rather than each opening their own to the same file — separate
+        # connections self-contend on the write lock and stall `search` for ~20s
+        # on the post-search counter bumps (issue #79).
+        self.ctx: Context = build_verified_context(
+            config, registry=registry, shared_db=self.db)
 
         # Apply the storage adapter's DDL on first boot. SQLite's
         # legacy path runs migrate_core(self.db) above; non-embedded

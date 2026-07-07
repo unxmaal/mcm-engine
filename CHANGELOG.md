@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **`search` no longer stalls ~20s on a SQLite lock** (issue #79). The embedded
+  storage/counters/search adapters each opened their **own** connection to the
+  same SQLite file, so the best-effort post-search hit-count bumps (writes on the
+  counters connection) self-contended on the write lock with the sibling
+  connections — each wait bounded by `busy_timeout` (5s), stacking into the ~20s
+  stall. `build_context` now shares **one** `KnowledgeDB` connection across
+  embedded adapters that resolve to the same file (keyed by path; `:memory:`
+  excluded), and the daemon hands its plugin connection in as `shared_db` so the
+  whole process uses a single writer. Regression coverage asserts the shared-
+  connection invariant through the real composition root — the tool-level tests
+  had only ever exercised the already-shared legacy `coerce_context` path.
+
 ### Added
 - **Loose ingest gate for descriptive facts** (`ingest --remote --remote-loose`,
   issue #80). The rule-sift funnel's rule-likeness gate is now mode-selectable:
