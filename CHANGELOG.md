@@ -7,6 +7,17 @@ versioning.
 ## [Unreleased]
 
 ### Added
+- **Loose ingest gate for descriptive facts** (`ingest --remote --remote-loose`,
+  issue #80). The rule-sift funnel's rule-likeness gate is now mode-selectable:
+  the default strict gate still requires a normative marker (`must`/`never`/
+  `note`/…), but the loose gate also admits descriptive-but-substantive spans —
+  architecture facts, "X does Y" module descriptions — that carry no marker, so a
+  polyglot README describing what a project *is* no longer sifts to zero. Loose is
+  a strict superset (it never drops what strict keeps); it holds a minimum-
+  substance floor and still rejects pure API-doc boilerplate (`Args:`/`Returns:`).
+  Threaded through both gate sites — the client (`_collect_remote_spans`) and the
+  server `sift_candidates` tool (new `strict` arg) — with precision moving
+  downstream to the adjudicator when you opt in. Default behavior is unchanged.
 - **Remote codebase ingestion** (`ingest --remote`). Ingest a local codebase into
   a remote (pod) KB over MCP, without giving the client direct DB access. The
   client walks the repo, extracts spans, and applies the rule-like gate locally

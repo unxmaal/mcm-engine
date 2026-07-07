@@ -991,7 +991,7 @@ def register_rules_tools(
         return _with_nudge("\n".join(lines), tracker)
 
     @mcp.tool()
-    def sift_candidates(candidates: list[dict]) -> str:
+    def sift_candidates(candidates: list[dict], strict: bool = True) -> str:
         """Server-side tail of the ingest funnel for a REMOTE codebase (issue #72).
 
         The local `mcm-engine ingest --remote` client walks the repo, extracts
@@ -1004,6 +1004,13 @@ def register_rules_tools(
 
         `candidates`: `[{"text": "<span>", "source_topic": "<path or symbol>"}, ...]`.
         Files never traverse the wire — only the extracted spans do.
+
+        `strict` (default True) selects the rule-likeness gate (issue #80): True
+        keeps the tight normative-marker gate (must/never/note/...); False also
+        admits descriptive-but-substantive spans (architecture facts, "X does Y"
+        prose) — use it when a downstream adjudicator, not this gate, is your
+        precision stage, so descriptive knowledge isn't discarded pre-review.
+        Novelty banding + dedup are identical either way.
 
         COMPLEXITY: one MinHash comparison per (span, active rule), so wall time
         is O(spans x rules). Batch spans into small groups (the `ingest --remote`
@@ -1027,9 +1034,10 @@ def register_rules_tools(
             for c in raw
         ]
         _t0 = time.perf_counter()
-        survivors = rulesift.sift_spans(spans, existing)
+        survivors = rulesift.sift_spans(spans, existing, strict=strict)
         log(f"sift_candidates: spans={len(spans)} corpus={len(existing)} "
-            f"survivors={len(survivors)} elapsed={time.perf_counter() - _t0:.2f}s")
+            f"strict={strict} survivors={len(survivors)} "
+            f"elapsed={time.perf_counter() - _t0:.2f}s")
         if not survivors:
             return _with_nudge(
                 f"sift_candidates: {len(spans)} span(s) in, 0 net-new "

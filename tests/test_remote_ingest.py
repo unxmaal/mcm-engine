@@ -59,6 +59,51 @@ def test_sift_spans_collapses_intra_run_dupes():
 
 
 # ---------------------------------------------------------------------------
+# #80 — loose gate: admit descriptive-but-substantive spans
+# ---------------------------------------------------------------------------
+
+# A real descriptive architecture fact (stork-style): no normative marker at all.
+_DESCRIPTIVE = ("The stork service promotes artifacts from a dirty CodeArtifact "
+                "repository to a clean one after Trivy scanning, triggered by "
+                "EventBridge through an internal ALB.")
+
+
+def test_is_substantive_accepts_descriptive_prose():
+    assert rulesift.is_substantive(_DESCRIPTIVE) is True
+
+
+def test_is_substantive_rejects_trivially_short():
+    assert rulesift.is_substantive("uses redis") is False
+
+
+def test_is_substantive_rejects_pure_api_boilerplate():
+    assert rulesift.is_substantive("Args:\nReturns:\nRaises:") is False
+
+
+def test_passes_gate_loose_is_strict_superset():
+    rulelike = "You must never call pip directly here."
+    # strict admits the normative span; loose admits it too (superset)...
+    assert rulesift.passes_gate(rulelike, strict=True) is True
+    assert rulesift.passes_gate(rulelike, strict=False) is True
+    # ...and loose additionally admits the descriptive one that strict drops.
+    assert rulesift.passes_gate(_DESCRIPTIVE, strict=True) is False
+    assert rulesift.passes_gate(_DESCRIPTIVE, strict=False) is True
+
+
+def test_sift_spans_strict_drops_descriptive():
+    out = rulesift.sift_spans([(_DESCRIPTIVE, "README.md")], existing_rules=[])
+    assert out == []
+
+
+def test_sift_spans_loose_keeps_descriptive():
+    out = rulesift.sift_spans(
+        [(_DESCRIPTIVE, "README.md")], existing_rules=[], strict=False)
+    assert len(out) == 1
+    assert out[0].band is rulesift.Band.NOVEL
+    assert out[0].source_topic == "README.md"
+
+
+# ---------------------------------------------------------------------------
 # sift_candidates MCP tool
 # ---------------------------------------------------------------------------
 
@@ -121,6 +166,21 @@ def test_sift_candidates_zero_when_nothing_rulelike(tmp_path):
     assert "0 net-new" in out
 
 
+def test_sift_candidates_strict_default_drops_descriptive(tmp_path):
+    mcp, _ = _wire(tmp_path)
+    out = mcp["sift_candidates"](
+        [{"text": _DESCRIPTIVE, "source_topic": "README.md"}])
+    assert "0 net-new" in out
+
+
+def test_sift_candidates_loose_keeps_descriptive(tmp_path):
+    mcp, _ = _wire(tmp_path)
+    out = mcp["sift_candidates"](
+        [{"text": _DESCRIPTIVE, "source_topic": "README.md"}], strict=False)
+    assert "net-new candidate" in out
+    assert "stork" in out
+
+
 # ---------------------------------------------------------------------------
 # client: _collect_remote_spans
 # ---------------------------------------------------------------------------
@@ -136,6 +196,29 @@ def test_collect_remote_spans_extracts_rulelike(tmp_path):
     spans = cli._collect_remote_spans(groups)
     assert any("Always use uv" in s["text"] for s in spans)
     assert all(set(s) == {"text", "source_topic"} for s in spans)
+
+
+def test_collect_remote_spans_loose_keeps_descriptive(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(_DESCRIPTIVE + "\n", encoding="utf-8")
+    groups = [(ing, list(ing.stream(str(repo), {}))) for ing in find_all(str(repo))]
+    assert cli._collect_remote_spans(groups, strict=True) == []
+    loose = cli._collect_remote_spans(groups, strict=False)
+    assert any("stork" in s["text"] for s in loose)
+
+
+def test_sift_remote_call_sends_strict_only_when_loose(monkeypatch):
+    sent = {}
+    from mcm_engine.hooks import mcp_enforcement as enf
+    monkeypatch.setattr(
+        enf, "mcp_http_call_tool",
+        lambda url, name, arguments, **kw: sent.setdefault("args", arguments) or "ok")
+    cli._sift_remote_call("http://x", [{"text": "t", "source_topic": "s"}])
+    assert "strict" not in sent["args"]          # strict default: unchanged payload
+    sent.clear()
+    cli._sift_remote_call("http://x", [{"text": "t", "source_topic": "s"}], strict=False)
+    assert sent["args"]["strict"] is False       # loose: explicitly signalled
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +287,28 @@ def test_ingest_remote_ships_spans_over_mcp(tmp_path, monkeypatch, capsys):
             assert n == 0
         finally:
             con.close()
+
+
+def test_ingest_remote_loose_wires_strict_false(tmp_path, monkeypatch, capsys):
+    proj = _project(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(_DESCRIPTIVE + "\n", encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://kb.local/mcp", {}))
+    monkeypatch.setattr(
+        cli, "_sift_remote_call",
+        lambda url, spans, **kw: captured.update(spans=spans, strict=kw.get("strict"))
+        or f"SIFTED {len(spans)}")
+
+    rc, out, err = _run_cli(monkeypatch, capsys, [
+        "ingest", str(repo), "--remote", "--remote-loose",
+        "--project-root", str(proj)])
+
+    assert rc == 0
+    assert captured["strict"] is False
+    assert any("stork" in s["text"] for s in captured["spans"])
+    assert "loose" in err
 
 
 def test_ingest_remote_errors_without_endpoint(tmp_path, monkeypatch, capsys):
@@ -315,7 +420,7 @@ def test_classify_remote_error():
 
 
 def test_remote_batches_spans(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g: _spans(5))
+    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g, **kw: _spans(5))
     monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://x", {}))
     calls = []
     monkeypatch.setattr(cli, "_sift_remote_call",
@@ -326,7 +431,7 @@ def test_remote_batches_spans(tmp_path, monkeypatch, capsys):
 
 def test_remote_retries_transient_then_succeeds(tmp_path, monkeypatch, capsys):
     import httpx
-    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g: _spans(1))
+    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g, **kw: _spans(1))
     monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://x", {}))
     monkeypatch.setattr(cli, "_sleep", lambda s: None)
     seq = [httpx.ReadError("boom"), "OK-RESULT"]
@@ -345,7 +450,7 @@ def test_remote_retries_transient_then_succeeds(tmp_path, monkeypatch, capsys):
 def test_remote_permanent_failure_is_fail_open_exit1(tmp_path, monkeypatch, capsys):
     import httpx
     two = [{"text": "always a", "source_topic": "a"}, {"text": "always b", "source_topic": "b"}]
-    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g: two)
+    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g, **kw: two)
     monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://x", {}))
     monkeypatch.setattr(cli, "_sleep", lambda s: None)
 
@@ -364,7 +469,7 @@ def test_remote_permanent_failure_is_fail_open_exit1(tmp_path, monkeypatch, caps
 
 def test_remote_auth_error_exits_1(tmp_path, monkeypatch, capsys):
     import httpx
-    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g: _spans(1))
+    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g, **kw: _spans(1))
     monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://x", {}))
     req = httpx.Request("POST", "http://x")
 
@@ -379,7 +484,7 @@ def test_remote_auth_error_exits_1(tmp_path, monkeypatch, capsys):
 
 def test_remote_timeout_splits_batch(tmp_path, monkeypatch, capsys):
     import asyncio
-    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g: _spans(2))
+    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g, **kw: _spans(2))
     monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://x", {}))
     monkeypatch.setattr(cli, "_sleep", lambda s: None)
     state = {"first": True}
@@ -398,7 +503,7 @@ def test_remote_timeout_splits_batch(tmp_path, monkeypatch, capsys):
 def test_remote_resume_skips_done(tmp_path, monkeypatch, capsys):
     import httpx
     two = [{"text": "always a", "source_topic": "a"}, {"text": "always b", "source_topic": "b"}]
-    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g: two)
+    monkeypatch.setattr(cli, "_collect_remote_spans", lambda g, **kw: two)
     monkeypatch.setattr(cli, "_remote_endpoint", lambda _pr: ("http://x", {}))
     monkeypatch.setattr(cli, "_sleep", lambda s: None)
 

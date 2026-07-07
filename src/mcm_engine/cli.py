@@ -218,10 +218,13 @@ def cmd_session_start(args):
     sys.exit(ss_main())
 
 
-def _collect_remote_spans(groups) -> list[dict]:
+def _collect_remote_spans(groups, *, strict: bool = True) -> list[dict]:
     """Client side of remote ingest (#72): extract rule-like spans locally from
     the already-walked ingester rows. Pure/corpus-free — only the spans that
-    pass the rule-like gate are kept, so we ship candidates, never whole files."""
+    pass the rule-likeness gate are kept, so we ship candidates, never whole
+    files. ``strict`` selects the gate (issue #80): True keeps the tight
+    normative-marker gate; False also admits descriptive-but-substantive spans
+    so a downstream adjudicator, not the gate, decides."""
     from .ingest import rulesift
 
     spans: list[dict] = []
@@ -230,7 +233,7 @@ def _collect_remote_spans(groups) -> list[dict]:
         for row in rows:
             detail = getattr(row, "detail", "") or ""
             for span in rulesift.extract_spans(detail, raw_code=raw_code):
-                if rulesift.is_rule_like(span):
+                if rulesift.passes_gate(span, strict=strict):
                     spans.append({"text": span, "source_topic": getattr(row, "topic", "")})
     return spans
 
@@ -258,12 +261,19 @@ def _remote_endpoint(project_root):
     return _mcp_http_endpoint(project_root or Path.cwd())
 
 
-def _sift_remote_call(url, spans, *, headers=None, timeout=None):
-    """Call the remote sift_candidates tool. Indirection so tests stub transport."""
+def _sift_remote_call(url, spans, *, headers=None, timeout=None, strict=True):
+    """Call the remote sift_candidates tool. Indirection so tests stub transport.
+
+    Only sends `strict` when it departs from the server default (issue #80), so a
+    strict (default) run ships the exact same payload as before and still works
+    against a server that predates the toggle."""
     from .hooks.mcp_enforcement import mcp_http_call_tool
 
+    arguments: dict = {"candidates": spans}
+    if not strict:
+        arguments["strict"] = False
     return mcp_http_call_tool(
-        url, "sift_candidates", {"candidates": spans}, headers=headers, timeout=timeout)
+        url, "sift_candidates", arguments, headers=headers, timeout=timeout)
 
 
 def _span_hash(span) -> str:
@@ -321,14 +331,15 @@ def _backoff(attempt: int) -> float:
     return min(8.0, 0.5 * (2 ** (attempt - 1)))
 
 
-def _sift_batch_retry(url, headers, batch, timeout):
+def _sift_batch_retry(url, headers, batch, timeout, *, strict=True):
     """Sift one batch with retry-on-transient. Returns the result text, or raises
     _RemoteAuthError (abort) / _RemoteTimeout (split) / _RemoteBatchError (skip)."""
     attempt = 0
     while True:
         attempt += 1
         try:
-            return _sift_remote_call(url, batch, headers=headers, timeout=timeout)
+            return _sift_remote_call(
+                url, batch, headers=headers, timeout=timeout, strict=strict)
         except (_RemoteAuthError, _RemoteTimeout, _RemoteBatchError):
             raise
         except BaseException as e:
@@ -375,9 +386,12 @@ def _clear_ingest_state(path: Path) -> None:
 
 
 def _ingest_remote(groups, project_root, raw_total: int, *, source_key: str,
-                   batch_size: int = 5, batch_timeout: float = 30.0) -> None:
-    spans = _collect_remote_spans(groups)
+                   batch_size: int = 5, batch_timeout: float = 30.0,
+                   strict: bool = True) -> None:
+    spans = _collect_remote_spans(groups, strict=strict)
+    gate = "strict (normative)" if strict else "loose (descriptive ok)"
     print("# mode:     remote sift (spans -> sift_candidates over MCP)", file=sys.stderr)
+    print(f"# gate:     {gate}", file=sys.stderr)
     print(f"# funnel:   {raw_total} raw candidates -> {len(spans)} rule-like span(s)",
           file=sys.stderr)
     if not spans:
@@ -412,7 +426,8 @@ def _ingest_remote(groups, project_root, raw_total: int, *, source_key: str,
         batch = stack.pop()
         n += 1
         try:
-            result = _sift_batch_retry(url, headers, batch, batch_timeout)
+            result = _sift_batch_retry(
+                url, headers, batch, batch_timeout, strict=strict)
         except _RemoteAuthError as e:
             print(f"error: authentication failed ({e}) — set MCM_MCP_TOKEN or a "
                   "`headers` block in .mcp.json", file=sys.stderr)
@@ -569,7 +584,8 @@ def cmd_ingest(args):
     if getattr(args, "remote", False):
         _ingest_remote(
             groups, project_root, raw_total, source_key=str(args.source),
-            batch_size=args.remote_batch, batch_timeout=args.remote_batch_timeout)
+            batch_size=args.remote_batch, batch_timeout=args.remote_batch_timeout,
+            strict=not getattr(args, "remote_loose", False))
         return
 
     # --rules: run the mechanical funnel, then page over the SURVIVORS (not the
@@ -1076,6 +1092,14 @@ def main():
              "an MCP endpoint (MCM_MCP_URL or a type:http server in .mcp.json; "
              "auth via a headers block there or MCM_MCP_TOKEN). No local DB "
              "access. Incompatible with --bulk / --auto / --adjudicate.",
+    )
+    ingest_parser.add_argument(
+        "--remote-loose", action="store_true",
+        help="--remote: loosen the rule-likeness gate (issue #80) to also admit "
+             "descriptive-but-substantive spans (architecture facts, 'X does Y' "
+             "prose) that carry no normative marker (must/never/...). Use when a "
+             "downstream adjudicator, not the gate, is your precision stage — e.g. "
+             "surfacing what an internal project IS. Default is the strict gate.",
     )
     ingest_parser.add_argument(
         "--remote-batch", type=int, default=5,
