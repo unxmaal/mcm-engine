@@ -18,18 +18,25 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def storage():
+    from mcm_engine.adapters.postgres._pool import _active_conn
     from mcm_engine.adapters.postgres.storage import PostgresStorage
 
     store = PostgresStorage(dsn=TEST_DSN)
     store.ensure_schema()
     store.truncate_all()
-    try:
-        yield store
-    finally:
+    # These tests drive raw token SQL through ``storage._conn`` directly (the
+    # daemon's out-of-band token/claims paths do the same). Under the pool,
+    # ``_conn`` is the current call-chain's borrowed connection, so bind one for
+    # the whole test — recreating the prior single-connection behavior. The
+    # /v1/claims endpoint under TestClient borrows its OWN connection from the
+    # pool (a different thread, so this binding doesn't leak into it).
+    with store._pool.connection() as conn:
+        token = _active_conn.set(conn)
         try:
-            store._conn.close()
-        except Exception:
-            pass
+            yield store
+        finally:
+            _active_conn.reset(token)
+    store.close()
 
 
 # -----------------------------------------------------------------------

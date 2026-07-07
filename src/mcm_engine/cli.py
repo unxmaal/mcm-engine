@@ -194,9 +194,11 @@ def cmd_mint_token(args):
 
     server = MCMServer(config, project_root=project_root or Path.cwd())
     try:
-        minted = token_mod.mint_token(
-            server.ctx.storage._conn, principal=args.principal
-        )
+        # Borrow a connection from the storage pool for this out-of-band write
+        # (issue #83): `_conn` is now the current call-chain's borrowed
+        # connection, so mint on an explicitly-borrowed one.
+        with server.ctx.storage._pool.connection() as conn:
+            minted = token_mod.mint_token(conn, principal=args.principal)
     except ValueError as e:
         print(f"mint-token: {e}", file=sys.stderr)
         sys.exit(2)
