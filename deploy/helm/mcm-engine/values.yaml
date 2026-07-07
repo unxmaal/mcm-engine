@@ -6,8 +6,12 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/unxmaal/mcm-engine
-  # Empty tag defaults to .Chart.AppVersion. Pin an explicit tag for reproducibility.
+  # Empty tag defaults to .Chart.AppVersion. Pin an immutable ref for a real
+  # deploy: a release `X.Y.Z`, a per-commit `sha-<commit>`, or a digest below.
   tag: ""
+  # Strongest pin: an image digest (e.g. "sha256:abc..."). When set it wins over
+  # `tag` and the image is referenced as repository@digest. See docs/releasing.md.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

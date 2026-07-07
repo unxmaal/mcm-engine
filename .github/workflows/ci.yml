@@ -167,6 +167,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Verify release tag matches pyproject version
+        # A release is cutting a `vX.Y.Z` git tag. Guard that it agrees with the
+        # declared version so you can't publish :3.5.1 from a tree that still
+        # says 3.5.0 (bump pyproject, commit, THEN tag).
+        if: github.ref_type == 'tag'
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          PY_VER=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
+          if [ "$TAG_VER" != "$PY_VER" ]; then
+            echo "::error::release tag ${GITHUB_REF_NAME} (${TAG_VER}) != pyproject version ${PY_VER} — bump pyproject before tagging"
+            exit 1
+          fi
+          echo "release ${GITHUB_REF_NAME} matches pyproject ${PY_VER}"
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
@@ -179,55 +193,72 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tags
-        id: tags
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/mcm-engine
-          # Lowercase the owner segment — GHCR requires it.
-          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
-          # Version is the single source of truth in pyproject.toml.
-          VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
-          TAGS="${IMAGE}:sha-${GITHUB_SHA::12}"
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            # main build carries the floating :main and :<version>, PLUS a unique,
-            # sortable per-build tag :<version>-<UTC timestamp>. The floating tags
-            # get overwritten every merge (by design — ":main" and ":<version>"
-            # always mean "latest main"); the stamped tag is immutable, so every
-            # build stays addressable and you never silently rebuild over one.
-            STAMP=$(date -u +%Y%m%d-%H%M%S)
-            TAGS="${TAGS},${IMAGE}:main,${IMAGE}:${VERSION},${IMAGE}:${VERSION}-${STAMP}"
-          fi
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            TAGS="${TAGS},${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest"
-          fi
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+      - name: Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/mcm-engine
+          # `latest` is a RELEASE pointer only — never on main (see flavor + the
+          # tag-gated raw rule below).
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+        # Result set:
+        #   main push  -> :main, :sha-<commit>
+        #   PR         -> :pr-<n>, :sha-<commit>   (loaded locally, not pushed)
+        #   tag vX.Y.Z -> :X.Y.Z, :X.Y, :X, :latest, :sha-<commit>
+        # Semver only exists on a release tag — main never rebuilds a :X.Y.Z.
 
       - name: Build (and push on main/tags)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           load: ${{ github.event_name == 'pull_request' }}
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          # ignore-error: the GitHub Actions Cache backend intermittently
-          # fails to reserve (transient 5xx, the repo's 10GB cache quota, or
-          # concurrent builds racing the same key). Layer caching is an
-          # optimization, never worth failing the build/push over — degrade a
-          # cache-export failure to a warning instead of a red X.
+          # ignore-error: the GitHub Actions Cache backend intermittently fails to
+          # reserve (transient 5xx, cache quota, concurrent builds racing a key).
+          # Caching is an optimization, never worth failing the build over.
           cache-to: type=gha,mode=max,ignore-error=true
 
-      - name: Run /healthz against the freshly-built image
-        # On PRs the image is loaded locally with the first tag from
-        # the list; on pushes the image is in GHCR but the local
-        # docker daemon doesn't have it, so pull the sha tag first.
+      - name: Publish image summary (tags + digest)
+        if: github.event_name == 'push'
+        env:
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          IMAGE="${{ steps.tags.outputs.image }}:sha-${GITHUB_SHA::12}"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            docker pull "$IMAGE"
+          {
+            echo "### Image published"
+            echo '```'
+            printf '%s\n' "$META_TAGS"
+            echo "digest: ${DIGEST}"
+            echo '```'
+            echo "Deploy an **immutable** ref — a \`sha-\` tag, a release \`X.Y.Z\`, or the digest. Never \`:main\` / \`:latest\` in prod."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run /healthz against the freshly-built image
+        # The immutable sha- tag is the stable reference: loaded locally on PRs,
+        # pulled from GHCR on pushes (the runner is logged in for push events).
+        env:
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          IMAGE_REF=$(printf '%s\n' "$META_TAGS" | grep ':sha-' | head -1)
+          if [ -z "$IMAGE_REF" ]; then
+            echo "::error::no sha- tag was produced"; exit 1
           fi
-          docker run -d --name mcm-engine-ci -p 18080:8080 "$IMAGE"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            docker pull "$IMAGE_REF"
+          fi
+          docker run -d --name mcm-engine-ci -p 18080:8080 "$IMAGE_REF"
           for i in {1..15}; do
             if curl -sf http://127.0.0.1:18080/healthz; then
               docker stop mcm-engine-ci; exit 0
