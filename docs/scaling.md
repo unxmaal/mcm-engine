@@ -102,16 +102,19 @@ stalling every client on the pod. Levers, cheapest first:
 3. **Async tools** for I/O-bound handlers — the largest change; only if 1–2 are
    insufficient.
 
-## Known correctness item (independent of the above)
+## Provenance attribution (audit M2) — verified working, guarded
 
-**Provenance attribution (audit M2).** `BearerTokenMiddleware` is a Starlette
-`BaseHTTPMiddleware`, which runs the downstream endpoint in a separate anyio
-task; a `contextvars` value set in `dispatch` (the transport principal) may not
-propagate to the tool handler, so `resolve_actor` can fall back to
-`MCM_ACTOR`/`nobody` and misattribute rule authorship. This is an attribution
-bug, not corruption. The fix is to set the principal from a **pure-ASGI**
-middleware (contextvars propagate through the ASGI chain) rather than
-`BaseHTTPMiddleware`; it wants an ASGI integration test alongside it.
+The audit flagged that `BearerTokenMiddleware` is a Starlette `BaseHTTPMiddleware`
+(runs the endpoint in a child anyio task), so the transport-principal contextvar
+set in `dispatch` might not reach the tool handler — which would misattribute
+authenticated writes to `MCM_ACTOR`/`nobody`. **Verified this is NOT the case on
+Starlette 0.52.1:** a contextvar set BEFORE `call_next` propagates *down* to the
+endpoint (only the reverse — endpoint→middleware — is lost). `resolve_actor()`
+sees the bound principal correctly. `tests/test_principal_propagation.py` pins
+this with the real `principal` module so a future Starlette bump that regresses
+propagation is caught instead of silently misattributing writes. No code change
+needed unless that guard ever fails, at which point the fix is a pure-ASGI
+middleware.
 
 ## Summary
 
@@ -122,5 +125,5 @@ middleware (contextvars propagate through the ASGI chain) rather than
 | Postgres shared connection (H1/H3) | Fixed (per-adapter serialization lock); pool is the scaling successor |
 | Transport out-of-band commits (H3) | Fixed (routed through the storage lock) |
 | Per-pod throughput (heavy tools) | Open — Layer C (offload + pool) |
-| Provenance ContextVar (M2) | Open — pure-ASGI middleware |
+| Provenance ContextVar (M2) | Verified working (Starlette 0.52.1) + guarded by test |
 | Horizontal scale | Pods + HPA + session affinity + RDS Proxy |

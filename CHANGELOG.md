@@ -14,7 +14,10 @@ versioning.
   streamable-HTTP transport) is per-pod and needs **session affinity** to hold
   across replicas; the Postgres connection pool + heavy-tool offloading are the
   throughput successors to today's serialization lock. The Helm chart's
-  "safe to raise replicaCount" note is corrected accordingly.
+  "safe to raise replicaCount" note is corrected accordingly. Also verifies the
+  audit's provenance-attribution concern (M2) is a non-bug on Starlette 0.52.1
+  (the transport principal propagates to tool handlers) and pins it with a
+  regression test so a future Starlette bump can't silently misattribute writes.
 
 ### Fixed
 - **The Postgres adapters are now thread-safe** (issue #83 hardening). Each
