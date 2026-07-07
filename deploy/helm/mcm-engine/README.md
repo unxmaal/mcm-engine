@@ -41,7 +41,7 @@ Or reference an existing secret (key `dsn`) with `externalDatabase.existingSecre
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `image.repository` / `image.tag` | `ghcr.io/unxmaal/mcm-engine` / chart appVersion | Image to run. Pin the tag for reproducibility. |
-| `replicaCount` | `1` | Daemon replicas. Safe to raise; durable state is in Postgres. |
+| `replicaCount` | `1` | Daemon replicas. **Keep at 1 unless you have session affinity.** KB state is in Postgres, but per-session governance state (`ScopedTracker`, #83) and the streamable-HTTP session transport live **in-process** — a client's requests must reach the pod that ran its `initialize`. See [docs/scaling.md](../../../docs/scaling.md) before raising this. |
 | `mcm.allowedHosts` | `[]` | Host values clients connect by. Ingress hosts are added automatically. Required past the DNS-rebinding guard. |
 | `mcm.dnsRebindingProtection` | `true` | Set false to accept any Host header (trusted networks only). |
 | `mcm.authRequired` | `false` | Require a bearer token on the HTTP transport. |

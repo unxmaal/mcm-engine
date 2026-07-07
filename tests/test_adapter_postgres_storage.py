@@ -63,12 +63,10 @@ class TestPostgresStorage(StorageConformance):
         try:
             yield store
         finally:
-            # Close the connection explicitly. Read methods on
-            # PostgresStorage do not commit/rollback, so an unclosed
-            # connection sits ``idle in transaction`` and blocks the
-            # next test's TRUNCATE on a table-level lock. Pre-existing
-            # latent race; cheap to neutralize at the fixture boundary.
+            # Close the pool so its worker threads shut down cleanly (an unclosed
+            # ConnectionPool warns on GC) and no connection lingers idle-in-
+            # transaction to block the next test's TRUNCATE.
             try:
-                store._conn.close()
+                store.close()
             except Exception:
                 pass

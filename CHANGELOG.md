@@ -6,7 +6,36 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **Scaling architecture doc** (`docs/scaling.md`). Records the horizontal-scale
+  model for EKS (many pods, durable state in Postgres) and the reasoning behind
+  the #83 concurrency work: FastMCP runs sync tools inline on the event loop
+  (per-pod serialization), so per-session state (`ScopedTracker` **and** the
+  streamable-HTTP transport) is per-pod and needs **session affinity** to hold
+  across replicas; the Postgres connection pool + heavy-tool offloading are the
+  throughput successors to today's serialization lock. The Helm chart's
+  "safe to raise replicaCount" note is corrected accordingly. Also verifies the
+  audit's provenance-attribution concern (M2) is a non-bug on Starlette 0.52.1
+  (the transport principal propagates to tool handlers) and pins it with a
+  regression test so a future Starlette bump can't silently misattribute writes.
+
 ### Fixed
+- **The Postgres adapters now use a connection pool** (issue #83). Each adapter
+  held one shared psycopg connection with a `_tx_depth` + deferred-commit
+  protocol and no synchronization — the same latent corruption the SQLite side
+  had (a concurrent write's commit folding into another thread's open
+  transaction; psycopg "another operation in progress" under two-thread use).
+  Replaced with a per-pod `psycopg_pool.ConnectionPool`: each method borrows a
+  connection for its duration, `transaction()` binds one across its block, and
+  `build_context` shares one pool per DSN across the three adapters. This removes
+  the race **by construction** (no shared transaction state) and — unlike a lock
+  — lets Postgres run operations in parallel, which is the point at scale. The
+  transport's out-of-band token-validation and `/v1/claims` writes (audit H3)
+  each borrow their own pooled connection. Validated against a live Postgres:
+  the 50-test conformance suite plus `tests/test_postgres_pool.py` (concurrent
+  increments lose nothing; a rolled-back transaction can't swallow a concurrent
+  write; transaction isolation holds; operations run in parallel). `psycopg_pool`
+  is added to the `postgres` extra. See `docs/scaling.md`.
 - **The shared SQLite connection is now thread-safe** (issue #83 hardening).
   Post-#79 one `KnowledgeDB` connection is shared by every embedded adapter and
   is also driven by real background threads (the watcher cascade), but its

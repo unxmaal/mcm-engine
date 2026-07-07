@@ -36,6 +36,7 @@ dev = [
 # Adapter extras — `pip install mcm-engine[postgres]` etc.
 postgres = [
     "psycopg[binary]>=3.2",
+    "psycopg_pool>=3.2",
 ]
 redis = [
     "redis>=5.0",

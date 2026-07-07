@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 if TYPE_CHECKING:
     import psycopg
 
+from ._pool import _active_conn, _borrow, pooled_adapter, resolve_pool
+
 from ...backends import (
     CONTRACT_VERSION,
     Capability,
@@ -612,21 +614,30 @@ def _relation_from_row(r: dict[str, Any]) -> RelationRow:
 # ---------------------------------------------------------------------------
 
 
+@pooled_adapter
 class PostgresStorage:
     """StorageBackend on Postgres 15+ using psycopg3.
 
-    Constructed with a DSN. The adapter manages a single connection in
-    autocommit-off mode, committing per write operation to match the
-    SqliteStorage reference's semantics (commit-after-write).
+    Constructed with a DSN. Operations run against a per-pod connection pool
+    (issue #83): each method borrows a connection for its duration and returns
+    it, so Postgres runs concurrent operations in parallel and there is no shared
+    transaction state to corrupt. ``self._conn`` resolves to the current
+    call-chain's borrowed connection; ``transaction()`` binds one connection
+    across its whole block. See ``_pool.py`` and docs/scaling.md.
     """
 
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
 
-    def __init__(self, dsn: str, *, conn: Optional["psycopg.Connection"] = None):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        conn: Optional["psycopg.Connection"] = None,
+        pool: Any = None,
+    ):
         try:
             import psycopg
-            from psycopg.rows import dict_row
         except ImportError as e:
             raise MissingDependencyError(
                 "PostgresStorage requires psycopg. "
@@ -634,13 +645,7 @@ class PostgresStorage:
             ) from e
         self._psycopg = psycopg
         self._dsn = dsn
-        if conn is None:
-            conn = psycopg.connect(dsn, row_factory=dict_row)
-        else:
-            conn.row_factory = dict_row
-        self._conn = conn
-        # >0 while a transaction() block is open — see _commit / transaction.
-        self._tx_depth = 0
+        self._pool = resolve_pool(dsn, conn=conn, pool=pool)
 
     @property
     def identity(self) -> StorageIdentity:
@@ -650,31 +655,28 @@ class PostgresStorage:
     # ---- Transactions ----
 
     def _commit(self) -> None:
-        """Commit unless inside a transaction() block, where the per-write
-        commits are deferred to the single commit at block exit."""
-        if self._tx_depth > 0:
-            return
-        self._conn.commit()
+        """No-op under the pool model: the connection scope (a wrapped method's
+        borrow, or ``transaction()``) owns the commit — it fires on clean exit of
+        that scope. Kept so the existing write methods' ``self._commit()`` calls
+        continue to compile and simply defer to the scope's commit."""
+        return
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        """Group writes into one atomic unit. The per-method commits are
-        deferred; the whole block commits once on clean exit and rolls back
-        on any exception."""
-        self._tx_depth += 1
-        try:
+        """Group writes into one atomic unit. Borrows ONE connection from the
+        pool and binds it for the whole block; every write method called inside
+        reuses it (their per-write commit is a no-op), and the block commits once
+        on clean exit / rolls back on any exception (issue #83). Nested
+        ``transaction()`` reuses the outer block's connection."""
+        if _active_conn.get() is not None:
             yield
-        except BaseException:
-            self._tx_depth = 0
+            return
+        with self._pool.connection() as conn:
+            token = _active_conn.set(conn)
             try:
-                self._conn.rollback()
-            except Exception:
-                pass
-            raise
-        else:
-            self._tx_depth -= 1
-            if self._tx_depth == 0:
-                self._conn.commit()
+                yield
+            finally:
+                _active_conn.reset(token)
 
     # ---- Schema management ----
 
@@ -1351,35 +1353,41 @@ class PostgresStorage:
             EntityType.RULE:      _rule_from_row,
         }[entity_type]
         # Use a server-side cursor so multi-million-row corpora don't
-        # materialize entirely in client memory.
-        with self._conn.cursor(name="iter_entries") as cur:
-            cur.execute(f"SELECT * FROM {table} ORDER BY id")
-            for r in cur:
-                yield hydrate(r)
+        # materialize entirely in client memory. A generator is skipped by the
+        # pool decorator, so it borrows its own connection for the stream's
+        # lifetime (or reuses an active transaction's).
+        with _borrow(self) as conn:
+            with conn.cursor(name="iter_entries") as cur:
+                cur.execute(f"SELECT * FROM {table} ORDER BY id")
+                for r in cur:
+                    yield hydrate(r)
 
     def iter_sessions(
         self, *, caller: Optional[str] = None,
     ) -> Iterator[SessionRow]:
-        with self._conn.cursor(name="iter_sessions") as cur:
-            cur.execute("SELECT * FROM sessions ORDER BY id")
-            for r in cur:
-                yield _session_from_row(r)
+        with _borrow(self) as conn:
+            with conn.cursor(name="iter_sessions") as cur:
+                cur.execute("SELECT * FROM sessions ORDER BY id")
+                for r in cur:
+                    yield _session_from_row(r)
 
     def iter_snapshots(
         self, *, caller: Optional[str] = None,
     ) -> Iterator[SnapshotRow]:
-        with self._conn.cursor(name="iter_snapshots") as cur:
-            cur.execute("SELECT * FROM snapshots ORDER BY id")
-            for r in cur:
-                yield _snapshot_from_row(r)
+        with _borrow(self) as conn:
+            with conn.cursor(name="iter_snapshots") as cur:
+                cur.execute("SELECT * FROM snapshots ORDER BY id")
+                for r in cur:
+                    yield _snapshot_from_row(r)
 
     def iter_relations(
         self, *, caller: Optional[str] = None,
     ) -> Iterator[RelationRow]:
-        with self._conn.cursor(name="iter_relations") as cur:
-            cur.execute("SELECT * FROM relations ORDER BY id")
-            for r in cur:
-                yield _relation_from_row(r)
+        with _borrow(self) as conn:
+            with conn.cursor(name="iter_relations") as cur:
+                cur.execute("SELECT * FROM relations ORDER BY id")
+                for r in cur:
+                    yield _relation_from_row(r)
 
     def bump_sequences(self) -> None:
         """Advance every owned table's IDENTITY sequence past its current

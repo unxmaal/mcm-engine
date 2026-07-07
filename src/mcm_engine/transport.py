@@ -123,9 +123,12 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             )
         plaintext = header.split(" ", 1)[1].strip()
         try:
-            principal = _tokens.validate_token(
-                self._server.ctx.storage._conn, plaintext
-            )
+            # Borrow a connection from the storage pool for token validation, so
+            # this out-of-band SELECT/UPDATE/commit runs on its OWN connection and
+            # never lands inside a tool handler's transaction (issue #83 / H3).
+            storage = self._server.ctx.storage
+            with storage._pool.connection() as conn:
+                principal = _tokens.validate_token(conn, plaintext)
         except Exception as e:
             return JSONResponse(
                 {"error": f"token validation error: {type(e).__name__}"},
@@ -203,32 +206,31 @@ def _make_claims_endpoint(server: Any):
         if not isinstance(provenance, list):
             return JSONResponse({"error": "provenance must be a list"}, status_code=400)
 
-        conn = server.ctx.storage._conn
+        storage = server.ctx.storage
         principal = getattr(request.state, "principal", None) or "anonymous"
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO knowledge
-                        (topic, kind, summary, detail, tags, project,
-                         subject_keys, governance_tags, scope, status, provenance)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        topic, kind, summary, detail, tags, project,
-                        subject_keys, governance_tags, scope, status,
-                        json.dumps(provenance),
-                    ),
-                )
-                row = cur.fetchone()
-            conn.commit()
+            # Own connection from the pool (issue #83 / audit H3): this insert
+            # never shares a connection with a tool handler's transaction. The
+            # pool's context commits on clean exit / rolls back on error.
+            with storage._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge
+                            (topic, kind, summary, detail, tags, project,
+                             subject_keys, governance_tags, scope, status, provenance)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            topic, kind, summary, detail, tags, project,
+                            subject_keys, governance_tags, scope, status,
+                            json.dumps(provenance),
+                        ),
+                    )
+                    row = cur.fetchone()
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             return JSONResponse(
                 {"error": f"insert failed: {type(e).__name__}: {e}"},
                 status_code=500,
