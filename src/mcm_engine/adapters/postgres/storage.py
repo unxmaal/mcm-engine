@@ -8,12 +8,15 @@ generated column.
 """
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 if TYPE_CHECKING:
     import psycopg
+
+from ._concurrency import serialize_methods
 
 from ...backends import (
     CONTRACT_VERSION,
@@ -612,12 +615,20 @@ def _relation_from_row(r: dict[str, Any]) -> RelationRow:
 # ---------------------------------------------------------------------------
 
 
+@serialize_methods
 class PostgresStorage:
     """StorageBackend on Postgres 15+ using psycopg3.
 
     Constructed with a DSN. The adapter manages a single connection in
     autocommit-off mode, committing per write operation to match the
     SqliteStorage reference's semantics (commit-after-write).
+
+    Thread-safety (issue #83): a single psycopg connection driven by more than
+    one thread interleaves cursors/transactions and folds concurrent writes into
+    an open ``transaction()``. Every public non-generator method is serialized on
+    ``self._lock`` (see ``_concurrency.serialize_methods``), and ``transaction()``
+    holds that lock across its whole block. See docs/scaling.md for the
+    connection-pool design this lock is a stepping stone to.
     """
 
     CONTRACT_VERSION: int = CONTRACT_VERSION
@@ -632,6 +643,9 @@ class PostgresStorage:
                 "PostgresStorage requires psycopg. "
                 "Install with: pip install 'mcm-engine[postgres]'"
             ) from e
+        # Created before any wrapped method can run (serialize_methods relies on
+        # it existing). Re-entrant so transaction()'s inner writes nest freely.
+        self._lock = threading.RLock()
         self._psycopg = psycopg
         self._dsn = dsn
         if conn is None:
@@ -660,21 +674,25 @@ class PostgresStorage:
     def transaction(self) -> Iterator[None]:
         """Group writes into one atomic unit. The per-method commits are
         deferred; the whole block commits once on clean exit and rolls back
-        on any exception."""
-        self._tx_depth += 1
-        try:
-            yield
-        except BaseException:
-            self._tx_depth = 0
+        on any exception. Holds ``self._lock`` for the ENTIRE block (issue #83)
+        so no other thread can execute a write or commit into the open
+        transaction. Re-entrant, so the wrapped write methods called inside
+        re-acquire the lock without deadlocking."""
+        with self._lock:
+            self._tx_depth += 1
             try:
-                self._conn.rollback()
-            except Exception:
-                pass
-            raise
-        else:
-            self._tx_depth -= 1
-            if self._tx_depth == 0:
-                self._conn.commit()
+                yield
+            except BaseException:
+                self._tx_depth = 0
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+            else:
+                self._tx_depth -= 1
+                if self._tx_depth == 0:
+                    self._conn.commit()
 
     # ---- Schema management ----
 

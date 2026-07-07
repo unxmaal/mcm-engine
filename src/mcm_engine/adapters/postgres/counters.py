@@ -11,10 +11,13 @@ real difference is timestamps (Postgres ``TIMESTAMPTZ now()`` vs SQLite
 """
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     import psycopg
+
+from ._concurrency import serialize_methods
 
 from ...backends import (
     CONTRACT_VERSION,
@@ -40,8 +43,12 @@ _COUNTER_COLUMNS: dict[str, set[str]] = {
 }
 
 
+@serialize_methods
 class PostgresCounters:
-    """CounterStore on Postgres — write-through to entry-row columns."""
+    """CounterStore on Postgres — write-through to entry-row columns.
+
+    Every public method is serialized on ``self._lock`` so the shared psycopg
+    connection is never driven by two threads at once (issue #83)."""
 
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
@@ -55,6 +62,7 @@ class PostgresCounters:
                 "PostgresCounters requires psycopg. "
                 "Install with: pip install 'mcm-engine[postgres]'"
             ) from e
+        self._lock = threading.RLock()
         self._dsn = dsn
         if conn is None:
             conn = psycopg.connect(dsn, row_factory=dict_row)

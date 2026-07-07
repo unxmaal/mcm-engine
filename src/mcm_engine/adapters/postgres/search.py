@@ -12,10 +12,13 @@ an ILIKE scan across the natural-language columns.
 """
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     import psycopg
+
+from ._concurrency import serialize_methods
 
 from ...backends import (
     CONTRACT_VERSION,
@@ -47,8 +50,12 @@ _TABLES: dict[EntityType, dict[str, Any]] = {
 }
 
 
+@serialize_methods
 class PostgresSearch:
-    """SearchBackend on Postgres tsvector + ts_rank_cd."""
+    """SearchBackend on Postgres tsvector + ts_rank_cd.
+
+    Every public method is serialized on ``self._lock`` so the shared psycopg
+    connection is never driven by two threads at once (issue #83)."""
 
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
@@ -62,6 +69,7 @@ class PostgresSearch:
                 "PostgresSearch requires psycopg. "
                 "Install with: pip install 'mcm-engine[postgres]'"
             ) from e
+        self._lock = threading.RLock()
         self._dsn = dsn
         if conn is None:
             conn = psycopg.connect(dsn, row_factory=dict_row)

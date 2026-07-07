@@ -6,7 +6,29 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **Scaling architecture doc** (`docs/scaling.md`). Records the horizontal-scale
+  model for EKS (many pods, durable state in Postgres) and the reasoning behind
+  the #83 concurrency work: FastMCP runs sync tools inline on the event loop
+  (per-pod serialization), so per-session state (`ScopedTracker` **and** the
+  streamable-HTTP transport) is per-pod and needs **session affinity** to hold
+  across replicas; the Postgres connection pool + heavy-tool offloading are the
+  throughput successors to today's serialization lock. The Helm chart's
+  "safe to raise replicaCount" note is corrected accordingly.
+
 ### Fixed
+- **The Postgres adapters are now thread-safe** (issue #83 hardening). Each
+  adapter's single psycopg connection carried a `_tx_depth` + deferred-commit
+  protocol with no lock — the same latent corruption the SQLite side had (a
+  concurrent write's commit folding into another thread's open transaction;
+  psycopg "another operation in progress" under two-thread use). Every public,
+  non-generator adapter method is now serialized on a per-instance re-entrant
+  lock, and `transaction()` holds it across the whole block. The transport's
+  out-of-band token-validation and `/v1/claims` writes (audit H3), which reach
+  into the shared storage connection, now take the same lock. Fake-connection
+  regression tests prove the serialization and fail without the lock; validate
+  against a live Postgres before deploy. (The connection pool that supersedes
+  this lock at scale is specified in `docs/scaling.md`.)
 - **The shared SQLite connection is now thread-safe** (issue #83 hardening).
   Post-#79 one `KnowledgeDB` connection is shared by every embedded adapter and
   is also driven by real background threads (the watcher cascade), but its

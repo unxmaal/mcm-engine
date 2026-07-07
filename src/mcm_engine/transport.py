@@ -123,9 +123,13 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             )
         plaintext = header.split(" ", 1)[1].strip()
         try:
-            principal = _tokens.validate_token(
-                self._server.ctx.storage._conn, plaintext
-            )
+            # Token validation does SELECT + UPDATE + commit on the SAME shared
+            # storage connection tool handlers use. Hold the adapter's lock so
+            # this out-of-band commit can't land inside a concurrent handler's
+            # open transaction (issue #83 / audit H3).
+            storage = self._server.ctx.storage
+            with getattr(storage, "_lock", contextlib.nullcontext()):
+                principal = _tokens.validate_token(storage._conn, plaintext)
         except Exception as e:
             return JSONResponse(
                 {"error": f"token validation error: {type(e).__name__}"},
@@ -203,27 +207,32 @@ def _make_claims_endpoint(server: Any):
         if not isinstance(provenance, list):
             return JSONResponse({"error": "provenance must be a list"}, status_code=400)
 
-        conn = server.ctx.storage._conn
+        storage = server.ctx.storage
+        conn = storage._conn
         principal = getattr(request.state, "principal", None) or "anonymous"
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO knowledge
-                        (topic, kind, summary, detail, tags, project,
-                         subject_keys, governance_tags, scope, status, provenance)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        topic, kind, summary, detail, tags, project,
-                        subject_keys, governance_tags, scope, status,
-                        json.dumps(provenance),
-                    ),
-                )
-                row = cur.fetchone()
-            conn.commit()
+            # Serialize on the adapter lock (issue #83 / audit H3): this insert +
+            # commit shares the storage connection with tool handlers, so it must
+            # not interleave with a concurrent handler's transaction.
+            with getattr(storage, "_lock", contextlib.nullcontext()):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge
+                            (topic, kind, summary, detail, tags, project,
+                             subject_keys, governance_tags, scope, status, provenance)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            topic, kind, summary, detail, tags, project,
+                            subject_keys, governance_tags, scope, status,
+                            json.dumps(provenance),
+                        ),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
         except Exception as e:
             try:
                 conn.rollback()
