@@ -189,8 +189,13 @@ jobs:
           VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
           TAGS="${IMAGE}:sha-${GITHUB_SHA::12}"
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            # main build carries both the floating :main and the declared version.
-            TAGS="${TAGS},${IMAGE}:main,${IMAGE}:${VERSION}"
+            # main build carries the floating :main and :<version>, PLUS a unique,
+            # sortable per-build tag :<version>-<UTC timestamp>. The floating tags
+            # get overwritten every merge (by design — ":main" and ":<version>"
+            # always mean "latest main"); the stamped tag is immutable, so every
+            # build stays addressable and you never silently rebuild over one.
+            STAMP=$(date -u +%Y%m%d-%H%M%S)
+            TAGS="${TAGS},${IMAGE}:main,${IMAGE}:${VERSION},${IMAGE}:${VERSION}-${STAMP}"
           fi
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAGS="${TAGS},${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest"
