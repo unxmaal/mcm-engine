@@ -123,13 +123,12 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             )
         plaintext = header.split(" ", 1)[1].strip()
         try:
-            # Token validation does SELECT + UPDATE + commit on the SAME shared
-            # storage connection tool handlers use. Hold the adapter's lock so
-            # this out-of-band commit can't land inside a concurrent handler's
-            # open transaction (issue #83 / audit H3).
+            # Borrow a connection from the storage pool for token validation, so
+            # this out-of-band SELECT/UPDATE/commit runs on its OWN connection and
+            # never lands inside a tool handler's transaction (issue #83 / H3).
             storage = self._server.ctx.storage
-            with getattr(storage, "_lock", contextlib.nullcontext()):
-                principal = _tokens.validate_token(storage._conn, plaintext)
+            with storage._pool.connection() as conn:
+                principal = _tokens.validate_token(conn, plaintext)
         except Exception as e:
             return JSONResponse(
                 {"error": f"token validation error: {type(e).__name__}"},
@@ -208,14 +207,13 @@ def _make_claims_endpoint(server: Any):
             return JSONResponse({"error": "provenance must be a list"}, status_code=400)
 
         storage = server.ctx.storage
-        conn = storage._conn
         principal = getattr(request.state, "principal", None) or "anonymous"
 
         try:
-            # Serialize on the adapter lock (issue #83 / audit H3): this insert +
-            # commit shares the storage connection with tool handlers, so it must
-            # not interleave with a concurrent handler's transaction.
-            with getattr(storage, "_lock", contextlib.nullcontext()):
+            # Own connection from the pool (issue #83 / audit H3): this insert
+            # never shares a connection with a tool handler's transaction. The
+            # pool's context commits on clean exit / rolls back on error.
+            with storage._pool.connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -232,12 +230,7 @@ def _make_claims_endpoint(server: Any):
                         ),
                     )
                     row = cur.fetchone()
-                conn.commit()
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             return JSONResponse(
                 {"error": f"insert failed: {type(e).__name__}: {e}"},
                 status_code=500,

@@ -106,6 +106,23 @@ def build_context(
             _dbs_by_path[path] = KnowledgeDB(path)
         return _dbs_by_path[path]
 
+    # Postgres adapters that resolve to the same DSN share ONE per-pod
+    # connection pool (issue #83), so the pod holds one bounded set of
+    # connections instead of one pool per adapter. Keyed by DSN.
+    _pools_by_dsn: dict[str, Any] = {}
+
+    def _shared_pool_for(name: str, options: dict) -> Any:
+        if name != "postgres":
+            return None
+        dsn = options.get("dsn")
+        if not dsn:
+            return None
+        if dsn not in _pools_by_dsn:
+            from .adapters.postgres._pool import make_pool
+
+            _pools_by_dsn[dsn] = make_pool(dsn)
+        return _pools_by_dsn[dsn]
+
     def _instantiate(cls, name: str, options: dict, extra: Optional[dict] = None):
         opts = dict(options)
         if extra:
@@ -116,6 +133,9 @@ def build_context(
             # redundant path so the two can't disagree.
             opts.pop("db_path", None)
             return cls(db=shared, **opts)
+        pool = _shared_pool_for(name, options)
+        if pool is not None:
+            return cls(pool=pool, **opts)
         return cls(**opts)
 
     # Cross-adapter dependency injection: some search adapters (notably

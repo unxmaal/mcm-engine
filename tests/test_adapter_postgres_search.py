@@ -43,7 +43,11 @@ class TestPostgresSearch(SearchConformance):
         storage.ensure_schema()
         storage.truncate_all()
         search = PostgresSearch(dsn=TEST_PG_DSN)
-        return storage, search
+        try:
+            yield storage, search
+        finally:
+            storage.close()
+            search.close()
 
     @pytest.fixture
     def storage(self, _shared):

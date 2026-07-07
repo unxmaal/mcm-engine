@@ -46,7 +46,11 @@ class TestPostgresCounters(CounterConformance):
         storage.ensure_schema()
         storage.truncate_all()
         counters = PostgresCounters(dsn=TEST_PG_DSN)
-        return storage, counters
+        try:
+            yield storage, counters
+        finally:
+            storage.close()
+            counters.close()
 
     @pytest.fixture
     def storage(self, _shared):

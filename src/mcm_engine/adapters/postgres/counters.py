@@ -11,13 +11,12 @@ real difference is timestamps (Postgres ``TIMESTAMPTZ now()`` vs SQLite
 """
 from __future__ import annotations
 
-import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     import psycopg
 
-from ._concurrency import serialize_methods
+from ._pool import pooled_adapter, resolve_pool
 
 from ...backends import (
     CONTRACT_VERSION,
@@ -43,32 +42,33 @@ _COUNTER_COLUMNS: dict[str, set[str]] = {
 }
 
 
-@serialize_methods
+@pooled_adapter
 class PostgresCounters:
     """CounterStore on Postgres — write-through to entry-row columns.
 
-    Every public method is serialized on ``self._lock`` so the shared psycopg
-    connection is never driven by two threads at once (issue #83)."""
+    Each method borrows a connection from the pool for its duration (issue #83),
+    so the connection is never driven by two threads at once and increments run
+    concurrently. ``self._conn`` resolves to the borrowed connection."""
 
     CONTRACT_VERSION: int = CONTRACT_VERSION
     capabilities: set[Capability] = set()
 
-    def __init__(self, dsn: str, *, conn: Optional["psycopg.Connection"] = None):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        conn: Optional["psycopg.Connection"] = None,
+        pool: Any = None,
+    ):
         try:
-            import psycopg
-            from psycopg.rows import dict_row
+            import psycopg  # noqa: F401
         except ImportError as e:
             raise MissingDependencyError(
                 "PostgresCounters requires psycopg. "
                 "Install with: pip install 'mcm-engine[postgres]'"
             ) from e
-        self._lock = threading.RLock()
         self._dsn = dsn
-        if conn is None:
-            conn = psycopg.connect(dsn, row_factory=dict_row)
-        else:
-            conn.row_factory = dict_row
-        self._conn = conn
+        self._pool = resolve_pool(dsn, conn=conn, pool=pool)
 
     def _resolve_column(self, entity_type: EntityType, counter_name: str) -> str:
         table = _TABLE[entity_type]

@@ -60,32 +60,33 @@ There are only two correct shapes:
 > `replicaCount` above 1 until session affinity (or externalized state) is in
 > place, or `ScopedTracker` fragments across pods and #83 silently regresses.
 
-## Layer B — Postgres connection model
+## Layer B — Postgres connection model (implemented)
 
-**Today (correctness floor, shipped):** each adapter holds one psycopg
-connection, and every public method is serialized on a per-instance re-entrant
-lock, with `transaction()` holding it across the whole block
-(`adapters/postgres/_concurrency.py`). This closes the audit's H1/H3 by making
-the shared connection safe under any threading — it is the same discipline the
-SQLite `KnowledgeDB` uses. Because the event loop already serializes tools, this
-lock is almost never contended today; it is defense-in-depth for the moment a
-tool is offloaded to a thread (Layer C) or made async.
+**A per-pod `psycopg_pool.ConnectionPool`** (`adapters/postgres/_pool.py`).
+Each adapter method borrows a connection for its duration and returns it;
+`transaction()` binds one connection across its whole block. `pool.connection()`
+commits on clean exit and rolls back on exception (psycopg's `with conn:`), so
+there is no manual `_tx_depth` to corrupt. Mechanically, `self._conn` is a
+property returning the current call-chain's borrowed connection, and a class
+decorator (`pooled_adapter`) wraps each public non-generator method to borrow
+one — so method bodies are unchanged. `build_context` opens **one** pool per DSN
+and injects it into all three Postgres adapters, so a pod holds one bounded set
+of connections. This:
 
-**The scaling target (not yet built): a per-pod `psycopg_pool.ConnectionPool`.**
-Each operation borrows a connection; `transaction()` holds one across its block
-(`pool.connection()` commits on clean exit, rolls back on exception — verified in
-the library source). Benefits over the lock:
+- removes the audit's H1/H3 **by construction** (no shared transaction state);
+- gives the streaming `iter_*` cursors their own connections;
+- lets Layer C run tools on threads, each borrowing its own connection;
+- is fronted by **RDS Proxy / PgBouncer** to multiplex the aggregate connection
+  count from many pods (tune `max_size` in `make_pool` against your DB's limit).
 
-- removes H1/H3 **by construction** (no shared `_tx_depth`);
-- gives the streaming `iter_*` cursors their own connections instead of sharing
-  one;
-- lets Layer C run tools on threads, each with its own connection;
-- fronted by **RDS Proxy / PgBouncer** to multiplex the aggregate connection
-  count from many pods.
+Validated against a real Postgres: the adapter conformance suite (50 tests) plus
+`tests/test_postgres_pool.py`, which asserts concurrent increments lose nothing,
+a rolled-back transaction does not swallow a concurrent write (the old #83
+corruption, now impossible), transaction isolation holds, and operations run in
+parallel rather than serialized.
 
-The pool should land **together with Layer C** (there is no intra-pod
-concurrency to exploit until then) and be validated against a real Postgres — it
-is a mechanical but broad rewrite of the adapters' connection handling.
+This replaced an interim per-connection serialization lock — the coarse lock was
+correct but a throughput ceiling; the pool is the scaling-correct form.
 
 ## Layer C — Per-pod throughput: keep the event loop unblocked
 
@@ -95,10 +96,11 @@ stalling every client on the pod. Levers, cheapest first:
 1. **Keep tools fast / bounded.** Caps already exist (`MCM_SIFT_MAX_SPANS`, the
    #79 search fix). Prefer more, smaller tool calls over one big one.
 2. **Offload the few CPU-heavy tools** (`sift_candidates`, `consolidation_report`)
-   to a threadpool (`anyio.to_thread`) so they don't hold the loop. This is safe
-   **only with Layer B's pool** (each offloaded thread needs its own connection);
-   attempting it against the single shared connection is exactly the hazard the
-   Layer B lock guards.
+   to a threadpool (`anyio.to_thread`) so they don't hold the loop. Layer B's
+   pool is now in place, so each offloaded thread borrows its own connection —
+   this is the piece that makes offloading safe. (The SQLite tier still
+   serializes on the `KnowledgeDB` lock, which is correct for that single-node
+   deployment.)
 3. **Async tools** for I/O-bound handlers — the largest change; only if 1–2 are
    insufficient.
 
@@ -122,8 +124,8 @@ middleware.
 | --- | --- |
 | Per-session governance state (#83) | Fixed per-pod (`ScopedTracker`); **needs session affinity to hold across pods** |
 | SQLite shared connection | Fixed (lock across `transaction()`) |
-| Postgres shared connection (H1/H3) | Fixed (per-adapter serialization lock); pool is the scaling successor |
-| Transport out-of-band commits (H3) | Fixed (routed through the storage lock) |
-| Per-pod throughput (heavy tools) | Open — Layer C (offload + pool) |
+| Postgres shared connection (H1/H3) | Fixed (per-pod connection pool; validated against real PG) |
+| Transport out-of-band commits (H3) | Fixed (each borrows its own pooled connection) |
+| Per-pod throughput (heavy tools) | Open — Layer C (offload heavy tools; the pool is now in place to support it) |
 | Provenance ContextVar (M2) | Verified working (Starlette 0.52.1) + guarded by test |
 | Horizontal scale | Pods + HPA + session affinity + RDS Proxy |
