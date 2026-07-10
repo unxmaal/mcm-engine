@@ -37,7 +37,11 @@
   table { border-collapse: collapse; width: 100%; min-width: 900px; }
   th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th { position: sticky; top: var(--head-top); background: var(--panel); color: var(--muted);
-       font-weight: 600; font-size: 12px; z-index: 1; }
+       font-weight: 600; font-size: 12px; z-index: 1;
+       cursor: pointer; user-select: none; }
+  th:hover { color: var(--fg); }
+  th.sorted { color: var(--fg); }
+  th .arrow { display: inline-block; width: 0.9em; color: var(--accent); }
   td.title { white-space: normal; min-width: 280px; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
   tr:hover td { background: #12151c; }
@@ -49,6 +53,10 @@
   @keyframes flash { 0% { background: var(--flash); } 100% { background: transparent; } }
   .flash-err { animation: flasherr 1.6s ease-out; }
   @keyframes flasherr { 0% { background: var(--err); } 100% { background: transparent; } }
+  /* Whole-row pulse when a rule is accessed (hit_count / reinforcement bumped
+     by a live search or report_error) — a dynamic view of what's in use now. */
+  tr.accessed td { animation: access 2s ease-out; }
+  @keyframes access { 0% { background: rgba(110,168,254,0.35); } 100% { background: transparent; } }
   tr.archived td { opacity: 0.5; }
   #status { color: var(--muted); font-size: 12px; }
 </style>
@@ -65,10 +73,17 @@
   <span id="status"></span>
 </header>
 <table>
-  <thead><tr>
-    <th>id</th><th>importance</th><th>scope</th><th>kind</th><th>category</th>
-    <th>title</th><th class="num">hits</th><th class="num">reinf</th>
-    <th class="num">ok/no</th><th>status</th>
+  <thead><tr id="head">
+    <th data-sort="id">id<span class="arrow"></span></th>
+    <th data-sort="importance">importance<span class="arrow"></span></th>
+    <th data-sort="scope">scope<span class="arrow"></span></th>
+    <th data-sort="kind">kind<span class="arrow"></span></th>
+    <th data-sort="category">category<span class="arrow"></span></th>
+    <th data-sort="title">title<span class="arrow"></span></th>
+    <th class="num" data-sort="hit_count">hits<span class="arrow"></span></th>
+    <th class="num" data-sort="reinforcement_count">reinf<span class="arrow"></span></th>
+    <th class="num" data-sort="correct_count">ok/no<span class="arrow"></span></th>
+    <th data-sort="status">status<span class="arrow"></span></th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -76,6 +91,11 @@
 const POLL_MS = 2000;
 let vocab = { scopes: ["universal","conditional"], kinds: ["directive","fact"], importance_min: 0, importance_max: 2 };
 let filter = "";
+// Click-to-sort: key is a rule field (or null = server order, importance-first);
+// dir is 1 asc / -1 desc. Numeric fields compare as numbers, everything else
+// as case-insensitive strings.
+let sort = { key: null, dir: 1 };
+const NUMERIC = new Set(["id", "importance", "hit_count", "reinforcement_count", "correct_count"]);
 // Keyed reconciliation: rows persist across polls (id -> entry) so we never
 // destroy the control the user is editing. The old full innerHTML rebuild is
 // what lost select changes and wiped keystrokes.
@@ -152,6 +172,33 @@ function setControl(el, value) {
 }
 
 function flashCell(node) { node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); }
+function flashRow(tr) { tr.classList.remove("accessed"); void tr.offsetWidth; tr.classList.add("accessed"); }
+
+// Reorder the persisted <tr> nodes to match the current sort. appendChild moves
+// (not clones) existing nodes, so open edits / focus survive the reorder. With
+// no sort key we leave the server's importance-first order untouched.
+function compare(a, b) {
+  const k = sort.key;
+  let av = a.last ? a.last[k] : null, bv = b.last ? b.last[k] : null;
+  if (NUMERIC.has(k)) { av = Number(av) || 0; bv = Number(bv) || 0; }
+  else { av = String(av == null ? "" : av).toLowerCase(); bv = String(bv == null ? "" : bv).toLowerCase(); }
+  if (av < bv) return -1 * sort.dir;
+  if (av > bv) return 1 * sort.dir;
+  return (a.last ? a.last.id : 0) - (b.last ? b.last.id : 0);  // stable tiebreak by id
+}
+function applySort() {
+  if (!sort.key) return;
+  const tbody = $("rows");
+  const ordered = [...rowsById.values()].sort(compare);
+  for (const entry of ordered) tbody.appendChild(entry.tr);
+}
+function updateArrows() {
+  for (const th of $("head").children) {
+    const active = th.dataset.sort === sort.key;
+    th.classList.toggle("sorted", active);
+    th.querySelector(".arrow").textContent = active ? (sort.dir === 1 ? "▲" : "▼") : "";
+  }
+}
 
 function updateRow(entry, rule, flashChanges) {
   const prev = entry.last;
@@ -166,6 +213,11 @@ function updateRow(entry, rule, flashChanges) {
   entry.statusTd.textContent = rule.status;
   entry.tr.classList.toggle("archived", !!rule.archived);
   if (flashChanges && prev) {
+    // A rise in hits or reinforcement means the rule was just accessed by a
+    // live search/report_error — pulse the whole row, not only the cell.
+    if (rule.hit_count > prev.hit_count || rule.reinforcement_count > prev.reinforcement_count) {
+      flashRow(entry.tr);
+    }
     for (const f of WATCH) {
       if (String(prev[f]) !== String(rule[f])) { const t = entry.tds[f]; if (t) flashCell(t); }
     }
@@ -194,6 +246,7 @@ function render(payload, flashChanges) {
   for (const [id, entry] of rowsById) {
     if (!seen.has(id)) { entry.tr.remove(); rowsById.delete(id); }
   }
+  applySort();
   syncHeadOffset();
 }
 
@@ -228,6 +281,17 @@ $("q").addEventListener("input", (e) => {
   for (const [, entry] of rowsById) applyFilter(entry);
 });
 $("arch").addEventListener("change", () => tick(false));
+// Click a header to sort by that column; click the active column again to flip
+// direction. Reorder immediately, no wait for the next poll.
+$("head").addEventListener("click", (e) => {
+  const th = e.target.closest("th");
+  if (!th || !th.dataset.sort) return;
+  const key = th.dataset.sort;
+  if (sort.key === key) sort.dir = -sort.dir;
+  else { sort.key = key; sort.dir = 1; }
+  updateArrows();
+  applySort();
+});
 window.addEventListener("resize", syncHeadOffset);
 
 tick(false).then(() => { syncHeadOffset(); setInterval(() => tick(true), POLL_MS); });
