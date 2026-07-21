@@ -211,3 +211,63 @@ def test_configure_security_can_disable(server):
     _configure_transport_security(server, host="0.0.0.0", enable=False)
     ts = server.mcp.settings.transport_security
     assert ts.enable_dns_rebinding_protection is False
+
+
+def test_configure_security_registers_bare_host_for_portless_match(server):
+    """An allowed host must be registered BOTH as `host:*` (Host with a port)
+    and as the bare host (port-less Host). The MCP matcher only accepts a
+    Host by exact match or `base:<port>`, so `host:*` alone can't match a
+    port-less `Host:` header. (issue #92)"""
+    _configure_transport_security(
+        server, host="0.0.0.0", allowed_hosts=["svc.internal"])
+    hosts = server.mcp.settings.transport_security.allowed_hosts
+    assert "svc.internal:*" in hosts   # Host: svc.internal:8080
+    assert "svc.internal" in hosts     # Host: svc.internal (behind 443/80 proxy)
+
+
+# End-to-end: a real request whose Host is a configured allow-list entry must
+# NOT be rejected with 421, and an unlisted Host must be. This exercises the
+# actual DNS-rebinding middleware built into the streamable-http app — the
+# layer the settings-only tests above don't reach. (issue #92)
+_INIT_BODY = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "1"},
+    },
+}
+_MCP_HEADERS = {
+    "Accept": "application/json, text/event-stream",
+    "Content-Type": "application/json",
+}
+
+
+def _streamable_status_for_host(tmp_path, host_header):
+    cfg = MCMConfig(
+        project_name="transport-test",
+        db_path=str(tmp_path / "host.db"),
+    )
+    srv = MCMServer(cfg, project_root=tmp_path)
+    _configure_transport_security(
+        srv, host="0.0.0.0", allowed_hosts=["example.internal"])
+    app = build_asgi_app(srv, transport="streamable-http")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp", headers={**_MCP_HEADERS, "Host": host_header},
+            json=_INIT_BODY,
+        )
+    return resp.status_code
+
+
+@pytest.mark.parametrize(
+    "host_header", ["example.internal", "example.internal:8080"])
+def test_streamable_http_accepts_allowlisted_host(tmp_path, host_header):
+    # Port-less (proxy/ingress on 443/80) AND explicit-port forms both pass.
+    assert _streamable_status_for_host(tmp_path, host_header) != 421
+
+
+def test_streamable_http_rejects_unlisted_host(tmp_path):
+    assert _streamable_status_for_host(tmp_path, "evil.example.com") == 421

@@ -399,9 +399,25 @@ def _configure_transport_security(
 
     for entry in extra:
         pat = _host_pattern(entry)
-        if pat and pat not in hosts:
+        if not pat:
+            continue
+        if pat not in hosts:
             hosts.append(pat)
             origins.append(f"http://{pat}")
+        # Also register the BARE host (no port) for exact match. The MCP
+        # matcher (`TransportSecurityMiddleware._validate_host`) accepts a
+        # Host only by exact string match OR `base:<port>`; a `host:*`
+        # pattern never matches a *port-less* Host header. Behind a reverse
+        # proxy / ingress on 443 or 80 the forwarded Host carries no port
+        # (e.g. `Host: svc.internal`), so the `host:*` pattern alone 421s
+        # every such request. Adding the bare host makes the exact-match
+        # branch succeed. (issue #92)
+        if pat.endswith(":*"):
+            bare = pat[:-2]
+            if bare and bare not in hosts:
+                hosts.append(bare)
+                origins.append(f"https://{bare}")
+                origins.append(f"http://{bare}")
 
     settings.transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
