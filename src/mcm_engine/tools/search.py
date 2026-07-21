@@ -430,7 +430,11 @@ def register_search_tools(
         and plugin data.
 
         Args:
-            query: full-text query.
+            query: 1-3 keywords, NOT a sentence. This is FTS5 term matching,
+                not semantic/Google-style search: multiple words are AND-ed,
+                so a natural-language question ("how do I configure the
+                allow-list") usually returns nothing while the keywords that
+                actually co-occur in a stored entry ("allow-list config") hit.
             scope: which entity types to search. One of "all" (default),
                 "knowledge", "negative", "errors", "rules". Unknown values
                 fall back to "all".
@@ -455,7 +459,14 @@ def register_search_tools(
             include_archived=include_archived,
         )
         if not result:
-            return _with_nudge(f"No results for '{query}'.", tracker, query)
+            hint = ""
+            if len(query.split()) > 2:
+                hint = (
+                    " This is FTS5 keyword search, not semantic: the words are"
+                    " AND-ed. Retry with 1-3 core keywords instead of a"
+                    " sentence."
+                )
+            return _with_nudge(f"No results for '{query}'.{hint}", tracker, query)
         return _with_nudge(result, tracker, query)
 
     return search_all
