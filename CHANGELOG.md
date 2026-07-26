@@ -6,7 +6,20 @@ versioning.
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-07-25
+
 ### Added
+- **Structured references on knowledge entries** (c5 Phase 5). `add_knowledge`
+  gains an optional `references` list of `{type, target, note}` pointers (types:
+  file, symbol, test, url) so an entry can point at the source of truth instead
+  of restating it. Stored in a nullable `knowledge.refs_json` column and surfaced
+  in `search`. Additive `v11 -> v12` SQLite migration; parallel guarded Postgres
+  `ALTER`. On update, omitting the field preserves existing references and `[]`
+  clears them.
+- **Rules audit script** (`scripts/audit_rules.py`, c5 Phase 1). Reads the live
+  corpus over MCP `list_rules` and classifies each rule against the `kind` axis
+  plus reinforcement and title heuristics into KEEP / DELETE / DEMOTE /
+  RECLASSIFY / REVIEW, writing `audit/rules_audit.md`. Report-only.
 - **Scaling architecture doc** (`docs/scaling.md`). Records the horizontal-scale
   model for EKS (many pods, durable state in Postgres) and the reasoning behind
   the #83 concurrency work: FastMCP runs sync tools inline on the event loop
@@ -18,6 +31,34 @@ versioning.
   audit's provenance-attribution concern (M2) is a non-bug on Starlette 0.52.1
   (the transport principal propagates to tool handlers) and pins it with a
   regression test so a future Starlette bump can't silently misattribute writes.
+
+### Changed
+- **Context-engineering pass, model-agnostic** (c5 modernization). The rules
+  corpus, nudges, tool descriptions, and resume payload predated current
+  context-engineering practice. mcm cannot know the client model (MCP exposes
+  only `clientInfo`; the fleet is opencode + a LiteLLM gateway fronting many
+  models), so nothing detects or branches on the model. All behavioral changes
+  are reversible via plain config flags rather than a model gate.
+- **Repeat nudges are suppressed by default** (`suppress_repeat_nudges`, default
+  true; c5 Phase 2). Each nudge type is shown once per trigger cycle and
+  suppressed on repeats until a resolving tool clears it and it re-triggers.
+  First-surface retrieval and the ignore/escalate backstop are unchanged. New
+  per-session instrumentation (`nudge_fires` / `nudge_suppressed`). Set false to
+  restore the old always-repeat behavior.
+- **Closed-set tool params are now schema enums** (c5 Phase 3). Params with a
+  finite vocabulary moved from bare `str` to `typing.Literal` so the values reach
+  the MCP tool schema (`EntityTypeLiteral`, `ScopeLiteral` / `KindLiteral`,
+  `SearchScope`, joining the existing `RelationType`). Long tool docstrings were
+  trimmed to caller contracts (dropped issue numbers, internal plan narrative,
+  and walkthrough examples). Correct callers are unaffected.
+- **Opt-in resume-context budget** (c5 Phase 4): `resume_invariants_cap`,
+  `resume_field_chars`, `resume_max_pinned`. Defaults preserve current output;
+  the session-start / resume payload was already a summary, so these are levers
+  for operators who want a tighter resident payload.
+- **Repositioned** (c5 Phase 6). README and the Helm chart now lead with shared,
+  correctness-weighted, contradiction-detected team knowledge with provenance
+  and review, contrasted with native per-user auto-memory. The model-agnostic
+  stance is documented. No unqualified "memory service" claims remain.
 
 ### Fixed
 - **The Postgres adapters now use a connection pool** (issue #83). Each adapter
