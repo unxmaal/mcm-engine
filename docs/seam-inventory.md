@@ -593,6 +593,21 @@ Not FTS/tsv-indexed, so no index rebuild.
   does. The guarded DDL remains the actual migration mechanism; the stamp only
   makes the version legible.
 
+## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
+
+Structured references on knowledge entries: a nullable JSON column holding a
+list of `{type, target, note?}` pointers to the source of truth. Not FTS/tsv
+indexed (like `rationale`/`alternatives`), so no index rebuild.
+
+- `schema.py`: 59 → 60. The v11→v12 migration `_migrate_v11_to_v12` adds the
+  column via one guarded `ALTER TABLE knowledge ADD COLUMN refs_json`
+  `execute_write` site (CORE_VERSION bumped 11 → 12). Fresh installs get the
+  column from CORE_SCHEMA.
+- `adapters/postgres/storage.py`: the column is added to the `CREATE TABLE
+  knowledge` DDL and to a guarded `DO $$ ... $$` block for existing deployments
+  (both inside the DDL-statements list, no new `.execute` site). The INSERT and
+  update paths gain `refs_json` but stay the same `.execute` sites.
+
 ## Addendum — hierarchy read/write surface (issue #64, Phase 2)
 
 Both adapters gain the tuning surface the admin UI and MCP verbs sit on

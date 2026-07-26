@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 11
+CORE_VERSION = 12
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS knowledge (
     project TEXT,
     rationale TEXT,
     alternatives TEXT,
+    refs_json TEXT,
     hit_count INTEGER DEFAULT 0,
     last_hit_at TEXT,
     reinforcement_count INTEGER DEFAULT 0,
@@ -632,6 +633,17 @@ def _migrate_v10_to_v11(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v11_to_v12(db: KnowledgeDB) -> None:
+    """v11 -> v12: knowledge.refs_json (c5 Phase 5). Additive nullable column
+    holding a JSON list of {type, target, note?} pointers to the source of
+    truth. Not FTS-indexed (like rationale/alternatives), so knowledge_fts is
+    left untouched; existing rows get NULL (no references)."""
+    if not _has_column(db, "knowledge", "refs_json"):
+        db.execute_write("ALTER TABLE knowledge ADD COLUMN refs_json TEXT")
+        log("Migration v11->v12: added knowledge.refs_json")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -644,6 +656,7 @@ _MIGRATIONS = [
     (8, 9, _migrate_v8_to_v9),
     (9, 10, _migrate_v9_to_v10),
     (10, 11, _migrate_v10_to_v11),
+    (11, 12, _migrate_v11_to_v12),
 ]
 
 

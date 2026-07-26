@@ -183,6 +183,9 @@ class MCMServer:
         register_session_tools(
             self.mcp, self.ctx, self.tracker, config.project_name,
             self._plugin_session_fns, plugin_db=self.db,
+            invariants_cap=config.resume_invariants_cap,
+            field_chars=config.resume_field_chars,
+            max_pinned=config.resume_max_pinned,
         )
 
         # Rules tools

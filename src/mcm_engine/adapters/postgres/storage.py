@@ -32,6 +32,7 @@ from ...backends import (
     SnapshotRow,
     StorageIdentity,
 )
+from ...refs import dump_refs, load_refs
 from ...schema import CORE_VERSION
 
 
@@ -76,6 +77,7 @@ _DDL_STATEMENTS: list[str] = [
         project              TEXT,
         rationale            TEXT,
         alternatives         TEXT,
+        refs_json            TEXT,
         hit_count            INTEGER NOT NULL DEFAULT 0,
         last_hit_at          TIMESTAMPTZ,
         reinforcement_count  INTEGER NOT NULL DEFAULT 0,
@@ -256,6 +258,20 @@ _DDL_STATEMENTS: list[str] = [
             ALTER TABLE rules ADD COLUMN importance INTEGER NOT NULL DEFAULT 0;
             ALTER TABLE rules ADD COLUMN scope      TEXT NOT NULL DEFAULT 'conditional';
             ALTER TABLE rules ADD COLUMN kind       TEXT NOT NULL DEFAULT 'fact';
+        END IF;
+    END$$
+    """,
+
+    # v12: knowledge.refs_json (c5 Phase 5) migration for EXISTING postgres
+    # deployments. Additive nullable column holding a JSON list of
+    # {type, target, note?} pointers. Not in the tsv generated column, so no
+    # tsv rebuild. Idempotent (a pure catalog read after the first apply).
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'knowledge' AND column_name = 'refs_json') THEN
+            ALTER TABLE knowledge ADD COLUMN refs_json TEXT;
         END IF;
     END$$
     """,
@@ -484,6 +500,7 @@ def _knowledge_from_row(r: dict[str, Any]) -> KnowledgeRow:
         project=r["project"],
         rationale=r["rationale"],
         alternatives=r["alternatives"],
+        references=load_refs(r.get("refs_json")),
         hit_count=r["hit_count"] or 0,
         last_hit_at=_as_dt(r["last_hit_at"]),
         reinforcement_count=r["reinforcement_count"] or 0,
@@ -740,18 +757,18 @@ class PostgresStorage:
             if row.id:
                 cur.execute(
                     "INSERT INTO knowledge "
-                    "(id, topic, kind, summary, detail, tags, project, rationale, alternatives) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.id, row.topic, row.kind, row.summary, row.detail, row.tags,
-                     row.project, row.rationale, row.alternatives),
+                     row.project, row.rationale, row.alternatives, dump_refs(row.references)),
                 )
             else:
                 cur.execute(
                     "INSERT INTO knowledge "
-                    "(topic, kind, summary, detail, tags, project, rationale, alternatives) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.topic, row.kind, row.summary, row.detail, row.tags,
-                     row.project, row.rationale, row.alternatives),
+                     row.project, row.rationale, row.alternatives, dump_refs(row.references)),
                 )
             new_id = cur.fetchone()["id"]
         self._commit()
@@ -761,7 +778,7 @@ class PostgresStorage:
         if not fields:
             return
         allowed = {"topic", "kind", "summary", "detail", "tags", "project",
-                   "rationale", "alternatives"}
+                   "rationale", "alternatives", "refs_json"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"unknown knowledge fields: {sorted(bad)}")

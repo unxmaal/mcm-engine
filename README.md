@@ -1,17 +1,18 @@
 # mcm-engine
 
-**A durable, external, cross-session memory service for AI coding agents, served over MCP.**
+**Shared, correctness-weighted team knowledge for AI coding agents, served over MCP.**
 
-Coding agents forget. A long session hits its context limit, compacts, and the model
-loses what it learned earlier in the session. It then re-derives the same fix, re-reads
-the same files, and rewrites a helper it already wrote. mcm-engine stores what an agent
-learns so it is not lost: findings, rules, errors, and decisions are captured when they
-are confirmed and retrieved before they are re-derived. It is the agent's long-term
-memory, and it outlives the context window.
+Coding agents forget across a session's compaction, and native client auto-memory now
+covers the personal, per-user case. mcm-engine is the other half: a shared knowledge base
+for a team of agents and people, where what one agent confirms is retrievable by the next,
+weighted by whether acting on it actually worked, checked for contradictions, and
+reviewable in git. Findings, rules, errors, and decisions are captured when confirmed and
+retrieved before they are re-derived, so the knowledge outlives any one context window.
 
-mcm-engine speaks the Model Context Protocol, so any MCP client (Claude Code, opencode,
-and others) can use it over stdio or HTTP. It runs on embedded SQLite with no external
-services, or scales to Postgres, Redis, or OpenSearch through configuration alone.
+mcm-engine speaks the Model Context Protocol, so any MCP client (opencode, Claude Code,
+and others) can use it over stdio or HTTP, driven by any model. It is model-agnostic by
+design and never branches on which LLM is connected. It runs on embedded SQLite with no
+external services, or scales to Postgres, Redis, or OpenSearch through configuration alone.
 
 > Changes and version history are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -45,6 +46,19 @@ mcm-engine makes different design choices, tuned for coding agents.
 - **Multi-backend and pluggable.** Start on SQLite. Swap any of four axes to Postgres,
   Redis, or OpenSearch with one config line. Extend with plugins that pass the same
   conformance suite.
+
+---
+
+## vs. native auto-memory
+
+Native auto-memory in opencode and Claude Code gives each user a private, per-machine
+memory. That is table stakes. mcm-engine is complementary: the same demand-paged retrieval
+economics, but a different eviction and trust policy. Where auto-memory is personal and
+unweighted, mcm-engine is **shared** across a team, **correctness-weighted** (rules move on
+`report_outcome`, not on how often they are read), **contradiction-detected**
+(`find_conflicting_rules`, `supersede_rule`), **provenance-tracked** (author/actor on every
+write and event), and **git-reviewable**. Personal memory remembers what you did; shared
+weighted knowledge encodes what the team has verified works.
 
 ---
 

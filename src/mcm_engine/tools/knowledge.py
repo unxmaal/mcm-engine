@@ -11,7 +11,8 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 
-from ..backends import EntityType, ErrorRow, KnowledgeRow, NegativeRow
+from ..backends import EntityType, EntityTypeLiteral, ErrorRow, KnowledgeRow, NegativeRow
+from ..refs import dump_refs, validate_refs
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -72,14 +73,23 @@ def register_knowledge_tools(
         rationale: str = "",
         alternatives: str = "",
         project: str = "",
+        references: list[dict] | None = None,
     ) -> str:
-        """Store a learning — finding, decision, or insight.
+        """Store a learning (finding, decision, or insight). Exact topic match
+        updates the existing entry; a fuzzy match warns but still inserts.
 
-        Automatically detects duplicates: exact topic match updates the existing
-        entry; fuzzy match warns but still inserts.
+        references: optional pointers to the source of truth instead of restating
+        it in prose — a list of {type, target, note?} where type is one of
+        file/symbol/test/url (e.g. {"type": "file", "target": "src/x.py:42"}).
+        Omit to leave unchanged on update; pass [] to clear.
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
+        refs_provided = references is not None
+        try:
+            validated_refs = validate_refs(references) if refs_provided else None
+        except ValueError as e:
+            return _with_nudge(f"add_knowledge rejected: {e}", tracker, topic)
         try:  # #37: storing knowledge cost tokens.
             storage.record_token_event(
                 "spent", max(1, (len(summary) + len(detail or "")) // 4))
@@ -89,14 +99,16 @@ def register_knowledge_tools(
         # Exact topic match — update instead of insert.
         existing = storage.find_knowledge_by_topic_kind(topic, kind)
         if existing is not None:
-            storage.update_knowledge(
-                existing.id,
+            update_fields = dict(
                 summary=summary,
                 detail=detail,
                 tags=tags,
                 rationale=rationale,
                 alternatives=alternatives,
             )
+            if refs_provided:
+                update_fields["refs_json"] = dump_refs(validated_refs)
+            storage.update_knowledge(existing.id, **update_fields)
             return _with_nudge(
                 f"Updated existing {kind}: {topic} (was: {existing.summary[:80]})",
                 tracker, topic,
@@ -121,6 +133,7 @@ def register_knowledge_tools(
             project=project or project_name,
             rationale=rationale or None,
             alternatives=alternatives or None,
+            references=validated_refs,
         ))
         msg = f"Stored {kind}: {topic} — {summary}"
         if warning:
@@ -160,11 +173,8 @@ def register_knowledge_tools(
         tags: str = "",
         project: str = "",
     ) -> str:
-        """Report an error AND automatically search for matching fixes.
-
-        THE KILLER FEATURE: one tool call logs the error AND searches all
-        knowledge scopes for matching fixes.
-        """
+        """Log an error and search all knowledge scopes for matching fixes in
+        one call. Call this the moment you hit an error, before attempting a fix."""
         tracker.record_call("report_error", topic=error_text[:50])
         tracker.record_store()
 
@@ -210,7 +220,7 @@ def register_knowledge_tools(
         )
 
     @mcp.tool()
-    def pin_item(entry_type: str, entry_id: int) -> str:
+    def pin_item(entry_type: EntityTypeLiteral, entry_id: int) -> str:
         """Pin an item so it's always loaded and never goes stale."""
         tracker.record_call("pin_item")
         try:
@@ -226,7 +236,7 @@ def register_knowledge_tools(
         return _with_nudge(f"Pinned {entry_type} #{entry_id}.", tracker)
 
     @mcp.tool()
-    def unpin_item(entry_type: str, entry_id: int) -> str:
+    def unpin_item(entry_type: EntityTypeLiteral, entry_id: int) -> str:
         """Unpin an item, restoring normal staleness behavior."""
         tracker.record_call("unpin_item")
         try:
@@ -247,18 +257,9 @@ def register_knowledge_tools(
         reason: str = "",
         principal: str = "governance",
     ) -> str:
-        """Hard-delete a stored claim and append to recall_log.
-
-        LODESTONE additive. The plan-of-record (lodestone-lite-plan.md
-        phase 4) frames recall as a single-store DELETE: the chart's
-        deployment has one Postgres, so a row delete plus an
-        append-only recall_log row is the whole story. No drill, no
-        manifest registry; those are deferred to plan.md.
-
-        Returns "NOT_FOUND" if the claim doesn't exist — never a
-        silent no-op. The recall_log row persists even after the
-        claim is gone.
-        """
+        """Hard-delete a stored claim by id and append a row to recall_log
+        (postgres backend only). Returns NOT_FOUND if the claim doesn't exist,
+        never a silent no-op; the recall_log row persists after deletion."""
         tracker.record_call("kb_recall")
 
         # Only the postgres adapter has the recall_log table; soft-

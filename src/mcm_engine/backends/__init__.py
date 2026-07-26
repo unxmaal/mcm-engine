@@ -21,7 +21,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Iterator, Optional, Protocol, runtime_checkable
+from typing import Any, Iterator, Literal, Optional, Protocol, get_args, runtime_checkable
 
 #: Bumped on any breaking change to the Protocol classes or row dataclasses.
 #: Adapters declare the version they were built against; mismatch raises at
@@ -57,6 +57,18 @@ class EntityType(StrEnum):
     NEGATIVE = "negative"
     ERROR = "error"
     RULE = "rule"
+
+
+# The entity-kind vocabulary as a Literal, so tool params that take an entity
+# type surface as an enum in the MCP schema instead of a bare `str` the caller
+# has to guess at. Derived-and-guarded against EntityType so the schema and the
+# runtime can never drift (mirrors relations.RelationType). Callers that accept
+# all four kinds annotate with this; the few that accept a subset (e.g.
+# promote_to_rule, which can't promote a rule to a rule) narrow it locally.
+EntityTypeLiteral = Literal["knowledge", "negative", "error", "rule"]
+assert set(get_args(EntityTypeLiteral)) == {e.value for e in EntityType}, (
+    "EntityTypeLiteral drifted from EntityType"
+)
 
 
 class Capability(StrEnum):
@@ -112,6 +124,7 @@ class KnowledgeRow:
     project: Optional[str] = None
     rationale: Optional[str] = None
     alternatives: Optional[str] = None
+    references: Optional[list] = None  # [{type, target, note?}]; stored as refs_json
     hit_count: int = 0
     last_hit_at: Optional[datetime] = None
     reinforcement_count: int = 0

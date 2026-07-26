@@ -88,6 +88,11 @@ class SessionTracker:
         # Nudge escalation state
         self.pending_nudges: set[str] = set()
         self.ignored_counts: dict[str, int] = {}
+        # Instrumentation (Phase 0): per-type counts of nudges actually shown
+        # vs suppressed as repeats, so the effect of suppress_repeat_nudges is
+        # measurable per session.
+        self.nudge_fires: dict[str, int] = {}
+        self.nudge_suppressed: dict[str, int] = {}
         # Per-tool deficit counters. calls_since[tool] counts tool calls since
         # that specific tool last fired; it resets to 0 when the tool fires.
         self.calls_since: dict[str, int] = {
@@ -192,6 +197,8 @@ class SessionTracker:
         self.topic_freq.clear()
         self.pending_nudges.clear()
         self.ignored_counts.clear()
+        self.nudge_fires.clear()
+        self.nudge_suppressed.clear()
         for t in self.calls_since:
             self.calls_since[t] = 0
         self.called_this_session.clear()
@@ -230,52 +237,45 @@ class SessionTracker:
         ``record_call`` can detect when a nudge is ignored (the agent
         calls a non-resolving tool after a nudge fires).
         """
-        messages: list[str] = []
-        fired: list[str] = []
+        # Each triggered nudge is a (type, message) pair so a repeat can be
+        # suppressed by type while still counting toward escalation.
+        typed: list[tuple[str, str]] = []
         turns_since_store = self.turn_count - self.last_store_turn
         turns_since_checkpoint = self.turn_count - self.last_checkpoint_turn
         cfg = self.config
 
         # Mandatory stop (based on turns since last checkpoint, not total)
         if turns_since_checkpoint >= cfg.mandatory_stop_turns:
-            messages.append(
+            typed.append(("mandatory_stop",
                 f"MANDATORY STOP: {turns_since_checkpoint} tool calls since last checkpoint. "
                 "You MUST call `session_handoff` NOW before continuing. Do NOT say "
                 "'but first let me...' — that is the failure mode this "
-                "checkpoint prevents."
-            )
-            fired.append("mandatory_stop")
+                "checkpoint prevents."))
         # Checkpoint (based on turns since last checkpoint)
         elif turns_since_checkpoint >= cfg.checkpoint_turns:
-            messages.append(
+            typed.append(("checkpoint",
                 f"CHECKPOINT: {turns_since_checkpoint} tool calls since last checkpoint. "
                 "Call `session_handoff` or `save_snapshot` to reset. "
                 "If debugging the same issue for >3 attempts, delegate "
-                "to a sub-agent."
-            )
-            fired.append("checkpoint")
+                "to a sub-agent."))
 
         # Store reminder
         if turns_since_store >= cfg.store_reminder_turns:
-            messages.append(
+            typed.append(("store_reminder",
                 f"REMINDER: You've made {turns_since_store} tool calls "
                 "without storing findings. Use `add_knowledge` or "
                 "`add_negative` to externalize what you've learned "
-                "before it compacts out of context."
-            )
-            fired.append("store_reminder")
+                "before it compacts out of context."))
 
         # Hyper-focus detection
         if topic:
             key = topic.lower().strip()
             freq = self.topic_freq.get(key, 0)
             if freq >= cfg.hyper_focus_threshold:
-                messages.append(
+                typed.append(("hyper_focus",
                     f"WARNING: You've queried '{topic}' {freq} times. "
                     "Either store your findings and move on, or delegate "
-                    "to a sub-agent with Task()."
-                )
-                fired.append("hyper_focus")
+                    "to a sub-agent with Task()."))
 
         # Rules check
         if (
@@ -283,13 +283,11 @@ class SessionTracker:
             and self.turn_count > 0
             and self.turn_count % cfg.rules_check_interval == 0
         ):
-            messages.append(
+            typed.append(("rules_check",
                 "RULES CHECK: (1) Are you following project instructions? "
                 "(2) Have you stored findings? "
                 "(3) Are you hyper-focused on one approach? "
-                "(4) Should you delegate?"
-            )
-            fired.append("rules_check")
+                "(4) Should you delegate?"))
 
         # Per-tool deficit nudges — each names the specific missing tool so the
         # agent can't satisfy it by calling some other store tool.
@@ -298,13 +296,25 @@ class SessionTracker:
                 hint = self.PERIODIC_HINTS.get(
                     tool, f"Call `{tool}` to reset this counter."
                 )
-                messages.append(
+                typed.append((f"periodic:{tool}",
                     f"PERIODIC: {self.calls_since[tool]} tool calls without "
-                    f"`{tool}`. {hint}"
-                )
-                fired.append(f"periodic:{tool}")
+                    f"`{tool}`. {hint}"))
 
-        # Plugin nudges
+        # Suppress repeats (a type already pending was shown once and not yet
+        # resolved) and instrument. Every triggered type still enters `fired`
+        # so escalation (driven by ignored_counts in record_call) is unchanged.
+        messages: list[str] = []
+        fired: list[str] = []
+        for nudge_type, msg in typed:
+            fired.append(nudge_type)
+            if cfg.suppress_repeat_nudges and nudge_type in self.pending_nudges:
+                self.nudge_suppressed[nudge_type] = (
+                    self.nudge_suppressed.get(nudge_type, 0) + 1)
+                continue
+            self.nudge_fires[nudge_type] = self.nudge_fires.get(nudge_type, 0) + 1
+            messages.append(msg)
+
+        # Plugin nudges — never suppressed (no stable type to dedupe on).
         for fn in self._plugin_nudge_fns:
             try:
                 nudge = fn(self)
