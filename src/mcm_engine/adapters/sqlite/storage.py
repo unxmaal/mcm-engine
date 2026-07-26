@@ -28,6 +28,7 @@ from ...backends import (
 )
 from ...db import KnowledgeDB
 from ...hierarchy import validated_metadata_updates
+from ...refs import dump_refs, load_refs
 from ...schema import migrate_core
 
 
@@ -61,6 +62,7 @@ def _knowledge_from_row(r: sqlite3.Row) -> KnowledgeRow:
         project=r["project"],
         rationale=r["rationale"],
         alternatives=r["alternatives"],
+        references=load_refs(r["refs_json"] if "refs_json" in r.keys() else None),
         hit_count=r["hit_count"] or 0,
         last_hit_at=_parse_dt(r["last_hit_at"]),
         reinforcement_count=r["reinforcement_count"] or 0,
@@ -293,18 +295,18 @@ class SqliteStorage:
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO knowledge "
-                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.topic, row.kind, row.summary, row.detail, row.tags,
-                 row.project, row.rationale, row.alternatives),
+                 row.project, row.rationale, row.alternatives, dump_refs(row.references)),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO knowledge "
-                "(topic, kind, summary, detail, tags, project, rationale, alternatives) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.topic, row.kind, row.summary, row.detail, row.tags,
-                 row.project, row.rationale, row.alternatives),
+                 row.project, row.rationale, row.alternatives, dump_refs(row.references)),
             )
         self._db.commit()
         return cur.lastrowid
@@ -313,7 +315,7 @@ class SqliteStorage:
         if not fields:
             return
         allowed = {"topic", "kind", "summary", "detail", "tags", "project",
-                   "rationale", "alternatives"}
+                   "rationale", "alternatives", "refs_json"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"unknown knowledge fields: {sorted(bad)}")

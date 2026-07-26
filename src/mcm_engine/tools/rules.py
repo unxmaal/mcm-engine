@@ -13,9 +13,12 @@ import re
 import time
 from pathlib import Path
 
+from typing import Literal
+
 from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, RuleRow
+from ..hierarchy import KindLiteral, ScopeLiteral
 from ..db import log
 from ..destructive import archive_would_storm
 from ..files.watcher import compute_content_hash
@@ -463,34 +466,22 @@ def register_rules_tools(
         source_repo: str = "",
         source_ref: str = "",
         source_commit: str = "",
-        on_duplicate: str = "update",
+        on_duplicate: Literal["update", "skip", "error"] = "update",
     ) -> dict:
-        """Bulk-import rules in a single call, for filesystem-less deploys
-        (a pod that cannot see the rules/ tree). Each rule carries its full
-        `content` in the payload; nothing is read from or written to disk.
-
-        Unlike calling `add_rule` in a loop, this counts as ONE tracked call,
-        so a documented batch load does not trip the look-first nudge. `actor`,
-        `source_repo`, `source_ref`, `source_commit` are shared across every
-        rule in the batch and recorded on each rule_events row.
+        """Bulk-import rules in one call for filesystem-less deploys (a pod that
+        can't see the rules/ tree); each rule carries its full `content`, nothing
+        touches disk. Counts as one tracked call; the whole batch is one
+        transaction, so a mid-batch failure writes nothing.
 
         Args:
-            rules: list of {title, keywords, content, category?, file_path?}
-                dicts. title, keywords, content are required and non-empty.
-                file_path is provenance-only here (no file is written).
-            on_duplicate: behavior when a title already exists —
-                "update" (default): overwrite; emit an `updated` event only
-                    when the body actually changed (identical re-import is a
-                    no-op, reported as skipped).
-                "skip": leave the existing row untouched, emit no event.
-                "error": abort the whole batch if ANY title already exists;
-                    nothing is written.
+            rules: list of {title, keywords, content, category?, file_path?} dicts;
+                title/keywords/content required and non-empty (file_path is
+                provenance-only). actor/source_repo/source_ref/source_commit are
+                shared across the batch and recorded on each rule_events row.
 
-        Returns a dict {total, created, updated, skipped, errors, rules:[...]}
-        with per-rule {title, status, rule_id?/error?}. The whole batch is one
-        transaction: on a mid-batch failure nothing is written. A validation
-        failure (missing field, duplicate title within the batch, bad
-        on_duplicate) rejects the batch with a top-level `error`.
+        Returns {total, created, updated, skipped, errors, rules:[{title, status,
+        rule_id?/error?}]}. A validation failure rejects the batch with a
+        top-level `error`.
         """
         tracker.record_call("import_rules", topic=f"{len(rules)} rules")
         tracker.record_store()
@@ -563,13 +554,10 @@ def register_rules_tools(
         all_archived: bool = False,
         actor: str = "",
     ) -> dict:
-        """Un-archive soft-deleted rules (issue #16 recovery tool).
-
-        Archived rules are invisible to search but not deleted. Use this to
-        recover after an accidental orphan sweep (e.g. a watcher archive-storm
-        in a mis-deployed pod) or any soft-delete. Provide explicit `rule_ids`,
-        or `all_archived=True` to restore every archived rule at once. Emits a
-        `restored` event per rule, attributed to the resolved actor.
+        """Un-archive soft-deleted rules. Archived rules are invisible to search
+        but not deleted; use this to recover after an accidental orphan sweep or
+        any soft-delete. Provide explicit `rule_ids`, or `all_archived=True` to
+        restore every archived rule. Emits a `restored` event per rule.
 
         Returns {restored: <count>, rule_ids: [<restored ids>]}.
         """
@@ -673,15 +661,14 @@ def register_rules_tools(
 
     @mcp.tool()
     def set_rule_metadata(
-        rule_id: int, importance: int = -1, scope: str = "", kind: str = "",
+        rule_id: int, importance: int = -1,
+        scope: ScopeLiteral | None = None, kind: KindLiteral | None = None,
         category: str = "", actor: str = "",
     ) -> str:
-        """Tune a rule's hierarchy axes (issue #64): importance (0..2, where
-        2=invariant), scope (universal|conditional), kind (directive|fact),
-        category (free text). Only the arguments you pass are changed — leave
-        importance at -1 and the string fields empty to skip them. Emits an
-        audited 'metadata' event. `actor` falls back to MCM_ACTOR / the
-        transport principal / 'nobody'."""
+        """Tune a rule's hierarchy axes: importance (0..2, 2=invariant), scope,
+        kind, category (free text). Only arguments you pass change; omit a field
+        (or leave importance at -1) to skip it. Emits an audited 'metadata'
+        event; actor falls back to MCM_ACTOR / transport principal / 'nobody'."""
         tracker.record_call("set_rule_metadata", topic=str(rule_id))
         tracker.record_store()
         who = resolve_actor(actor)
@@ -707,14 +694,15 @@ def register_rules_tools(
 
     @mcp.tool()
     def promote_to_rule(
-        source_type: str,
+        source_type: Literal["knowledge", "negative", "error"],
         source_id: int,
         title: str,
         category: str = "",
         keywords: str = "",
         actor: str = "",
     ) -> str:
-        """Promote a DB entry to a persistent rule file."""
+        """Promote a DB entry (knowledge, negative, or error) to a persistent
+        rule file."""
         tracker.record_call("promote_to_rule", topic=title)
         who = resolve_actor(actor)
 
@@ -787,15 +775,12 @@ def register_rules_tools(
         source_commit: str = "",
         force: bool = False,
     ) -> str:
-        """Re-index all .md files. Upserts DB entries; archives orphans
-        (soft-delete) for files that no longer exist. Every state change
-        emits a rule_events row attributed to `actor` (issue #10), with
-        source_repo/ref/commit propagated to each event.
-
-        Blast-radius guard (issue #20): if the sweep would archive a large
-        fraction of the corpus (a wrong `project_root`, empty/misrooted rules
-        dir), it refuses and archives NOTHING — pass `force=True` to override.
-        This is the same guard the watcher cascade uses."""
+        """Re-index all .md files: upsert DB entries and soft-delete (archive)
+        orphans for files that no longer exist. Every state change emits a
+        rule_events row attributed to `actor`, with source_repo/ref/commit
+        propagated. Blast-radius guard: if the sweep would archive a large
+        fraction of the corpus (a wrong project_root or misrooted rules dir), it
+        refuses and archives nothing; pass force=True to override."""
         tracker.record_call("sync_rules")
         who = resolve_actor(actor)
         src_repo = source_repo or None
@@ -992,31 +977,18 @@ def register_rules_tools(
 
     @mcp.tool()
     def sift_candidates(candidates: list[dict], strict: bool = True) -> str:
-        """Server-side tail of the ingest funnel for a REMOTE codebase (issue #72).
+        """Server-side tail of the remote ingest funnel: band each extracted span
+        against the live rule corpus (MinHash) and return net-new survivors —
+        NOVEL (nothing close exists) and REFINE (same subject as an existing rule,
+        body diverges; names the existing rule id). Read-only: nothing is written;
+        the agent decides per survivor via add_rule (NOVEL) or supersede_rule /
+        reinforce_rule (REFINE).
 
-        The local `mcm-engine ingest --remote` client walks the repo, extracts
-        spans, and applies the rule-like gate; this tool bands each span against
-        the LIVE rule corpus (MinHash) and returns the net-new survivors — NOVEL
-        (nothing close exists) and REFINE (same subject as an existing rule, body
-        diverges; the existing rule id is named). READ-ONLY: nothing is written —
-        the agent decides per survivor via `add_rule` (NOVEL) or
-        `supersede_rule`/`reinforce_rule` (REFINE).
-
-        `candidates`: `[{"text": "<span>", "source_topic": "<path or symbol>"}, ...]`.
-        Files never traverse the wire — only the extracted spans do.
-
-        `strict` (default True) selects the rule-likeness gate (issue #80): True
-        keeps the tight normative-marker gate (must/never/note/...); False also
-        admits descriptive-but-substantive spans (architecture facts, "X does Y"
-        prose) — use it when a downstream adjudicator, not this gate, is your
-        precision stage, so descriptive knowledge isn't discarded pre-review.
-        Novelty banding + dedup are identical either way.
-
-        COMPLEXITY: one MinHash comparison per (span, active rule), so wall time
-        is O(spans x rules). Batch spans into small groups (the `ingest --remote`
-        client does; default 5); the tool is idempotent and safe to call
-        repeatedly. Refuses more than `MCM_SIFT_MAX_SPANS` (default 25) per call
-        so a single request can't outrun the transport (issue #76)."""
+        candidates: [{"text": "<span>", "source_topic": "<path or symbol>"}, ...].
+        strict (default True) keeps the tight normative-marker gate; False also
+        admits descriptive-but-substantive spans (use when a downstream
+        adjudicator is your precision stage). Cost is O(spans x rules); batch into
+        small groups. Refuses more than MCM_SIFT_MAX_SPANS (default 25) per call."""
         tracker.record_call("sift_candidates")
         from ..ingest import rulesift
 
@@ -1116,14 +1088,11 @@ def register_rules_tools(
 
     @mcp.tool()
     def report_outcome(rule_ids: list[int], passed: bool, actor: str = "") -> str:
-        """Record whether acting on rule(s) actually WORKED (issue #21) — a
-        CORRECTNESS signal, kept separate from popularity (hit/reinforcement).
-
-        AUTHOR!=JUDGE guard (load-bearing): a report whose actor is the rule's
-        own author is self-certification — the model agreeing with itself. It is
-        still logged (rule_outcomes row + event) but does NOT move the
-        correctness counters; only an INDEPENDENT actor's report can. Trust keys
-        on the author!=judge relationship, not identity alone."""
+        """Record whether acting on rule(s) actually worked — a correctness
+        signal, separate from popularity (hit/reinforcement). A report whose actor
+        is the rule's own author is self-certification: it is still logged but does
+        NOT move the correctness counters; only an independent actor's report
+        does."""
         tracker.record_call("report_outcome")
         who = resolve_actor(actor)
         results: list[str] = []

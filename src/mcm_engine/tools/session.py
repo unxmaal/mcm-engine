@@ -78,6 +78,13 @@ _PINNED_LABELS = [
 ]
 
 
+def _clip(text: str | None, limit: int) -> str | None:
+    """Clip a free-text field to `limit` chars (0 = unlimited). Marks truncation."""
+    if not text or limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + " …[clipped]"
+
+
 def register_session_tools(
     mcp: FastMCP,
     ctx_or_db,
@@ -86,6 +93,9 @@ def register_session_tools(
     plugin_session_fns: list,
     *,
     plugin_db: KnowledgeDB | None = None,
+    invariants_cap: int = 25,
+    field_chars: int = 0,
+    max_pinned: int = 0,
 ) -> None:
     """Register session_start, session_handoff, session_summary,
     save_snapshot, get_resume_context.
@@ -181,7 +191,7 @@ def register_session_tools(
         try:
             from .. import hierarchy
 
-            cap = 25
+            cap = invariants_cap if invariants_cap > 0 else 25
             invariants = storage.list_rules(
                 min_importance=hierarchy.IMPORTANCE_INVARIANT, limit=cap + 1)
             if invariants:
@@ -199,11 +209,11 @@ def register_session_tools(
             parts.append(f"\n--- Last handoff ({handoff.created_at}) ---")
             parts.append(f"Status: {handoff.status}")
             if handoff.current_task:
-                parts.append(f"Task: {handoff.current_task}")
+                parts.append(f"Task: {_clip(handoff.current_task, field_chars)}")
             if handoff.next_steps:
-                parts.append(f"Next: {handoff.next_steps}")
+                parts.append(f"Next: {_clip(handoff.next_steps, field_chars)}")
             if handoff.blockers:
-                parts.append(f"Blockers: {handoff.blockers}")
+                parts.append(f"Blockers: {_clip(handoff.blockers, field_chars)}")
         else:
             parts.append("\nNo previous sessions found.")
 
@@ -344,17 +354,23 @@ def register_session_tools(
         tracker.record_call("get_resume_context")
         parts: list[str] = []
 
+        def _capped(rows: list) -> tuple[list, int]:
+            """Apply the pinned-list budget (max_pinned; 0 = unlimited)."""
+            if max_pinned > 0 and len(rows) > max_pinned:
+                return rows[:max_pinned], len(rows) - max_pinned
+            return rows, 0
+
         # Last session.
         session = storage.get_last_session()
         if session is not None:
             parts.append("--- Last Session ---")
             parts.append(f"Status: {session.status}")
             if session.current_task:
-                parts.append(f"Task: {session.current_task}")
+                parts.append(f"Task: {_clip(session.current_task, field_chars)}")
             if session.next_steps:
-                parts.append(f"Next: {session.next_steps}")
+                parts.append(f"Next: {_clip(session.next_steps, field_chars)}")
             if session.blockers:
-                parts.append(f"Blockers: {session.blockers}")
+                parts.append(f"Blockers: {_clip(session.blockers, field_chars)}")
             parts.append(f"Time: {session.created_at}")
 
         # Last snapshot.
@@ -363,43 +379,47 @@ def register_session_tools(
             if snap is not None:
                 parts.append(f"\n--- Last Snapshot (#{snap.sequence_num}) ---")
                 if snap.goal:
-                    parts.append(f"Goal: {snap.goal}")
+                    parts.append(f"Goal: {_clip(snap.goal, field_chars)}")
                 if snap.progress:
-                    parts.append(f"Progress: {snap.progress}")
+                    parts.append(f"Progress: {_clip(snap.progress, field_chars)}")
                 if snap.open_questions:
-                    parts.append(f"Open questions: {snap.open_questions}")
+                    parts.append(f"Open questions: {_clip(snap.open_questions, field_chars)}")
                 if snap.blockers:
-                    parts.append(f"Blockers: {snap.blockers}")
+                    parts.append(f"Blockers: {_clip(snap.blockers, field_chars)}")
                 if snap.next_steps:
-                    parts.append(f"Next: {snap.next_steps}")
+                    parts.append(f"Next: {_clip(snap.next_steps, field_chars)}")
                 if snap.active_files:
-                    parts.append(f"Active files: {snap.active_files}")
+                    parts.append(f"Active files: {_clip(snap.active_files, field_chars)}")
                 if snap.key_decisions:
-                    parts.append(f"Key decisions: {snap.key_decisions}")
+                    parts.append(f"Key decisions: {_clip(snap.key_decisions, field_chars)}")
         except Exception:
             pass
 
-        # Pinned items per entity type.
+        # Pinned items per entity type (each capped by max_pinned).
         try:
-            pinned_k = storage.list_pinned(EntityType.KNOWLEDGE)
+            pinned_k, extra_k = _capped(storage.list_pinned(EntityType.KNOWLEDGE))
             if pinned_k:
                 parts.append("\n--- Pinned Knowledge ---")
                 for r in pinned_k:
                     parts.append(f"[{r.kind.upper()}] {r.topic}: {r.summary}")
+                if extra_k:
+                    parts.append(f"  … and {extra_k} more")
         except Exception:
             pass
 
         try:
-            pinned_n = storage.list_pinned(EntityType.NEGATIVE)
+            pinned_n, extra_n = _capped(storage.list_pinned(EntityType.NEGATIVE))
             if pinned_n:
                 parts.append("\n--- Pinned Negative Knowledge ---")
                 for r in pinned_n:
                     parts.append(f"{r.category}: {r.what_failed}")
+                if extra_n:
+                    parts.append(f"  … and {extra_n} more")
         except Exception:
             pass
 
         try:
-            pinned_e = storage.list_pinned(EntityType.ERROR)
+            pinned_e, extra_e = _capped(storage.list_pinned(EntityType.ERROR))
             if pinned_e:
                 parts.append("\n--- Pinned Errors ---")
                 for r in pinned_e:
@@ -407,11 +427,13 @@ def register_session_tools(
                     if r.fix:
                         entry += f" -> {r.fix}"
                     parts.append(entry)
+                if extra_e:
+                    parts.append(f"  … and {extra_e} more")
         except Exception:
             pass
 
         try:
-            pinned_r = storage.list_pinned(EntityType.RULE)
+            pinned_r, extra_r = _capped(storage.list_pinned(EntityType.RULE))
             if pinned_r:
                 parts.append("\n--- Pinned Rules ---")
                 for r in pinned_r:
@@ -419,6 +441,8 @@ def register_session_tools(
                     if r.file_path:
                         entry += f" ({r.file_path})"
                     parts.append(entry)
+                if extra_r:
+                    parts.append(f"  … and {extra_r} more")
         except Exception:
             pass
 

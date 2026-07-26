@@ -8,7 +8,7 @@ UPDATE-after-SELECT pattern) move to CounterStore.increment.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable
+from typing import Iterable, Literal, get_args
 
 from mcp.server.fastmcp import FastMCP
 
@@ -20,6 +20,7 @@ from ..backends import (
     StorageBackend,
 )
 from ..db import log
+from ..refs import format_refs
 from ..scoring import compose_rank, compose_rank_pinned_only, minmax_normalize
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
@@ -42,6 +43,12 @@ _SCOPE_MAP: dict[str, frozenset[EntityType]] = {
     "errors":    frozenset({EntityType.ERROR}),
     "rules":     frozenset({EntityType.RULE}),
 }
+
+# Literal mirror of the scope keys so the `search` scope param is an enum in the
+# tool schema. Note these are the search-facing labels (errors/rules plural),
+# distinct from EntityType's singular values. Guarded against _SCOPE_MAP.
+SearchScope = Literal["all", "knowledge", "negative", "errors", "rules"]
+assert set(get_args(SearchScope)) == set(_SCOPE_MAP), "SearchScope drifted from _SCOPE_MAP"
 
 
 def _staleness_tag(age_days: float | None, last_hit_age_days: float | None, pinned: bool) -> str:
@@ -115,6 +122,9 @@ def _score_and_format_knowledge(
         entry += f"\n  Detail: {row.detail}"
     if row.tags:
         entry += f"\n  Tags: {row.tags}"
+    refs = format_refs(getattr(row, "references", None))
+    if refs:
+        entry += f"\n{refs}"
     return composite, entry
 
 
@@ -421,7 +431,7 @@ def register_search_tools(
     @mcp.tool()
     def search(
         query: str,
-        scope: str = "all",
+        scope: SearchScope = "all",
         limit: int = 10,
         project: str = "",
         include_archived: bool = False,
@@ -430,14 +440,8 @@ def register_search_tools(
         and plugin data.
 
         Args:
-            query: 1-3 keywords, NOT a sentence. This is FTS5 term matching,
-                not semantic/Google-style search: multiple words are AND-ed,
-                so a natural-language question ("how do I configure the
-                allow-list") usually returns nothing while the keywords that
-                actually co-occur in a stored entry ("allow-list config") hit.
-            scope: which entity types to search. One of "all" (default),
-                "knowledge", "negative", "errors", "rules". Unknown values
-                fall back to "all".
+            query: 1-3 keywords, not a sentence (FTS5 AND-matching, not semantic).
+            scope: which entity types to search (default "all").
             limit: max results per entity type.
             project: filter knowledge/negative/error rows by project name.
             include_archived: include soft-deleted rules. Default False —

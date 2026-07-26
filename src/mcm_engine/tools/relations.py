@@ -8,7 +8,7 @@ from typing import Literal, get_args
 
 from mcp.server.fastmcp import FastMCP
 
-from ..backends import EntityType, RelationRow, StorageBackend
+from ..backends import EntityType, EntityTypeLiteral, RelationRow, StorageBackend
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -60,20 +60,15 @@ def register_relations_tools(
 
     @mcp.tool()
     def link_knowledge(
-        source_type: str,
+        source_type: EntityTypeLiteral,
         source_id: int,
-        target_type: str,
+        target_type: EntityTypeLiteral,
         target_id: int,
         relation: RelationType,
         note: str = "",
     ) -> str:
-        """Create a typed relationship between two knowledge entries.
-
-        relation must be one of: causes, contradicts, fixes, related, supersedes.
-        source_type / target_type are entity types: knowledge, rule, negative,
-        error. Look up the numeric ids in `search` output — every result is
-        tagged with its id, e.g. `[RULE #84]` / `[KNOWLEDGE/FINDING #12]`.
-        """
+        """Create a typed relationship between two knowledge entries. Look up the
+        numeric ids in `search` output; every result is tagged with its id."""
         tracker.record_call("link_knowledge", topic=f"{source_type}->{target_type}")
 
         if source_type not in VALID_TYPES:
@@ -122,7 +117,7 @@ def register_relations_tools(
 
     @mcp.tool()
     def get_related(
-        entry_type: str,
+        entry_type: EntityTypeLiteral,
         entry_id: int,
     ) -> str:
         """Get all relationships for a knowledge entry (both directions)."""

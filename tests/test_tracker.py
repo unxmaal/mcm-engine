@@ -540,3 +540,72 @@ class TestAdvisoryPeriodicTools:
         for _ in range(10):
             t.record_call("search")  # ignoring it well past threshold must NOT raise
             t.get_nudge()
+
+
+class TestRepeatNudgeSuppression:
+    """c5 Phase 2: a nudge type is shown once per trigger cycle, then suppressed
+    until resolved and re-triggered. Escalation and first-surface are unaffected."""
+
+    def _cfg(self, **kw):
+        base = dict(store_reminder_turns=2, checkpoint_turns=100,
+                    mandatory_stop_turns=100, rules_check_interval=0,
+                    nudge_escalation_threshold=100)  # high so we test suppression, not blocks
+        base.update(kw)
+        return NudgeConfig(**base)
+
+    def test_repeat_suppressed_until_resolved(self):
+        t = SessionTracker(self._cfg())
+        t.record_call("search")
+        t.record_call("search")
+        first = t.get_nudge()
+        assert first and "REMINDER" in first          # first fire: shown
+        t.record_call("search")                       # ignored, still pending
+        assert t.get_nudge() is None                  # repeat: suppressed
+        # Resolve, then re-trigger — it shows again
+        t.record_call("add_knowledge")                # resolves store_reminder
+        t.record_call("search")
+        t.record_call("search")                       # 2 more calls w/o store
+        again = t.get_nudge()
+        assert again and "REMINDER" in again
+
+    def test_flag_off_restores_repeats(self):
+        t = SessionTracker(self._cfg(suppress_repeat_nudges=False))
+        t.record_call("search")
+        t.record_call("search")
+        assert "REMINDER" in t.get_nudge()
+        t.record_call("search")
+        assert "REMINDER" in t.get_nudge()            # repeat still shown
+
+    def test_instrumentation_counts_fires_and_suppressions(self):
+        t = SessionTracker(self._cfg())
+        t.record_call("search")
+        t.record_call("search")
+        t.get_nudge()                                 # fire
+        t.record_call("search")
+        t.get_nudge()                                 # suppressed
+        t.record_call("search")
+        t.get_nudge()                                 # suppressed
+        assert t.nudge_fires.get("store_reminder") == 1
+        assert t.nudge_suppressed.get("store_reminder") == 2
+
+    def test_escalation_still_fires_when_repeats_suppressed(self):
+        # Suppressing the repeated message must NOT weaken the ignore/escalate
+        # backstop: ignores still accrue and block at threshold.
+        t = SessionTracker(self._cfg(nudge_escalation_threshold=3))
+        t.record_call("search")
+        t.record_call("search")
+        assert "REMINDER" in t.get_nudge()            # shown once
+        t.record_call("search")                       # ignore 1
+        assert t.get_nudge() is None                  # suppressed, but pending
+        t.record_call("search")                       # ignore 2
+        t.get_nudge()
+        with pytest.raises(MandatoryStopError, match="ESCALATED BLOCK.*store_reminder"):
+            t.record_call("search")                   # ignore 3 -> block
+
+    def test_reset_all_clears_instrumentation(self):
+        t = SessionTracker(self._cfg())
+        t.record_call("search")
+        t.record_call("search")
+        t.get_nudge()
+        t.reset_all()
+        assert t.nudge_fires == {} and t.nudge_suppressed == {}

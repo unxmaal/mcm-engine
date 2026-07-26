@@ -19,8 +19,18 @@ verbs, and the admin tuning UI (later phases) all agree on the allowed values.
 """
 from __future__ import annotations
 
+from typing import Literal, get_args
+
 SCOPES: tuple[str, ...] = ("universal", "conditional")
 KINDS: tuple[str, ...] = ("directive", "fact")
+
+# Literal mirrors of the scope/kind vocab, so MCP tool params surface as enums
+# instead of bare `str`. Guarded against the tuples so schema and runtime can't
+# drift (mirrors relations.RelationType / backends.EntityTypeLiteral).
+ScopeLiteral = Literal["universal", "conditional"]
+KindLiteral = Literal["directive", "fact"]
+assert set(get_args(ScopeLiteral)) == set(SCOPES), "ScopeLiteral drifted from SCOPES"
+assert set(get_args(KindLiteral)) == set(KINDS), "KindLiteral drifted from KINDS"
 
 # Importance tiers (ordinal; higher = binds harder).
 IMPORTANCE_REFERENCE = 0   # situational fact / default; recall-only

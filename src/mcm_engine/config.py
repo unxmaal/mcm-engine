@@ -34,6 +34,12 @@ class NudgeConfig:
     # Nudge escalation: after this many ignored nudges of the same type,
     # escalate to MandatoryStopError blocking.
     nudge_escalation_threshold: int = 3
+    # Repeat suppression (c5 context-engineering): when True, a nudge type is
+    # emitted only on its first fire per trigger cycle and suppressed on repeats
+    # until a resolving tool clears it and it re-triggers. First-surface delivery
+    # and the escalation backstop are unaffected (escalation still counts ignores
+    # and blocks). Set False to restore the old always-repeat behavior.
+    suppress_repeat_nudges: bool = True
     # Per-tool deficit counters: {tool_name: max_calls_without_it}. When a
     # tracked tool hasn't fired in N tool calls, a targeted nudge names that
     # SPECIFIC tool — unlike store_reminder, which any store tool clears. These
@@ -128,6 +134,15 @@ class MCMConfig:
     rules_path: Union[str, list[str]] = "rules/"
     server_name: str = ""
     server_instructions: str = ""
+    # Resume-context budget (c5 Phase 4). The session_start / get_resume_context
+    # payload is already a summary, not a context dump, so these default to the
+    # current (uncapped) behavior and are opt-in for operators who want a tighter
+    # resident payload. resume_field_chars>0 clips each free-text handoff/snapshot
+    # field; resume_max_pinned>0 caps each pinned list; resume_invariants_cap
+    # bounds the always-injected invariant tier.
+    resume_invariants_cap: int = 25
+    resume_field_chars: int = 0
+    resume_max_pinned: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):

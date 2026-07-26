@@ -32,7 +32,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # Original v1 surface — tools still hold their SQL directly until the
     # tool-side refactor lands (a follow-up step of MCM2-02).
     "db.py":               7,
-    "schema.py":           59,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE; +3 issue #64 v10→v11 hierarchy ALTERs
+    "schema.py":           60,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE; +3 issue #64 v10→v11 hierarchy ALTERs; +1 c5 v11→v12 knowledge.refs_json ALTER
     "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
     "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
