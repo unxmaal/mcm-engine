@@ -442,7 +442,7 @@ wheels = [
 
 [[package]]
 name = "mcm-engine"
-version = "3.5.0"
+version = "3.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
@@ -468,7 +468,7 @@ redis = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2" },
     { name = "opensearch-py", marker = "extra == 'opensearch'", specifier = ">=2.6" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'postgres'", specifier = ">=3.2" },
