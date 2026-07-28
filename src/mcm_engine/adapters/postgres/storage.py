@@ -1091,6 +1091,23 @@ class PostgresStorage:
                 )
             self._commit()
 
+    def unsupersede_rule(self, rule_id: int, actor: str) -> None:
+        """Issue #100 — clear a rule's superseded state (inverse of
+        supersede_rule). Atomic via transaction()."""
+        with self.transaction():
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE rules SET status = 'active', superseded_by = NULL, "
+                    "valid_until = NULL, updated_at = now() WHERE id = %s",
+                    (rule_id,),
+                )
+                cur.execute(
+                    "INSERT INTO rule_events (rule_id, event_type, actor, note) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (rule_id, "unsuperseded", actor or "nobody", "supersede cleared"),
+                )
+            self._commit()
+
     def insert_rule_event(
         self,
         rule_id: int,

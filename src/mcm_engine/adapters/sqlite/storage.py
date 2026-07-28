@@ -598,6 +598,21 @@ class SqliteStorage:
                 (old_id, "superseded", actor or "nobody", f"superseded_by:{new_id}"),
             )
 
+    def unsupersede_rule(self, rule_id: int, actor: str) -> None:
+        """Clear a rule's superseded state (issue #100): status back to active,
+        superseded_by/valid_until cleared, emit an audited event. Atomic."""
+        with self.transaction():
+            self._db.execute_write(
+                "UPDATE rules SET status = 'active', superseded_by = NULL, "
+                "valid_until = NULL, updated_at = datetime('now') WHERE id = ?",
+                (rule_id,),
+            )
+            self._db.execute_write(
+                "INSERT INTO rule_events (rule_id, event_type, actor, note) "
+                "VALUES (?, ?, ?, ?)",
+                (rule_id, "unsuperseded", actor or "nobody", "supersede cleared"),
+            )
+
     def insert_rule_event(
         self,
         rule_id: int,
