@@ -3,9 +3,9 @@ name: mcm-engine
 description: Shared, correctness-weighted team knowledge for AI coding agents, served over MCP.
 type: application
 # Chart version. Bump on chart changes independently of the app.
-version: 0.3.0
+version: 0.3.1
 # Tracks the mcm-engine image this chart defaults to.
-appVersion: "3.6.0"
+appVersion: "3.6.1"
 home: https://github.com/unxmaal/mcm-engine
 sources:
   - https://github.com/unxmaal/mcm-engine
