@@ -421,6 +421,11 @@ class StorageBackend(Protocol):
         """Soft-supersede a rule (issue #21): mark superseded, never delete."""
         ...
 
+    def unsupersede_rule(self, rule_id: int, actor: str) -> None:
+        """Clear a rule's superseded state (issue #100): status back to active,
+        superseded_by/valid_until cleared. The inverse of supersede_rule."""
+        ...
+
     def record_token_event(self, kind: str, tokens: int) -> None:
         """Append a token-ledger row (issue #37): kind is 'saved'|'spent'."""
         ...

@@ -593,6 +593,21 @@ Not FTS/tsv-indexed, so no index rebuild.
   does. The guarded DDL remains the actual migration mechanism; the stamp only
   makes the version legible.
 
+## Addendum — unsupersede_rule (issue #100)
+
+Recovery path for an accidental or cyclic supersede (`restore_rule` only
+un-archives). Adds one write method to each storage adapter that clears
+`status`/`superseded_by`/`valid_until` and emits an audited `unsuperseded`
+`rule_events` row.
+
+- `adapters/sqlite/storage.py`: 59 → 61 (two `execute_write` sites: the UPDATE
+  and the rule_events INSERT).
+- `adapters/postgres/storage.py`: 61 → 63 (the same two, as `cur.execute`).
+
+No new SQL site in `tools/rules.py` (the tool calls the adapter method) or in
+`tools/knowledge.py` (the #98 kb_recall fix moved its SQL inside a
+`transaction()` block but kept the same three `cur.execute` calls).
+
 ## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
 
 Structured references on knowledge entries: a nullable JSON column holding a

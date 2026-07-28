@@ -23,7 +23,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    # Cap below 2.0: mcp 2.0.0 is a breaking major that moved FastMCP out of
+    # mcp.server.fastmcp, so the code's `from mcp.server.fastmcp import FastMCP`
+    # fails on a fresh resolve. The Docker build pip-installs from pyproject
+    # (not the lockfile), so an unbounded pin makes every image build grab the
+    # latest mcp. Stay on the 1.x line where the vendored FastMCP lives.
+    "mcp>=1.0.0,<2",
     "pyyaml>=6.0",
     "watchdog>=4.0",
 ]

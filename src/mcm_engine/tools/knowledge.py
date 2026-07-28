@@ -262,40 +262,42 @@ def register_knowledge_tools(
         never a silent no-op; the recall_log row persists after deletion."""
         tracker.record_call("kb_recall")
 
-        # Only the postgres adapter has the recall_log table; soft-
-        # archive (the SQLite adapter's primitive) is the fallback.
-        conn = getattr(storage, "_conn", None)
-        if conn is None or not hasattr(conn, "cursor"):
+        # recall_log (hard-delete + audit) is a postgres-only table; the SQLite
+        # adapter has no equivalent. Detect by the adapter's self-reported
+        # identity, NOT by poking storage._conn — under the connection pool
+        # (issue #83) _conn only resolves inside a borrowed method or a
+        # transaction() block and otherwise raises, which broke this tool
+        # (issue #98).
+        if getattr(storage.identity, "kind", None) != "postgres":
             return _with_nudge(
                 "kb_recall requires the postgres storage backend.", tracker,
             )
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, topic FROM knowledge WHERE id = %s",
-                    (claim_id,),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    conn.rollback()
-                    return _with_nudge(
-                        f"NOT_FOUND: no claim with id={claim_id}.", tracker,
+            # Borrow ONE pooled connection for the whole SELECT/INSERT/DELETE.
+            # transaction() binds it (so storage._conn resolves inside the
+            # block), commits on clean exit, and rolls back on any exception.
+            with storage.transaction():
+                conn = storage._conn
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, topic FROM knowledge WHERE id = %s",
+                        (claim_id,),
                     )
-                topic = row["topic"] if hasattr(row, "keys") else row[1]
+                    row = cur.fetchone()
+                    if row is None:
+                        return _with_nudge(
+                            f"NOT_FOUND: no claim with id={claim_id}.", tracker,
+                        )
+                    topic = row["topic"] if hasattr(row, "keys") else row[1]
 
-                cur.execute(
-                    "INSERT INTO recall_log (claim_id, principal, reason) "
-                    "VALUES (%s, %s, %s)",
-                    (claim_id, principal or "governance", reason or None),
-                )
-                cur.execute("DELETE FROM knowledge WHERE id = %s", (claim_id,))
-            conn.commit()
+                    cur.execute(
+                        "INSERT INTO recall_log (claim_id, principal, reason) "
+                        "VALUES (%s, %s, %s)",
+                        (claim_id, principal or "governance", reason or None),
+                    )
+                    cur.execute("DELETE FROM knowledge WHERE id = %s", (claim_id,))
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
             return _with_nudge(
                 f"kb_recall failed: {type(e).__name__}: {e}", tracker,
             )

@@ -1111,18 +1111,55 @@ def register_rules_tools(
 
     @mcp.tool()
     def supersede_rule(old_id: int, new_id: int, actor: str = "") -> str:
-        """Mark old_id as superseded by new_id (issue #21): soft-expire, never
-        delete. A superseded rule drops out of default search but stays
-        inspectable (include_superseded / as_of)."""
+        """Mark old_id as superseded by new_id: soft-expire, never delete. A
+        superseded rule drops out of default search but stays inspectable.
+        Refuses a self-supersede (old==new) and superseding by an already-
+        superseded rule, either of which would hide both rules with no live
+        successor (issue #99); undo with unsupersede_rule."""
         tracker.record_call("supersede_rule")
         who = resolve_actor(actor)
+        if old_id == new_id:
+            return _with_nudge(
+                f"Refused: a rule cannot supersede itself (old_id == new_id == "
+                f"{old_id}). That would hide it with no successor.", tracker,
+            )
         old = storage.find_by_id(EntityType.RULE, old_id)
         if old is None:
             return _with_nudge(f"Rule {old_id} not found.", tracker)
         new = storage.find_by_id(EntityType.RULE, new_id)
         if new is None:
             return _with_nudge(f"Superseding rule {new_id} not found.", tracker)
+        if getattr(new, "status", "active") == "superseded":
+            return _with_nudge(
+                f"Refused: rule {new_id} is itself superseded, so superseding "
+                f"{old_id} by it would hide both with no live successor (a cycle). "
+                f"Revive {new_id} with unsupersede_rule first, or supersede by a "
+                f"live rule.", tracker,
+            )
         storage.supersede_rule(old_id, new_id, who)
         return _with_nudge(
             f"Superseded: {old.title} (now superseded_by={new_id})", tracker,
+        )
+
+    @mcp.tool()
+    def unsupersede_rule(rule_id: int, actor: str = "") -> str:
+        """Revive a superseded rule: clear its superseded state (status back to
+        active, superseded_by / valid_until cleared) and emit an audited event.
+        The inverse of supersede_rule, and the recovery path for an accidental or
+        cyclic supersede (restore_rule only un-archives). Only acts on a rule
+        currently 'superseded'. (issue #100)"""
+        tracker.record_call("unsupersede_rule")
+        who = resolve_actor(actor)
+        row = storage.find_by_id(EntityType.RULE, rule_id)
+        if row is None:
+            return _with_nudge(f"Rule {rule_id} not found.", tracker)
+        status = getattr(row, "status", "active")
+        if status != "superseded":
+            return _with_nudge(
+                f"Rule {rule_id} is not superseded (status={status}); nothing to do.",
+                tracker,
+            )
+        storage.unsupersede_rule(rule_id, who)
+        return _with_nudge(
+            f"Unsuperseded: {row.title} (rule #{rule_id} back to active).", tracker,
         )

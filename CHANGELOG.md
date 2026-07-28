@@ -6,6 +6,29 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **`unsupersede_rule` MCP tool** (issue #100). Revives a superseded rule
+  (status back to active, `superseded_by` / `valid_until` cleared, audited
+  `unsuperseded` event) — the recovery path for an accidental or cyclic
+  supersede. `restore_rule` only un-archives; this is its supersede counterpart,
+  so an accidental supersede no longer needs direct Postgres SQL to undo.
+
+### Fixed
+- **`kb_recall` works again on the Postgres backend** (issue #98; regression from
+  the #83 connection-pool change, shipped in 3.6.0). The tool reached
+  `storage._conn` at the tool layer, which under the pool raises "no active
+  Postgres connection on this call-chain" outside a borrowed method or a
+  `transaction()` block — so the only hard-delete path was non-functional on the
+  production backend. It now borrows one connection via `storage.transaction()`
+  and detects the backend by `storage.identity.kind` rather than `_conn`
+  truthiness. Regression test is postgres-gated.
+- **`supersede_rule` refuses self- and cyclic supersedes** (issue #99). It
+  accepted `old_id == new_id` and superseding *by* an already-superseded rule,
+  either of which marked both rules `superseded` with no live successor and hid
+  them from search — recoverable only via direct SQL (hit twice in real
+  incidents, e.g. rules #87 ↔ #88). Both are now rejected with a clear message
+  pointing at `unsupersede_rule`.
+
 ## [3.6.0] — 2026-07-25
 
 ### Added
