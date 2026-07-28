@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import os
 
-import psycopg
 import pytest
 
-from mcm_engine.backends import EntityType, KnowledgeRow
-from mcm_engine.tools.knowledge import register_knowledge_tools
-from mcm_engine.tracker import NudgeConfig, SessionTracker
-from mcm_engine.wiring import Context
+# Skip the whole module (not error) when the postgres extra isn't installed —
+# the embedded CI job has no psycopg. recall_log is postgres-only anyway.
+psycopg = pytest.importorskip("psycopg")
+
+from mcm_engine.backends import EntityType, KnowledgeRow  # noqa: E402
+from mcm_engine.tools.knowledge import register_knowledge_tools  # noqa: E402
+from mcm_engine.tracker import NudgeConfig, SessionTracker  # noqa: E402
+from mcm_engine.wiring import Context  # noqa: E402
 
 DSN = os.environ.get("MCM_TEST_POSTGRES_DSN",
                      "postgresql://mcm:mcm@127.0.0.1:55432/mcm_test")
