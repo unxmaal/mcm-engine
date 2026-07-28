@@ -6,6 +6,8 @@ versioning.
 
 ## [Unreleased]
 
+## [3.6.1] — 2026-07-28
+
 ### Added
 - **`unsupersede_rule` MCP tool** (issue #100). Revives a superseded rule
   (status back to active, `superseded_by` / `valid_until` cleared, audited
@@ -28,6 +30,11 @@ versioning.
   them from search — recoverable only via direct SQL (hit twice in real
   incidents, e.g. rules #87 ↔ #88). Both are now rejected with a clear message
   pointing at `unsupersede_rule`.
+- **Container image builds again** — capped `mcp<2`. `mcp` 2.0.0 moved `FastMCP`
+  out of `mcp.server.fastmcp`; the Docker build `pip install`s from `pyproject`
+  (not the lockfile), so the unbounded `mcp>=1.0.0` pin made every fresh image
+  resolve 2.0.0 and crash at import. Pinned to the 1.x line where the vendored
+  `FastMCP` lives.
 
 ## [3.6.0] — 2026-07-25
 
