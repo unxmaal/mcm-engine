@@ -125,6 +125,52 @@ class TestMigrationFramework:
         assert row["summary"] == "survives migration"
         assert row["last_hit_at"] is None  # new column, not yet hit
 
+    def test_fresh_install_has_source_classification(self, tmp_path):
+        """Fresh install carries source_classification on all four entity
+        tables (issue #105)."""
+        db = KnowledgeDB(tmp_path / "fresh.db")
+        migrate_core(db)
+        for table in ("knowledge", "negative_knowledge", "errors", "rules"):
+            assert _has_column(db, table, "source_classification"), table
+
+    def test_v12_to_v13_adds_source_classification(self, tmp_path):
+        """A v12 database gains source_classification on all four tables and
+        bumps to v13 (issue #105)."""
+        db = KnowledgeDB(tmp_path / "v12.db")
+        # Minimal v12-shaped tables — no source_classification yet.
+        db.executescript("""
+            CREATE TABLE knowledge (
+                id INTEGER PRIMARY KEY, topic TEXT NOT NULL, summary TEXT NOT NULL
+            );
+            CREATE TABLE negative_knowledge (
+                id INTEGER PRIMARY KEY, category TEXT NOT NULL, what_failed TEXT NOT NULL
+            );
+            CREATE TABLE errors (
+                id INTEGER PRIMARY KEY, pattern TEXT NOT NULL
+            );
+            CREATE TABLE rules (
+                id INTEGER PRIMARY KEY, title TEXT NOT NULL, keywords TEXT NOT NULL
+            );
+            CREATE TABLE _mcm_versions (
+                component TEXT PRIMARY KEY, version INTEGER NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        db.execute_write(
+            "INSERT INTO _mcm_versions (component, version) VALUES ('core', 12)")
+        db.commit()
+        for table in ("knowledge", "negative_knowledge", "errors", "rules"):
+            assert not _has_column(db, table, "source_classification"), table
+
+        migrate_core(db)
+
+        for table in ("knowledge", "negative_knowledge", "errors", "rules"):
+            assert _has_column(db, table, "source_classification"), table
+        row = db.execute(
+            "SELECT version FROM _mcm_versions WHERE component = 'core'"
+        ).fetchone()
+        assert row["version"] == CORE_VERSION
+
     def test_idempotent_migration(self, tmp_path):
         """Running migrate_core twice should be safe."""
         db = KnowledgeDB(tmp_path / "idempotent.db")

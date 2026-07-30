@@ -608,6 +608,38 @@ No new SQL site in `tools/rules.py` (the tool calls the adapter method) or in
 `tools/knowledge.py` (the #98 kb_recall fix moved its SQL inside a
 `transaction()` block but kept the same three `cur.execute` calls).
 
+## Addendum — page_entries / scroll_entries (issue #104)
+
+Bounded keyset page over one entity type's full table, in id order — the
+read half of the corpus-audit surface. One new read method per storage
+adapter; the `scroll_entries` MCP tool (`tools/corpus.py`) calls it and holds
+no SQL of its own.
+
+- `adapters/sqlite/storage.py`: 61 → 62 (one `SELECT * FROM {table} WHERE id > ?
+  ORDER BY id LIMIT ?` read site).
+- `adapters/postgres/storage.py`: 63 → 64 (the same, as `cur.execute` with a
+  borrowed connection).
+
+## Addendum — recall_entry (issue #103)
+
+Generalizes kb_recall from knowledge-only to all four entity types — the act
+half of the corpus-audit surface. Postgres-only (like kb_recall) and holds its
+SQL at the tool layer inside a `storage.transaction()` block. `tools/corpus.py`
+is newly cataloged at 5 `.execute` sites, all in `recall_entry`:
+
+- SELECT (existence + label), INSERT into `recall_log`, then a branch: a **rule**
+  gets `UPDATE rules SET status='recalled'` + an `INSERT rule_events` row (a hard
+  delete would be resurrected from its file by sync); **knowledge/negative/error**
+  get a `DELETE`. `scroll_entries` in the same file holds no SQL.
+- `recall_log` gains an `entity_type TEXT NOT NULL DEFAULT 'knowledge'` column —
+  added to the `CREATE TABLE recall_log` DDL and a guarded `DO $$ ... $$` block
+  for existing deployments (both string literals in the DDL list, no new
+  `.execute` site on `adapters/postgres/storage.py`).
+
+The terminal `recalled` status is enforced outside the SQL count: `search.py`
+`_score_and_format_rule` drops it, `list_rules` (both adapters) excludes it, and
+the watcher `_cascade_upsert` returns `unchanged` on a recalled row.
+
 ## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
 
 Structured references on knowledge entries: a nullable JSON column holding a
@@ -622,6 +654,22 @@ indexed (like `rationale`/`alternatives`), so no index rebuild.
   knowledge` DDL and to a guarded `DO $$ ... $$` block for existing deployments
   (both inside the DDL-statements list, no new `.execute` site). The INSERT and
   update paths gain `refs_json` but stay the same `.execute` sites.
+
+## Addendum — source_classification (issue #105)
+
+Optional source-assigned data-classification label carried on all four entity
+tables. Additive nullable `TEXT`, not FTS/tsv indexed, engine never interprets
+it.
+
+- `schema.py`: 60 → 61. The v12→v13 migration `_migrate_v12_to_v13` adds the
+  column via one guarded `ALTER TABLE {table} ADD COLUMN source_classification
+  TEXT` `execute_write` site, looped over the four tables (CORE_VERSION bumped
+  12 → 13). Fresh installs get the columns from CORE_SCHEMA.
+- `adapters/postgres/storage.py`: the column is added to all four `CREATE TABLE`
+  DDLs and to one guarded `DO $$ ... $$` block (per-table IF NOT EXISTS) for
+  existing deployments — all DDL string literals, no new `.execute` site. Insert
+  and read paths thread `source_classification` but keep their existing site
+  counts.
 
 ## Addendum — hierarchy read/write surface (issue #64, Phase 2)
 

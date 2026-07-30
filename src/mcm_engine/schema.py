@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 12
+CORE_VERSION = 13
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS knowledge (
     reinforcement_count INTEGER DEFAULT 0,
     pinned INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now')),
+    -- v13: optional source-assigned data-classification label (issue #105).
+    -- Free-form; the engine carries it, never interprets it. Not FTS-indexed.
+    source_classification TEXT
 );
 
 -- What doesn't work
@@ -37,7 +40,8 @@ CREATE TABLE IF NOT EXISTS negative_knowledge (
     severity TEXT DEFAULT 'normal',
     project TEXT,
     pinned INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    source_classification TEXT
 );
 
 -- Error patterns and fixes
@@ -50,7 +54,8 @@ CREATE TABLE IF NOT EXISTS errors (
     tags TEXT,
     project TEXT,
     pinned INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    source_classification TEXT
 );
 
 -- Session handoffs
@@ -180,7 +185,9 @@ CREATE TABLE IF NOT EXISTS rules (
     -- defaults: a fresh rule is a low-importance, situational fact.
     importance INTEGER DEFAULT 0,
     scope TEXT DEFAULT 'conditional',
-    kind TEXT DEFAULT 'fact'
+    kind TEXT DEFAULT 'fact',
+    -- v13: optional source-assigned data-classification label (issue #105).
+    source_classification TEXT
 );
 
 -- The FTS column is named `content` to match the rules.content column
@@ -644,6 +651,19 @@ def _migrate_v11_to_v12(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v12_to_v13(db: KnowledgeDB) -> None:
+    """v12 -> v13: source_classification on all four entity tables (issue #105).
+    Additive nullable column carrying an optional source-assigned data
+    classification label. Free-form; the engine never interprets it. Not
+    FTS-indexed, so no FTS rebuild; existing rows get NULL (unlabeled)."""
+    for table in ("knowledge", "negative_knowledge", "errors", "rules"):
+        if not _has_column(db, table, "source_classification"):
+            db.execute_write(
+                f"ALTER TABLE {table} ADD COLUMN source_classification TEXT")
+            log(f"Migration v12->v13: added {table}.source_classification")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -657,6 +677,7 @@ _MIGRATIONS = [
     (9, 10, _migrate_v9_to_v10),
     (10, 11, _migrate_v10_to_v11),
     (11, 12, _migrate_v11_to_v12),
+    (12, 13, _migrate_v12_to_v13),
 ]
 
 

@@ -351,6 +351,11 @@ class RulesWatcher:
         existing = self._storage.find_rule_by_file_path(rel)
 
         if existing is not None:
+            # A recalled rule (#103) is a terminal governance removal. The file
+            # may still be on disk (recall doesn't touch it), but sync must
+            # never revive or even re-mirror it — leave the recalled row frozen.
+            if getattr(existing, "status", "active") == "recalled":
+                return "unchanged"
             # Content-hash no-op check.
             if existing.content_hash == parsed["content_hash"] and not existing.archived:
                 return "unchanged"

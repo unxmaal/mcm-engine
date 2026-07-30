@@ -131,6 +131,9 @@ class KnowledgeRow:
     pinned: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Issue #105 (v13): optional source-assigned data-classification label.
+    # Free-form; carried, never interpreted by the engine.
+    source_classification: Optional[str] = None
 
 
 @dataclass
@@ -144,6 +147,7 @@ class NegativeRow:
     project: Optional[str] = None
     pinned: bool = False
     created_at: Optional[datetime] = None
+    source_classification: Optional[str] = None
 
 
 @dataclass
@@ -157,6 +161,7 @@ class ErrorRow:
     project: Optional[str] = None
     pinned: bool = False
     created_at: Optional[datetime] = None
+    source_classification: Optional[str] = None
 
 
 @dataclass
@@ -198,6 +203,8 @@ class RuleRow:
     importance: int = 0
     scope: str = "conditional"
     kind: str = "fact"
+    # Issue #105 (v13): optional source-assigned data-classification label.
+    source_classification: Optional[str] = None
 
 
 @dataclass
@@ -532,6 +539,20 @@ class StorageBackend(Protocol):
         Returns the same dataclass shape as ``find_by_id``. Used by the
         ``mcm-engine migrate`` CLI to walk a source store row-by-row.
         Adapters MAY stream (cursor-based) or batch.
+        """
+        ...
+
+    def page_entries(
+        self, entity_type: EntityType, *, after_id: int = 0,
+        limit: int = 100, caller: Optional[str] = None,
+    ) -> list[Any]:
+        """One bounded keyset page of an entity type: rows with id >
+        ``after_id`` in id-ascending order, at most ``limit`` of them.
+
+        Same dataclass shape as ``find_by_id``. Powers the ``scroll_entries``
+        corpus-audit tool (#104). Keyset (WHERE id > ?) rather than OFFSET so
+        paging stays stable under concurrent writes; the caller pages by
+        passing the last id it saw as the next ``after_id``.
         """
         ...
 

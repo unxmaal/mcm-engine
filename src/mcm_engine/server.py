@@ -14,6 +14,7 @@ from .plugin import MCMPlugin, SearchScope
 from .registry import AdapterRegistry
 from .schema import migrate_core, migrate_plugin
 from .tracker import ScopedTracker
+from .tools.corpus import register_corpus_tools
 from .tools.knowledge import register_knowledge_tools
 from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
@@ -198,6 +199,9 @@ class MCMServer:
 
         # Relations tools
         register_relations_tools(self.mcp, self.ctx, self.tracker)
+
+        # Corpus governance tools (scroll_entries #104, recall_entry #103)
+        register_corpus_tools(self.mcp, self.ctx, self.tracker)
 
         # Register plugin tools
         for plugin in self._plugins:
