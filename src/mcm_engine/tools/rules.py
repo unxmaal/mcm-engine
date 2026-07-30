@@ -340,10 +340,14 @@ def register_rules_tools(
         source_repo: str = "",
         source_ref: str = "",
         source_commit: str = "",
+        source_classification: str = "",
     ) -> str:
         """Create or index a rule file. `actor` (falling back to MCM_ACTOR,
         then the transport principal, then 'nobody') is recorded as the
-        author on the row and in the rule_events audit log (issue #10)."""
+        author on the row and in the rule_events audit log (issue #10).
+
+        source_classification: optional source-assigned data-classification
+        label on the row. Carried, not interpreted."""
         tracker.record_call("add_rule", topic=title)
         tracker.record_store()
         who = resolve_actor(actor)
@@ -431,6 +435,7 @@ def register_rules_tools(
             content=content or None,
             created_by=who,
             updated_by=who,
+            source_classification=source_classification or None,
         ))
         storage.insert_rule_event(
             rule_id, "created", who,

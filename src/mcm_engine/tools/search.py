@@ -138,6 +138,11 @@ def _score_and_format_rule(
     row = storage.find_by_id(EntityType.RULE, hit.entity_id)
     if row is None:
         return None
+    # Recalled rules (#103) are a terminal governance removal — never surfaced,
+    # not even via include_archived (unlike archived/superseded, which are
+    # inspectable soft states). read_rule/find_by_id still reach them for audit.
+    if getattr(row, "status", "active") == "recalled":
+        return None
     # Archived rules are soft-deleted — invisible to default search.
     # The watcher cascade (MCM2-23) and `read_rule` still reach them.
     if row.archived and not include_archived:

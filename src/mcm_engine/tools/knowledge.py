@@ -74,6 +74,7 @@ def register_knowledge_tools(
         alternatives: str = "",
         project: str = "",
         references: list[dict] | None = None,
+        source_classification: str = "",
     ) -> str:
         """Store a learning (finding, decision, or insight). Exact topic match
         updates the existing entry; a fuzzy match warns but still inserts.
@@ -82,6 +83,8 @@ def register_knowledge_tools(
         it in prose — a list of {type, target, note?} where type is one of
         file/symbol/test/url (e.g. {"type": "file", "target": "src/x.py:42"}).
         Omit to leave unchanged on update; pass [] to clear.
+        source_classification: optional data-classification label the source
+        assigned (e.g. public/internal/confidential). Carried, not interpreted.
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
@@ -134,6 +137,7 @@ def register_knowledge_tools(
             rationale=rationale or None,
             alternatives=alternatives or None,
             references=validated_refs,
+            source_classification=source_classification or None,
         ))
         msg = f"Stored {kind}: {topic} — {summary}"
         if warning:
@@ -148,8 +152,12 @@ def register_knowledge_tools(
         correct_approach: str = "",
         severity: str = "normal",
         project: str = "",
+        source_classification: str = "",
     ) -> str:
-        """Store what doesn't work — mistakes, anti-patterns, dead ends."""
+        """Store what doesn't work — mistakes, anti-patterns, dead ends.
+
+        source_classification: optional source-assigned data-classification
+        label. Carried, not interpreted."""
         tracker.record_call("add_negative", topic=category)
         tracker.record_store()
         storage.insert_negative(NegativeRow(
@@ -160,6 +168,7 @@ def register_knowledge_tools(
             correct_approach=correct_approach or None,
             severity=severity,
             project=project or project_name,
+            source_classification=source_classification or None,
         ))
         return _with_nudge(
             f"Stored negative knowledge: {category} — {what_failed}",
@@ -172,9 +181,13 @@ def register_knowledge_tools(
         context: str = "",
         tags: str = "",
         project: str = "",
+        source_classification: str = "",
     ) -> str:
         """Log an error and search all knowledge scopes for matching fixes in
-        one call. Call this the moment you hit an error, before attempting a fix."""
+        one call. Call this the moment you hit an error, before attempting a fix.
+
+        source_classification: optional source-assigned data-classification
+        label. Carried, not interpreted."""
         tracker.record_call("report_error", topic=error_text[:50])
         tracker.record_store()
 
@@ -184,6 +197,7 @@ def register_knowledge_tools(
             context=context or None,
             tags=tags or None,
             project=project or project_name,
+            source_classification=source_classification or None,
         ))
 
         parts = [f"Error logged: {error_text[:100]}"]

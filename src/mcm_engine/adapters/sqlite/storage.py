@@ -69,6 +69,7 @@ def _knowledge_from_row(r: sqlite3.Row) -> KnowledgeRow:
         pinned=bool(r["pinned"]),
         created_at=_parse_dt(r["created_at"]),
         updated_at=_parse_dt(r["updated_at"]),
+        source_classification=_col(r, "source_classification"),
     )
 
 
@@ -83,6 +84,7 @@ def _negative_from_row(r: sqlite3.Row) -> NegativeRow:
         project=r["project"],
         pinned=bool(r["pinned"]),
         created_at=_parse_dt(r["created_at"]),
+        source_classification=_col(r, "source_classification"),
     )
 
 
@@ -97,6 +99,7 @@ def _error_from_row(r: sqlite3.Row) -> ErrorRow:
         project=r["project"],
         pinned=bool(r["pinned"]),
         created_at=_parse_dt(r["created_at"]),
+        source_classification=_col(r, "source_classification"),
     )
 
 
@@ -137,6 +140,7 @@ def _rule_from_row(r: sqlite3.Row) -> RuleRow:
         importance=_col(r, "importance", 0) or 0,
         scope=_col(r, "scope", "conditional") or "conditional",
         kind=_col(r, "kind", "fact") or "fact",
+        source_classification=_col(r, "source_classification"),
     )
 
 
@@ -295,18 +299,20 @@ class SqliteStorage:
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO knowledge "
-                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.topic, row.kind, row.summary, row.detail, row.tags,
-                 row.project, row.rationale, row.alternatives, dump_refs(row.references)),
+                 row.project, row.rationale, row.alternatives, dump_refs(row.references),
+                 row.source_classification),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO knowledge "
-                "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.topic, row.kind, row.summary, row.detail, row.tags,
-                 row.project, row.rationale, row.alternatives, dump_refs(row.references)),
+                 row.project, row.rationale, row.alternatives, dump_refs(row.references),
+                 row.source_classification),
             )
         self._db.commit()
         return cur.lastrowid
@@ -333,18 +339,20 @@ class SqliteStorage:
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO negative_knowledge "
-                "(id, category, what_failed, why_failed, correct_approach, severity, project) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, category, what_failed, why_failed, correct_approach, severity, project, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.category, row.what_failed, row.why_failed,
-                 row.correct_approach, row.severity, row.project),
+                 row.correct_approach, row.severity, row.project,
+                 row.source_classification),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO negative_knowledge "
-                "(category, what_failed, why_failed, correct_approach, severity, project) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(category, what_failed, why_failed, correct_approach, severity, project, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (row.category, row.what_failed, row.why_failed,
-                 row.correct_approach, row.severity, row.project),
+                 row.correct_approach, row.severity, row.project,
+                 row.source_classification),
             )
         self._db.commit()
         return cur.lastrowid
@@ -354,15 +362,17 @@ class SqliteStorage:
     def insert_error(self, row: ErrorRow) -> int:
         if row.id:
             cur = self._db.execute_write(
-                "INSERT INTO errors (id, pattern, context, root_cause, fix, tags, project) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (row.id, row.pattern, row.context, row.root_cause, row.fix, row.tags, row.project),
+                "INSERT INTO errors (id, pattern, context, root_cause, fix, tags, project, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.pattern, row.context, row.root_cause, row.fix, row.tags,
+                 row.project, row.source_classification),
             )
         else:
             cur = self._db.execute_write(
-                "INSERT INTO errors (pattern, context, root_cause, fix, tags, project) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (row.pattern, row.context, row.root_cause, row.fix, row.tags, row.project),
+                "INSERT INTO errors (pattern, context, root_cause, fix, tags, project, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row.pattern, row.context, row.root_cause, row.fix, row.tags,
+                 row.project, row.source_classification),
             )
         self._db.commit()
         return cur.lastrowid
@@ -406,21 +416,21 @@ class SqliteStorage:
             cur = self._db.execute_write(
                 "INSERT INTO rules "
                 "(id, title, keywords, file_path, description, category, content_hash, "
-                " content, created_by, updated_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " content, created_by, updated_by, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.title, row.keywords, row.file_path, row.description,
                  row.category, row.content_hash, row.content, row.created_by,
-                 row.updated_by),
+                 row.updated_by, row.source_classification),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO rules "
                 "(title, keywords, file_path, description, category, content_hash, "
-                " content, created_by, updated_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " content, created_by, updated_by, source_classification) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.title, row.keywords, row.file_path, row.description,
                  row.category, row.content_hash, row.content, row.created_by,
-                 row.updated_by),
+                 row.updated_by, row.source_classification),
             )
         self._db.commit()
         return cur.lastrowid
@@ -459,6 +469,9 @@ class SqliteStorage:
         signals (hit_count/reinforcement_count/correct/incorrect)."""
         clauses = ["COALESCE(importance, 0) >= ?"]
         params: list[Any] = [min_importance]
+        # Recalled rules (#103) are terminally removed — never listed (they must
+        # not reach session_start's invariant injection), even with archived.
+        clauses.append("COALESCE(status, 'active') != 'recalled'")
         if not include_archived:
             clauses.append("NOT COALESCE(archived, 0)")
         sql = (
@@ -879,6 +892,26 @@ class SqliteStorage:
         ).fetchall()
         for r in rows:
             yield hydrate(r)
+
+    def page_entries(
+        self, entity_type: EntityType, *, after_id: int = 0,
+        limit: int = 100, caller: Optional[str] = None,
+    ) -> list[Any]:
+        """One keyset page of an entity type: rows with id > after_id in
+        id-ascending order, capped at `limit`. Powers scroll_entries (#104).
+        Keyset (not OFFSET) so paging stays stable while the corpus mutates."""
+        table = _ENTITY_TABLE[entity_type]
+        hydrate = {
+            EntityType.KNOWLEDGE: _knowledge_from_row,
+            EntityType.NEGATIVE:  _negative_from_row,
+            EntityType.ERROR:     _error_from_row,
+            EntityType.RULE:      _rule_from_row,
+        }[entity_type]
+        rows = self._db.execute(
+            f"SELECT * FROM {table} WHERE id > ? ORDER BY id LIMIT ?",
+            (after_id, limit),
+        ).fetchall()
+        return [hydrate(r) for r in rows]
 
     def iter_sessions(
         self, *, caller: Optional[str] = None,

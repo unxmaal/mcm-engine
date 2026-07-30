@@ -6,6 +6,35 @@ versioning.
 
 ## [Unreleased]
 
+## [3.7.0] — 2026-07-30
+
+### Added
+- **`scroll_entries` MCP tool** (issue #104). Read-only, keyset-paged enumerate
+  over one entity type's full table in id order — the corpus-audit counterpart
+  to keyword `search`, which only returns matches. `after_id` is the cursor
+  (pass the last id from the prior page); `limit` is capped by
+  `MCM_SCROLL_PAGE_MAX` (default 100). Each entry carries id, headline,
+  timestamp, a content hash, any `source_classification`, and the scored text.
+  Backed by a new `page_entries(entity_type, after_id, limit)` storage method on
+  both adapters. Registered read-only so a bulk reader resets the store-reminder
+  counter instead of tripping the write-loop blocks.
+- **`recall_entry` MCP tool** (issue #103). Generalizes `kb_recall` to remove a
+  flagged entry by `(entity_type, id)` with a `recall_log` audit row
+  (Postgres-only). `entity_type` is always explicit, never inferred from the id
+  (knowledge and rule id spaces overlap; a mistyped id has destroyed live rules).
+  knowledge/negative/error are hard-deleted; a **rule** is moved to a terminal
+  `status='recalled'` instead — a hard delete would be resurrected from its file
+  by the next sync. A recalled rule is invisible to search and to `session_start`
+  and is never revived by the watcher cascade, but stays inspectable for audit.
+  `recall_log` gains an `entity_type` column (default `'knowledge'`).
+- **`source_classification` on all entity types** (issue #105). Optional,
+  nullable free-form data-classification label the source assigned
+  (public/internal/confidential/…). The engine carries and returns it; it never
+  interprets it. Settable at ingest via `add_knowledge` / `add_negative` /
+  `report_error` / `add_rule`, and returned on the `scroll_entries` reader.
+  SQLite schema `CORE_VERSION` 12 → 13; existing Postgres deployments get the
+  column via guarded `ALTER` blocks.
+
 ## [3.6.1] — 2026-07-28
 
 ### Added
