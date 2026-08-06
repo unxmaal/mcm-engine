@@ -6,6 +6,21 @@ versioning.
 
 ## [Unreleased]
 
+## [3.8.0] — 2026-08-06
+
+### Added
+- **Postgres search `query_mode` — forgiving natural-language search** (issue
+  #107). With `backends.search: postgres`, set `search_options.query_mode:
+  natural` (or `MCM_SEARCH_QUERY_MODE=natural`) to make `search` tolerant of
+  sentence-style queries. `strict` (the default, unchanged) AND-matches every
+  lexeme via `plainto_tsquery`, so one non-matching term returns nothing.
+  `natural` is tiered: it runs the strict AND-match first and, **only when that
+  returns zero rows**, retries OR-ranked (`to_tsquery('a | b | c')` ordered by
+  `ts_rank_cd`) so the phrase returns its best rows instead of nothing. Precise
+  queries are never loosened — enabling it can only add results. An unknown
+  value falls back to `strict`. Postgres-only; SQLite always uses strict FTS5.
+  `pg_trgm` fuzzy/typo tolerance is a possible follow-up, not included here.
+
 ## [3.7.0] — 2026-07-30
 
 ### Added
