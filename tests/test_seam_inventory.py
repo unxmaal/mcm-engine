@@ -54,7 +54,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "adapters/postgres/counters.py": 5,
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
     # plugin search via ILIKE).
-    "adapters/postgres/search.py": 4,
+    "adapters/postgres/search.py": 5,  # +1 #107 natural-mode OR-rank fallback (to_tsquery)
     # LODESTONE additive surface (see lodestone-lite-plan.md).
     # tokens.py: mint INSERT, validate SELECT + UPDATE-touch, revoke UPDATE.
     "tokens.py": 4,

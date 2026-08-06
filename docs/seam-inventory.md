@@ -683,3 +683,15 @@ Both adapters gain the tuning surface the admin UI and MCP verbs sit on
   write sites (an `UPDATE rules SET ...` of the validated provided fields +
   updated_by/updated_at, and an `INSERT INTO rule_events` 'metadata' audit row),
   run atomically. Vocab validation happens before either write.
+
+## Addendum — natural search query mode (issue #107)
+
+Postgres-only opt-in (`search_options.query_mode`, default `strict`). When set
+to `natural`, `PostgresSearch._search_one` retries OR-ranked
+(`to_tsquery('english', 'a | b | c')` ordered by `ts_rank_cd`) ONLY when the
+strict `plainto_tsquery` AND-match returns zero rows, so a natural-language
+phrase returns its best rows instead of nothing while precise queries stay
+precise.
+
+- `adapters/postgres/search.py`: 4 → 5 (one new `cur.execute` for the OR-rank
+  fallback). SQLite is unchanged — `query_mode` is Postgres-only.

@@ -12,6 +12,7 @@ an ILIKE scan across the natural-language columns.
 """
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -29,6 +30,22 @@ from ...backends import (
 
 
 # Per-entity table + LIKE-fallback columns (mirrors SqliteSearch._FTS).
+_QUERY_MODES = ("strict", "natural")
+
+# Bare word tokens for the natural-mode OR fallback. Stripping to word chars
+# keeps the OR string a valid `to_tsquery` input (no operator/special-char
+# syntax errors); the 'english' config lowercases and stems each lexeme and
+# drops stopwords, so a stopword-only OR string yields an empty tsquery that
+# matches nothing (falling through to the LIKE fallback) rather than erroring.
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def _or_tsquery_text(query: str) -> str:
+    """Build an OR-joined tsquery string ('a | b | c') from raw user input, or
+    '' when there are no word tokens. Used only by natural mode's fallback."""
+    return " | ".join(_WORD_RE.findall(query))
+
+
 _TABLES: dict[EntityType, dict[str, Any]] = {
     EntityType.KNOWLEDGE: {
         "table": "knowledge",
@@ -65,6 +82,7 @@ class PostgresSearch:
         *,
         conn: Optional["psycopg.Connection"] = None,
         pool: Any = None,
+        query_mode: str = "strict",
     ):
         try:
             import psycopg  # noqa: F401
@@ -75,6 +93,15 @@ class PostgresSearch:
             ) from e
         self._dsn = dsn
         self._pool = resolve_pool(dsn, conn=conn, pool=pool)
+        # #107 query_mode (postgres-only, default 'strict'):
+        #   strict  — plainto_tsquery AND-match, today's behavior. Every term
+        #             must hit; a natural-language phrase returns nothing.
+        #   natural — try strict first (precise queries stay precise), and ONLY
+        #             when strict returns nothing, retry OR-ranked (a | b | c
+        #             ordered by ts_rank_cd) so the phrase returns its best
+        #             rows. Turning it on can only add results, never remove.
+        # An unknown value coerces to 'strict' — a config typo fails safe.
+        self._query_mode = query_mode if query_mode in _QUERY_MODES else "strict"
 
     def search(
         self,
@@ -171,7 +198,8 @@ class PostgresSearch:
             proj_clause = "AND (project = %s OR project IS NULL OR project = '')"
             proj_params = (project,)
 
-        # Try tsvector path first.
+        # Try the strict tsvector path first (AND-match). This is the whole of
+        # strict mode, and the precise-first step of natural mode.
         rows: list[dict[str, Any]] = []
         with self._conn.cursor() as cur:
             cur.execute(
@@ -183,6 +211,23 @@ class PostgresSearch:
                 (query, query, *proj_params, limit),
             )
             rows = cur.fetchall()
+
+        # Natural mode (#107): strict AND found nothing, so retry OR-ranked so a
+        # phrase where not every term hits still returns its best rows. Only
+        # reached when strict is empty, so precise queries are never loosened.
+        if not rows and self._query_mode == "natural":
+            or_text = _or_tsquery_text(query)
+            if or_text:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT id, pinned, "
+                        f"  ts_rank_cd(tsv, to_tsquery('english', %s)) AS rank "
+                        f"FROM {table} "
+                        f"WHERE tsv @@ to_tsquery('english', %s) {proj_clause} "
+                        f"ORDER BY rank DESC LIMIT %s",
+                        (or_text, or_text, *proj_params, limit),
+                    )
+                    rows = cur.fetchall()
 
         # LIKE fallback: empty query (all stopwords / hostile chars) won't
         # match anything via tsvector; pivot to ILIKE.

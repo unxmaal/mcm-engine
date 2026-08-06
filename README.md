@@ -401,6 +401,21 @@ backends:
   search_options:   { url: http://host:9200, index_prefix: "mcm-myproject-" }
 ```
 
+**Postgres search: `query_mode` (default `strict`).** With `backends.search:
+postgres`, set `search_options.query_mode: natural` to make search forgiving of
+natural-language, sentence-style queries: it tries the strict AND-match first
+and, only when that returns nothing, retries OR-ranked (best-matching rows
+first) so a phrase like "how does the token portal authenticate to entra"
+returns its best rows instead of nothing. `strict` (the default) keeps today's
+every-term-must-match behavior. Precise queries are never loosened — turning it
+on can only add results. Postgres-only; SQLite always uses strict FTS5.
+
+```yaml
+backends:
+  search: postgres
+  search_options: { dsn: postgresql://user:pass@host/db, query_mode: natural }
+```
+
 Maturity: SQLite and Postgres (storage/counters/search) and Redis counters are
 production-ready. OpenSearch search is reference and contract-only: its current sync model
 re-indexes on every query (O(N)), so it is not suitable for production query loads.
@@ -414,6 +429,7 @@ re-indexes on every query (O(N)), so it is not suitable for production query loa
 | `MCM_SOURCE_OF_TRUTH` | `files` or `database` |
 | `MCM_BACKENDS_{STORAGE,COUNTERS,SEARCH,SESSION}` | per-axis adapter |
 | `MCM_POSTGRES_DSN` / `MCM_REDIS_URL` / `MCM_OPENSEARCH_URL` | adapter connection |
+| `MCM_SEARCH_QUERY_MODE` | Postgres search: `strict` (default) or `natural` (forgiving phrase search) |
 | `MCM_ALLOWED_HOSTS` / `MCM_DNS_REBINDING_PROTECTION` | daemon host allow-list / guard toggle |
 | `MCM_AUTH_REQUIRED` | require a bearer token on the HTTP transport |
 | `MCM_ACTOR` | actor recorded on writes (provenance / author≠judge) |

@@ -99,6 +99,48 @@ def test_yaml_options_take_precedence_over_env_dsn(tmp_path, monkeypatch):
     }
 
 
+def test_query_mode_env_populates_only_when_search_is_postgres(tmp_path, monkeypatch):
+    """MCM_SEARCH_QUERY_MODE lands in search_options only for the postgres
+    search backend (#107)."""
+    monkeypatch.setenv("MCM_PROJECT_NAME", "x")
+    monkeypatch.setenv("MCM_BACKENDS_SEARCH", "postgres")
+    monkeypatch.setenv("MCM_POSTGRES_DSN", "postgresql://u:p@host/db")
+    monkeypatch.setenv("MCM_SEARCH_QUERY_MODE", "natural")
+
+    config = load_config(project_root=tmp_path)
+    assert config.backends.search_options == {
+        "dsn": "postgresql://u:p@host/db",
+        "query_mode": "natural",
+    }
+
+
+def test_query_mode_env_ignored_for_non_postgres_search(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCM_PROJECT_NAME", "x")
+    monkeypatch.setenv("MCM_BACKENDS_SEARCH", "embedded")
+    monkeypatch.setenv("MCM_SEARCH_QUERY_MODE", "natural")
+
+    config = load_config(project_root=tmp_path)
+    assert "query_mode" not in config.backends.search_options
+
+
+def test_yaml_query_mode_wins_over_env(tmp_path, monkeypatch):
+    (tmp_path / "mcm-engine.yaml").write_text(
+        "project_name: x\n"
+        "backends:\n"
+        "  search: postgres\n"
+        "  search_options:\n"
+        "    dsn: postgresql://yaml@host/db\n"
+        "    query_mode: strict\n"
+    )
+    monkeypatch.setenv("MCM_SEARCH_QUERY_MODE", "natural")
+
+    config = load_config(
+        config_path=tmp_path / "mcm-engine.yaml",
+        project_root=tmp_path,
+    )
+    assert config.backends.search_options["query_mode"] == "strict"
+
+
 def test_no_yaml_and_only_env_works(tmp_path, monkeypatch):
     """Container deployments often ship NO YAML. project_name + the env
     vars alone must be enough."""

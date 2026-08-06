@@ -304,6 +304,13 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
         backends.counters_options.setdefault("url", redis_url)
     if opensearch_url and backends.search == "opensearch":
         backends.search_options.setdefault("url", opensearch_url)
+    # #107: search query mode (postgres only). 'strict' (default) AND-matches;
+    # 'natural' falls back to OR-ranked results when strict finds nothing, so a
+    # natural-language phrase returns its best rows instead of nothing. YAML
+    # (search_options.query_mode) wins over this convenience env var.
+    query_mode = os.environ.get("MCM_SEARCH_QUERY_MODE")
+    if query_mode and backends.search == "postgres":
+        backends.search_options.setdefault("query_mode", query_mode)
 
     # Extract adjudicator sub-config — same strict-key hygiene (Slice 3).
     adjudicator_raw = raw.pop("adjudicator", {})
