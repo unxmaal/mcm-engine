@@ -651,6 +651,19 @@ sites: `recall_events` adds a single keyset `SELECT ... FROM recall_log WHERE id
 `recall_log.entity_type`). `get_entry` (#112) in the same file holds no SQL
 (routes through `storage.find_by_id`).
 
+## Addendum — reversible linking (unlink_knowledge, issue #111)
+
+`delete_relation` lands on both storage adapters so a wrong `link_knowledge`
+relation can be retracted through a tool instead of raw SQL. One `DELETE FROM
+relations WHERE source/target/relation = ...` site each:
+
+- `adapters/sqlite/storage.py`: 62 → 63.
+- `adapters/postgres/storage.py`: 64 → 65.
+
+The `unlink_knowledge` MCP tool (`tools/relations.py`) is a thin wrapper over it
+(idempotent, validates the type/relation vocab) and holds no SQL. It is also the
+retraction step reused by `unsupersede_knowledge` (same issue).
+
 ## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
 
 Structured references on knowledge entries: a nullable JSON column holding a

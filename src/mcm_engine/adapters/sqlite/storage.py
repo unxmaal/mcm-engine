@@ -690,6 +690,19 @@ class SqliteStorage:
             # UNIQUE constraint violation — relation already exists.
             return None
 
+    def delete_relation(
+        self, source_type: EntityType, source_id: int,
+        target_type: EntityType, target_id: int, relation: str,
+        *, caller: Optional[str] = None,
+    ) -> int:
+        cur = self._db.execute_write(
+            "DELETE FROM relations WHERE source_type = ? AND source_id = ? "
+            "AND target_type = ? AND target_id = ? AND relation = ?",
+            (source_type.value, source_id, target_type.value, target_id, relation),
+        )
+        self._db.commit()
+        return cur.rowcount
+
     def list_outgoing_relations(
         self, source_type: EntityType, source_id: int,
         *, caller: Optional[str] = None,

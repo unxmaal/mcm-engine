@@ -478,6 +478,20 @@ class StorageBackend(Protocol):
         violated (relation already exists)."""
         ...
 
+    def delete_relation(
+        self,
+        source_type: EntityType,
+        source_id: int,
+        target_type: EntityType,
+        target_id: int,
+        relation: str,
+        *,
+        caller: Optional[str] = None,
+    ) -> int:
+        """Remove one relationship, keyed on the full (source, target, relation)
+        tuple. Returns the number of rows deleted (0 if absent) — idempotent."""
+        ...
+
     def list_outgoing_relations(
         self, source_type: EntityType, source_id: int,
         *, caller: Optional[str] = None,

@@ -1,4 +1,4 @@
-"""Relationship tools — link_knowledge, get_related.
+"""Relationship tools — link_knowledge, unlink_knowledge, get_related.
 
 Rewired in MCM2-02 (Phase 0): all SQL routes through SqliteStorage.
 """
@@ -113,6 +113,50 @@ def register_relations_tools(
         tgt_label = _entry_label(storage, target_type, target_id)
         return _with_nudge(
             f"Linked: {src_label}\n  --[{relation}]--> {tgt_label}", tracker,
+        )
+
+    @mcp.tool()
+    def unlink_knowledge(
+        source_type: EntityTypeLiteral,
+        source_id: int,
+        target_type: EntityTypeLiteral,
+        target_id: int,
+        relation: RelationType,
+    ) -> str:
+        """Remove one typed relationship — the inverse of `link_knowledge`, so a
+        wrong link (a mis-guessed target id) can be retracted through a tool
+        instead of raw SQL (issue #111). Keyed on the full
+        (source, target, relation) tuple; idempotent (a no-op if it does not
+        exist). Look up ids with `search` / `get_entry` first.
+        """
+        tracker.record_call("unlink_knowledge")
+
+        if source_type not in VALID_TYPES:
+            return _with_nudge(
+                f"Invalid source_type '{source_type}'. Use: {', '.join(sorted(VALID_TYPES))}",
+                tracker,
+            )
+        if target_type not in VALID_TYPES:
+            return _with_nudge(
+                f"Invalid target_type '{target_type}'. Use: {', '.join(sorted(VALID_TYPES))}",
+                tracker,
+            )
+        if relation not in VALID_RELATIONS:
+            return _with_nudge(
+                f"Invalid relation '{relation}'. Use: {', '.join(sorted(VALID_RELATIONS))}",
+                tracker,
+            )
+
+        deleted = storage.delete_relation(
+            EntityType(source_type), source_id,
+            EntityType(target_type), target_id, relation,
+        )
+        arrow = (f"{source_type} #{source_id} --[{relation}]--> "
+                 f"{target_type} #{target_id}")
+        if deleted:
+            return _with_nudge(f"Unlinked: {arrow}", tracker)
+        return _with_nudge(
+            f"No such relationship (no-op): {arrow}", tracker,
         )
 
     @mcp.tool()

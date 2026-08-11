@@ -1234,6 +1234,22 @@ class PostgresStorage:
             self._conn.rollback()
             return None
 
+    def delete_relation(
+        self, source_type: EntityType, source_id: int,
+        target_type: EntityType, target_id: int, relation: str,
+        *, caller: Optional[str] = None,
+    ) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM relations WHERE source_type = %s AND source_id = %s "
+                "AND target_type = %s AND target_id = %s AND relation = %s",
+                (source_type.value, source_id, target_type.value, target_id,
+                 relation),
+            )
+            n = cur.rowcount
+        self._commit()
+        return n
+
     def list_outgoing_relations(
         self, source_type: EntityType, source_id: int,
         *, caller: Optional[str] = None,

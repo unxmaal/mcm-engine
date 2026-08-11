@@ -284,3 +284,71 @@ class TestStalenessAndQualityGates:
         assert "bsearch" in result.lower()
         # virtualenv shouldn't match "bsearch null crash" with quality gate
         assert "virtualenv" not in result.lower()
+
+
+class TestUnlinkKnowledge:
+    def test_unlink_removes_relation(self, rel_env):
+        mcp, db, tracker = rel_env
+        mcp["add_knowledge"](topic="a", summary="a")
+        mcp["add_knowledge"](topic="b", summary="b")
+        k1 = db.execute("SELECT id FROM knowledge WHERE topic = 'a'").fetchone()
+        k2 = db.execute("SELECT id FROM knowledge WHERE topic = 'b'").fetchone()
+
+        mcp["link_knowledge"](
+            source_type="knowledge", source_id=k1["id"],
+            target_type="knowledge", target_id=k2["id"],
+            relation="related",
+        )
+        assert db.execute("SELECT COUNT(*) AS c FROM relations").fetchone()["c"] == 1
+
+        result = mcp["unlink_knowledge"](
+            source_type="knowledge", source_id=k1["id"],
+            target_type="knowledge", target_id=k2["id"],
+            relation="related",
+        )
+        assert "Unlinked" in result
+        assert db.execute("SELECT COUNT(*) AS c FROM relations").fetchone()["c"] == 0
+
+    def test_unlink_is_idempotent_noop(self, rel_env):
+        mcp, db, tracker = rel_env
+        mcp["add_knowledge"](topic="a", summary="a")
+        mcp["add_knowledge"](topic="b", summary="b")
+        k1 = db.execute("SELECT id FROM knowledge WHERE topic = 'a'").fetchone()
+        k2 = db.execute("SELECT id FROM knowledge WHERE topic = 'b'").fetchone()
+
+        # Never linked: unlink is a clean no-op, not an error.
+        result = mcp["unlink_knowledge"](
+            source_type="knowledge", source_id=k1["id"],
+            target_type="knowledge", target_id=k2["id"],
+            relation="related",
+        )
+        assert "no-op" in result
+
+    def test_unlink_only_removes_the_named_relation(self, rel_env):
+        mcp, db, tracker = rel_env
+        mcp["add_knowledge"](topic="a", summary="a")
+        mcp["add_knowledge"](topic="b", summary="b")
+        k1 = db.execute("SELECT id FROM knowledge WHERE topic = 'a'").fetchone()
+        k2 = db.execute("SELECT id FROM knowledge WHERE topic = 'b'").fetchone()
+        for rel in ("related", "causes"):
+            mcp["link_knowledge"](
+                source_type="knowledge", source_id=k1["id"],
+                target_type="knowledge", target_id=k2["id"],
+                relation=rel,
+            )
+        mcp["unlink_knowledge"](
+            source_type="knowledge", source_id=k1["id"],
+            target_type="knowledge", target_id=k2["id"],
+            relation="related",
+        )
+        rows = db.execute("SELECT relation FROM relations").fetchall()
+        assert [r["relation"] for r in rows] == ["causes"]
+
+    def test_unlink_invalid_relation(self, rel_env):
+        mcp, db, tracker = rel_env
+        result = mcp["unlink_knowledge"](
+            source_type="knowledge", source_id=1,
+            target_type="knowledge", target_id=2,
+            relation="bogus",
+        )
+        assert "Invalid relation" in result
