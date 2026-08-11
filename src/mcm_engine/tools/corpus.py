@@ -84,6 +84,30 @@ def _content_hash(row, fields: tuple[str, ...]) -> str:
     return h.hexdigest()[:12]
 
 
+def _entry_text(row, fields: tuple[str, ...]) -> str:
+    """Whole-row scored text (all substantive fields joined) — the dedup unit."""
+    return " ".join(str(getattr(row, f, "") or "") for f in fields).strip()
+
+
+def _topic_body(row, fields: tuple[str, ...]) -> tuple[str, str]:
+    """Split a row into (topic, body) for conflict detection: the headline
+    column is the subject, the rest is the claim. Mirrors how rules split
+    title vs content."""
+    topic = str(getattr(row, fields[0], "") or "")
+    body = " ".join(str(getattr(row, f, "") or "") for f in fields[1:]).strip()
+    return topic, body
+
+
+def _is_hidden(row) -> bool:
+    """A row a hygiene sweep should ignore: soft-deleted (archived) or in a
+    non-live status (superseded / recalled). Knowledge/negative/error carry
+    none of these today and so are never hidden; once knowledge gains a
+    status column (#111) its superseded rows fall out here automatically."""
+    if getattr(row, "archived", False):
+        return True
+    return getattr(row, "status", "active") in ("superseded", "recalled")
+
+
 def _render_entry(etype: EntityType, row, fields: tuple[str, ...]) -> str:
     headline = getattr(row, fields[0], "") or ""
     ts = getattr(row, "updated_at", None) or getattr(row, "created_at", None)
@@ -366,5 +390,103 @@ def register_corpus_tools(
             f"{'' if more else ' — likely last page'}"
         )
         return _with_nudge("\n\n".join(blocks) + "\n\n" + footer, tracker)
+
+    def _headline(row, fields: tuple[str, ...]) -> str:
+        return str(getattr(row, fields[0], "") or "")
+
+    @mcp.tool()
+    def find_duplicate_entries(
+        entity_type: EntityTypeLiteral,
+        threshold: float = 0.9,
+    ) -> str:
+        """Surface NEAR-DUPLICATE entries of one type for review — the
+        knowledge/negative/error counterpart to `find_duplicate_rules` (#113).
+        Deterministic MinHash/LSH over each live entry's substantive text,
+        embedding-free. READ-ONLY — never merges, supersedes, or deletes; a
+        human or agent decides what (if anything) to reconcile (for knowledge,
+        via `supersede_knowledge`).
+
+        entity_type: one of knowledge, negative, error, rule.
+        threshold: Jaccard similarity at/above which two entries cluster
+            (default 0.9). Lower to catch looser paraphrases.
+        """
+        tracker.record_call("find_duplicate_entries")
+        from ..dedup import find_near_duplicates
+
+        etype = EntityType(entity_type)
+        fields = _TEXT_FIELDS[etype]
+        heads: dict[int, str] = {}
+        items: list[tuple[int, str]] = []
+        for row in storage.iter_entries(etype):
+            if _is_hidden(row):
+                continue
+            heads[row.id] = _headline(row, fields)
+            items.append((row.id, _entry_text(row, fields)))
+
+        clusters = find_near_duplicates(items, threshold=threshold)
+        if not clusters:
+            return _with_nudge(
+                f"No near-duplicate {entity_type} entries found.", tracker,
+            )
+        lines = [
+            f"Found {len(clusters)} near-duplicate {entity_type} cluster(s) "
+            f"(threshold={threshold}):"
+        ]
+        for i, cluster in enumerate(clusters, 1):
+            lines.append(f"  cluster {i}:")
+            for eid in cluster:
+                lines.append(f"    #{eid} {heads.get(eid, '')}")
+        return _with_nudge("\n".join(lines), tracker)
+
+    @mcp.tool()
+    def find_conflicting_entries(
+        entity_type: EntityTypeLiteral,
+        topic_threshold: float = 0.5,
+        body_threshold: float = 0.4,
+    ) -> str:
+        """Surface CONFLICT candidates of one type — entries whose headline is
+        TOPICALLY similar but whose bodies DIVERGE ("same subject, opposite
+        story"), the inverse of a near-duplicate and the multi-type counterpart
+        to `find_conflicting_rules` (#113). Deterministic, embedding-free.
+        READ-ONLY — never supersedes/merges; a human or agent decides.
+
+        entity_type: one of knowledge, negative, error, rule.
+        topic_threshold: headline similarity at/above which two entries are the
+            "same subject" (default 0.5).
+        body_threshold: body similarity at/below which the claims are taken to
+            diverge (default 0.4).
+        """
+        tracker.record_call("find_conflicting_entries")
+        from ..dedup import find_conflicts
+
+        etype = EntityType(entity_type)
+        fields = _TEXT_FIELDS[etype]
+        heads: dict[int, str] = {}
+        items: list[tuple[int, str, str]] = []
+        for row in storage.iter_entries(etype):
+            if _is_hidden(row):
+                continue
+            heads[row.id] = _headline(row, fields)
+            topic, body = _topic_body(row, fields)
+            items.append((row.id, topic, body))
+
+        pairs = find_conflicts(items, topic_threshold=topic_threshold,
+                               body_threshold=body_threshold)
+        if not pairs:
+            return _with_nudge(
+                f"No conflicting {entity_type} entries found.", tracker,
+            )
+        lines = [
+            f"Found {len(pairs)} {entity_type} conflict candidate(s) "
+            f"(topic>={topic_threshold}, body<={body_threshold}):"
+        ]
+        for a, b, label in pairs:
+            lines.append(
+                f"  [{label}] #{a} '{heads.get(a, '')}'  <->  "
+                f"#{b} '{heads.get(b, '')}'"
+            )
+        lines.append("  Review; reconcile via supersede_knowledge / recall_entry "
+                     "as appropriate.")
+        return _with_nudge("\n".join(lines), tracker)
 
     return scroll_entries

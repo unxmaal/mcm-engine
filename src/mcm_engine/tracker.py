@@ -62,6 +62,7 @@ class SessionTracker:
         "sift_candidates", "find_duplicate_rules", "find_conflicting_rules",
         "consolidation_report", "list_rules", "get_related", "scroll_entries",
         "get_entry", "recall_events",
+        "find_duplicate_entries", "find_conflicting_entries",
     })
 
     # Targeted guidance for per-tool deficit nudges. Generic fallback below.
