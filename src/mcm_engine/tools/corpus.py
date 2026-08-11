@@ -273,4 +273,98 @@ def register_corpus_tools(
             tracker,
         )
 
+    @mcp.tool()
+    def recall_events(
+        after_id: int = 0,
+        limit: int = 100,
+        since: str = "",
+    ) -> str:
+        """Paged, read-only read of the recall audit trail (postgres backend
+        only) — the consumable counterpart to `recall_entry`, so a client can
+        learn from what was recalled and why without a direct SELECT on the
+        recall_log table.
+
+        after_id: keyset cursor over the recall-event id — pass the last id
+            from the previous page (0 starts at the beginning).
+        limit: max events this page; capped by MCM_SCROLL_PAGE_MAX (default
+            100). The client pages by cursor.
+        since: optional ISO-8601 timestamp; only events at/after it are
+            returned (e.g. "2026-08-01" or "2026-08-01T12:00:00Z").
+
+        Each event carries {id, entity_type, entity_id, principal, reason,
+        recalled_at}. No content field — recalled content is gone from the
+        engine by design; a consumer needing the original text keeps its own
+        snapshot. Same rendered-text + cursor-footer shape as `scroll_entries`.
+        """
+        tracker.record_call("recall_events")
+
+        if getattr(storage.identity, "kind", None) != "postgres":
+            return _with_nudge(
+                "recall_events requires the postgres storage backend.", tracker,
+            )
+
+        cap = _scroll_page_max()
+        n = limit if limit > 0 else _DEFAULT_SCROLL_PAGE_MAX
+        n = min(n, cap)
+
+        since_clause = ""
+        params: list = [after_id]
+        if since:
+            since_clause = "AND recalled_at >= %s::timestamptz "
+            params.append(since)
+        params.append(n)
+
+        try:
+            with storage.transaction():
+                conn = storage._conn
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, entity_type, claim_id, principal, reason, "
+                        "recalled_at FROM recall_log "
+                        "WHERE id > %s " + since_clause +
+                        "ORDER BY id LIMIT %s",
+                        tuple(params),
+                    )
+                    rows = cur.fetchall()
+        except Exception as e:
+            return _with_nudge(
+                f"recall_events failed: {type(e).__name__}: {e}", tracker,
+            )
+
+        if not rows:
+            tail = f" at/after {since}" if since else ""
+            return _with_nudge(
+                f"No recall events with id > {after_id}{tail}. "
+                f"End of recall log.",
+                tracker,
+            )
+
+        def _cell(r, key, idx):
+            return r[key] if hasattr(r, "keys") else r[idx]
+
+        blocks = []
+        for r in rows:
+            rid = _cell(r, "id", 0)
+            etype = _cell(r, "entity_type", 1)
+            claim_id = _cell(r, "claim_id", 2)
+            principal = _cell(r, "principal", 3)
+            reason = _cell(r, "reason", 4)
+            recalled_at = _cell(r, "recalled_at", 5)
+            meta = [f"principal={principal}", f"recalled={recalled_at}"]
+            if reason:
+                meta.append(f"reason={reason}")
+            blocks.append(
+                f"#{rid} [recall] {etype} #{claim_id}\n  " + " | ".join(meta)
+            )
+
+        last_id = _cell(rows[-1], "id", 0)
+        more = len(rows) == n
+        footer = (
+            f"--- page: {len(rows)} recall event"
+            f"{'' if len(rows) == 1 else 's'}"
+            f" (cap {cap}). next: recall_events(after_id={last_id})"
+            f"{'' if more else ' — likely last page'}"
+        )
+        return _with_nudge("\n\n".join(blocks) + "\n\n" + footer, tracker)
+
     return scroll_entries

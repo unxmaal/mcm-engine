@@ -37,7 +37,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
     "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
     "tools/rules.py":      0,   # MCM2-02 rewire complete
-    "tools/corpus.py":     5,   # #103 recall_entry raw-SQL path (postgres-only, mirrors kb_recall): SELECT exists + INSERT recall_log + rule branch (UPDATE status + INSERT rule_events) + non-rule branch (DELETE). scroll_entries holds no SQL (calls storage.page_entries).
+    "tools/corpus.py":     6,   # #103 recall_entry raw-SQL path (postgres-only, mirrors kb_recall): SELECT exists + INSERT recall_log + rule branch (UPDATE status + INSERT rule_events) + non-rule branch (DELETE). +1 #110 recall_events SELECT (postgres-only paged read of recall_log). scroll_entries/get_entry hold no SQL (page_entries / find_by_id).
     "tools/relations.py":  0,   # MCM2-02 rewire complete
     "tools/session.py":    0,   # MCM2-02 rewire complete
     # MCM2-02 embedded SQLite adapter — SQL extracted out of tools into the

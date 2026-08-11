@@ -640,6 +640,17 @@ The terminal `recalled` status is enforced outside the SQL count: `search.py`
 `_score_and_format_rule` drops it, `list_rules` (both adapters) excludes it, and
 the watcher `_cascade_upsert` returns `unchanged` on a recalled row.
 
+## Addendum — recall_events (issue #110)
+
+Read-only, postgres-only paged read of the recall audit trail — the consumable
+counterpart to `recall_entry`, so a client learns what was recalled and why
+without a direct SELECT on `recall_log`. `tools/corpus.py` goes 5 → 6 `.execute`
+sites: `recall_events` adds a single keyset `SELECT ... FROM recall_log WHERE id
+> %s [AND recalled_at >= %s::timestamptz] ORDER BY id LIMIT %s` inside a
+`storage.transaction()` borrow. No schema change (#103 already added
+`recall_log.entity_type`). `get_entry` (#112) in the same file holds no SQL
+(routes through `storage.find_by_id`).
+
 ## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
 
 Structured references on knowledge entries: a nullable JSON column holding a
