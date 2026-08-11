@@ -61,6 +61,7 @@ class SessionTracker:
     READ_ONLY_TOOLS: frozenset[str] = frozenset({
         "sift_candidates", "find_duplicate_rules", "find_conflicting_rules",
         "consolidation_report", "list_rules", "get_related", "scroll_entries",
+        "get_entry",
     })
 
     # Targeted guidance for per-tool deficit nudges. Generic fallback below.

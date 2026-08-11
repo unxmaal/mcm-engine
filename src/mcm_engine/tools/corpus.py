@@ -1,10 +1,14 @@
-"""Corpus-wide governance tools — scroll_entries (#104), recall_entry (#103).
+"""Corpus-wide governance tools — scroll_entries (#104), get_entry (#112),
+recall_entry (#103), recall_events (#110), find_duplicate_entries /
+find_conflicting_entries (#113).
 
 These serve the audit/governance consumer that must visit *every* stored
 entry regardless of entity type (a risk scanner flagging secrets / PII /
 mis-classified content), rather than the FTS retrieval path. `scroll_entries`
-is the read half (paged enumerate); `recall_entry` is the act half (remove a
-flagged entry by id, with an audit trail).
+is the paged-read half and `get_entry` the point-read half; `recall_entry` is
+the act half (remove a flagged entry by id, with an audit trail) and
+`recall_events` reads that audit trail back; the `find_*_entries` pair extends
+rule-only dedup/conflict detection to the other entity types.
 """
 from __future__ import annotations
 
@@ -159,6 +163,35 @@ def register_corpus_tools(
             f"{'' if more else ' — likely last page'}"
         )
         return "\n\n".join(blocks) + "\n\n" + footer
+
+    @mcp.tool()
+    def get_entry(
+        entity_type: EntityTypeLiteral,
+        entry_id: int,
+    ) -> str:
+        """Point read of one entry by (entity_type, id) — read-only, same
+        rendered shape as a single `scroll_entries` block, or NOT_FOUND.
+
+        entity_type: one of knowledge, negative, error, rule. Required and
+            never inferred — knowledge and rule id spaces overlap.
+        entry_id: the id to fetch.
+
+        Use this to confirm a target id's current content immediately before a
+        mutating call (`supersede_rule`, `supersede_knowledge`, `link_knowledge`,
+        `recall_entry`) — the guard whose absence has caused wrong-id supersedes
+        and stray links. Cheaper than re-paging the corpus for a single id.
+        Reaches superseded/recalled rows too (unlike search), so it doubles as
+        an audit point-read.
+        """
+        tracker.record_call("get_entry")
+
+        etype = EntityType(entity_type)
+        row = storage.find_by_id(etype, entry_id)
+        if row is None:
+            return _with_nudge(
+                f"NOT_FOUND: no {entity_type} with id={entry_id}.", tracker,
+            )
+        return _with_nudge(_render_entry(etype, row, _TEXT_FIELDS[etype]), tracker)
 
     @mcp.tool()
     def recall_entry(
