@@ -70,6 +70,8 @@ def _knowledge_from_row(r: sqlite3.Row) -> KnowledgeRow:
         created_at=_parse_dt(r["created_at"]),
         updated_at=_parse_dt(r["updated_at"]),
         source_classification=_col(r, "source_classification"),
+        status=_col(r, "status", "active") or "active",
+        superseded_by=_col(r, "superseded_by"),
     )
 
 
@@ -330,6 +332,28 @@ class SqliteStorage:
         self._db.execute_write(
             f"UPDATE knowledge SET {cols}, updated_at = datetime('now') WHERE id = ?",
             values,
+        )
+        self._db.commit()
+
+    def supersede_knowledge(self, old_id: int, new_id: int) -> None:
+        """Soft-expire a knowledge finding (issue #111): mark superseded and
+        point at its replacement, rather than deleting. It drops out of default
+        search but stays inspectable (get_entry / include_archived)."""
+        self._db.execute_write(
+            "UPDATE knowledge SET status = 'superseded', superseded_by = ?, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (new_id, old_id),
+        )
+        self._db.commit()
+
+    def unsupersede_knowledge(self, knowledge_id: int) -> None:
+        """Clear a knowledge finding's superseded state (issue #111): status
+        back to active, superseded_by cleared. The inverse of
+        supersede_knowledge and the recovery path for an accidental supersede."""
+        self._db.execute_write(
+            "UPDATE knowledge SET status = 'active', superseded_by = NULL, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (knowledge_id,),
         )
         self._db.commit()
 

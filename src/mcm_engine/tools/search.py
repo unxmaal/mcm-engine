@@ -99,9 +99,15 @@ def _score_and_format_knowledge(
     counters: CounterStore,
     project: str,
     relevance: float = 1.0,
+    include_archived: bool = False,
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.KNOWLEDGE, hit.entity_id)
     if row is None:
+        return None
+    # Superseded knowledge (issue #111) is soft-expired: hidden from default
+    # search, surfaced alongside superseded/archived rules via include_archived.
+    # find_by_id / get_entry still reach it for audit and unsupersede.
+    if getattr(row, "status", "active") == "superseded" and not include_archived:
         return None
     if project and not _project_match(row.project, project):
         return None
@@ -305,7 +311,7 @@ def _scope_block(
             continue
         relevance = minmax_normalize(hit.score, _lo, _hi)
         if etype is EntityType.KNOWLEDGE:
-            result = _score_and_format_knowledge(hit, storage, counters, project, relevance)
+            result = _score_and_format_knowledge(hit, storage, counters, project, relevance, include_archived)
         elif etype is EntityType.RULE:
             result = _score_and_format_rule(hit, storage, counters, include_archived, relevance)
         elif etype is EntityType.NEGATIVE:
@@ -366,6 +372,7 @@ def _search_all_scopes(
             EntityType.KNOWLEDGE, search_backend, storage, counters,
             query=query, limit=limit, project=project,
             min_rank=gate, bump_counters=True,
+            include_archived=include_archived,
         ))
 
     if EntityType.NEGATIVE in entity_types:

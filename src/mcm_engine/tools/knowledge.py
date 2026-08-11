@@ -11,7 +11,14 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 
-from ..backends import EntityType, EntityTypeLiteral, ErrorRow, KnowledgeRow, NegativeRow
+from ..backends import (
+    EntityType,
+    EntityTypeLiteral,
+    ErrorRow,
+    KnowledgeRow,
+    NegativeRow,
+    RelationRow,
+)
 from ..refs import dump_refs, validate_refs
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
@@ -231,6 +238,93 @@ def register_knowledge_tools(
         count = snap.get("reinforcement_count", 0)
         return _with_nudge(
             f"Reinforced: {row.topic} (reinforcement_count={count})", tracker,
+        )
+
+    @mcp.tool()
+    def supersede_knowledge(old_id: int, new_id: int, actor: str = "") -> str:
+        """Soft-expire knowledge finding old_id in favor of new_id (issue #111):
+        the knowledge-id-space analog of supersede_rule, so a wrong or outdated
+        finding is retired first-class and auditable rather than corrected
+        prose-only. old_id drops out of default search but stays inspectable
+        (get_entry / include_archived); a `supersedes` relation new_id -> old_id
+        is recorded so the correction shows up in get_related. Reversible with
+        unsupersede_knowledge.
+
+        Refuses a self-supersede (old==new) and superseding by an already-
+        superseded finding (either would retire a finding with no live
+        successor). Confirm both ids with get_entry first — knowledge and rule
+        id spaces overlap, and this operates ONLY on knowledge.
+        """
+        tracker.record_call("supersede_knowledge")
+
+        if old_id == new_id:
+            return _with_nudge(
+                f"Refused: a finding cannot supersede itself "
+                f"(old_id == new_id == {old_id}).", tracker,
+            )
+        old = storage.find_by_id(EntityType.KNOWLEDGE, old_id)
+        if old is None:
+            return _with_nudge(
+                f"NOT_FOUND: no knowledge with id={old_id}.", tracker,
+            )
+        new = storage.find_by_id(EntityType.KNOWLEDGE, new_id)
+        if new is None:
+            return _with_nudge(
+                f"NOT_FOUND: no knowledge with id={new_id}.", tracker,
+            )
+        if getattr(new, "status", "active") == "superseded":
+            return _with_nudge(
+                f"Refused: knowledge #{new_id} is itself superseded, so "
+                f"superseding by it would leave no live successor. Revive "
+                f"#{new_id} with unsupersede_knowledge first.", tracker,
+            )
+
+        # Record the audit relation first (idempotent — None if it already
+        # exists), then flip status. If the relation write fails, status is
+        # left untouched (safe); a stray relation without the flip is
+        # removable via unlink_knowledge.
+        storage.insert_relation(RelationRow(
+            id=0,
+            source_type=EntityType.KNOWLEDGE, source_id=new_id,
+            target_type=EntityType.KNOWLEDGE, target_id=old_id,
+            relation="supersedes",
+            note=(f"by {actor}" if actor else None),
+        ))
+        storage.supersede_knowledge(old_id, new_id)
+        return _with_nudge(
+            f"Superseded knowledge #{old_id} ('{old.topic}') "
+            f"by #{new_id} ('{new.topic}').", tracker,
+        )
+
+    @mcp.tool()
+    def unsupersede_knowledge(knowledge_id: int) -> str:
+        """Revive a superseded knowledge finding (issue #111): status back to
+        active, superseded_by cleared, and the `supersedes` audit relation
+        removed. The inverse of supersede_knowledge and the recovery path for an
+        accidental supersede. Only acts on a finding currently 'superseded'."""
+        tracker.record_call("unsupersede_knowledge")
+
+        row = storage.find_by_id(EntityType.KNOWLEDGE, knowledge_id)
+        if row is None:
+            return _with_nudge(
+                f"NOT_FOUND: no knowledge with id={knowledge_id}.", tracker,
+            )
+        status = getattr(row, "status", "active")
+        if status != "superseded":
+            return _with_nudge(
+                f"Knowledge #{knowledge_id} is not superseded (status={status}); "
+                f"nothing to do.", tracker,
+            )
+        new_id = getattr(row, "superseded_by", None)
+        storage.unsupersede_knowledge(knowledge_id)
+        if new_id:
+            storage.delete_relation(
+                EntityType.KNOWLEDGE, new_id,
+                EntityType.KNOWLEDGE, knowledge_id, "supersedes",
+            )
+        return _with_nudge(
+            f"Unsuperseded knowledge #{knowledge_id} ('{row.topic}') "
+            f"— back to active.", tracker,
         )
 
     @mcp.tool()

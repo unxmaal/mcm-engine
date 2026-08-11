@@ -664,6 +664,31 @@ The `unlink_knowledge` MCP tool (`tools/relations.py`) is a thin wrapper over it
 (idempotent, validates the type/relation vocab) and holds no SQL. It is also the
 retraction step reused by `unsupersede_knowledge` (same issue).
 
+## Addendum — knowledge supersede lifecycle (issue #111, schema v14)
+
+Knowledge gains a rule-style soft-expire so a finding can be retired first-class
+(`supersede_knowledge`) and revived (`unsupersede_knowledge`), not only
+hard-deleted (recall) or corrected prose-only.
+
+- `schema.py`: 61 → 63. `_migrate_v13_to_v14` adds `knowledge.status` (`NOT NULL
+  DEFAULT 'active'`) and `knowledge.superseded_by` via two guarded
+  `execute_write` ALTERs (CORE_VERSION 13 → 14). Fresh installs get both columns
+  from CORE_SCHEMA. Neither is in `knowledge_fts`, so no FTS rebuild.
+- `adapters/sqlite/storage.py`: 63 → 65. `supersede_knowledge` (one UPDATE) and
+  `unsupersede_knowledge` (one UPDATE). Hydration reads the two columns via the
+  tolerant `_col`.
+- `adapters/postgres/storage.py`: 65 → 67. Same two UPDATE methods. The knowledge
+  CREATE gains `status`/`superseded_by` (not in the `tsv` generated column) plus
+  a guarded `DO $$ ... $$` block for existing deployments — both string literals
+  in the DDL list, no new `.execute` site.
+
+Visibility is enforced outside the SQL count: `search.py`
+`_score_and_format_knowledge` drops `status='superseded'` unless
+`include_archived` (mirroring superseded rules). The `supersede_knowledge` /
+`unsupersede_knowledge` MCP tools live in `tools/knowledge.py` and hold no SQL —
+they orchestrate `storage.supersede_knowledge` / `unsupersede_knowledge` plus a
+`supersedes` audit relation via the existing `insert_relation` / `delete_relation`.
+
 ## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
 
 Structured references on knowledge entries: a nullable JSON column holding a
