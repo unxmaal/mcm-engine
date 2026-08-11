@@ -6,6 +6,37 @@ versioning.
 
 ## [Unreleased]
 
+## [3.9.0] — 2026-08-11
+
+### Added
+- **`get_entry(entity_type, id)` — point read** (issue #112). Read-only fetch of
+  one entry, same rendered shape as a single `scroll_entries` block, or
+  `NOT_FOUND`. Reaches superseded/recalled rows (unlike `search`), so it is the
+  cheap confirm-before-mutate guard ahead of `supersede_rule`,
+  `supersede_knowledge`, `link_knowledge`, or `recall_entry`.
+- **`recall_events(after_id, limit, since)` — recall audit trail** (issue #110).
+  Read-only, postgres-only paged read of `recall_log`, so a client can consume
+  recall history without a direct SELECT. Same cursor-footer shape as
+  `scroll_entries`; no content field (recalled content is gone by design).
+- **`find_duplicate_entries` / `find_conflicting_entries`** (issue #113). The
+  rule-only MinHash/LSH dedup + conflict detection, extended to knowledge,
+  negative, and error entries. Read-only; skips hidden (archived/superseded/
+  recalled) rows. (Declined the speculative knowledge-metadata part of the
+  issue.)
+- **`unlink_knowledge` — reversible linking** (issue #111). Retract one
+  `link_knowledge` relation through a tool instead of raw SQL. Idempotent.
+- **`supersede_knowledge` / `unsupersede_knowledge` — knowledge soft-expire**
+  (issue #111). The knowledge-id-space analog of `supersede_rule`: retire a
+  finding first-class and auditable rather than only hard-delete it (recall) or
+  correct it prose-only. Superseded findings drop out of default `search`
+  (surfaced via `include_archived`) but stay inspectable via `get_entry`; a
+  `supersedes` audit relation is recorded and removed on revival.
+
+### Schema
+- Core schema **v13 → v14**: `knowledge.status` ('active'|'superseded') and
+  `knowledge.superseded_by`, on both the embedded and Postgres adapters (guarded
+  ALTERs; fresh installs get them from the base schema). Not FTS/tsv indexed.
+
 ## [3.8.0] — 2026-08-06
 
 ### Added

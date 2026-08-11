@@ -260,7 +260,8 @@ Values are documented in [`deploy/helm/mcm-engine/README.md`](deploy/helm/mcm-en
 
 **Knowledge.** `add_knowledge` (findings/decisions; dedups on topic+kind) · `add_negative`
 (anti-patterns) · `report_error` (log + auto-recall matching fixes) · `reinforce_knowledge`
-(bump confidence) · `kb_recall` (structured recall)
+(bump confidence) · `kb_recall` (structured recall) · `supersede_knowledge` (soft-expire
+old→new finding) · `unsupersede_knowledge` (revive it)
 
 **Rules.** `add_rule` (create/index a rule; flags injection markers) · `read_rule` ·
 `reinforce_rule` · `promote_to_rule` (DB entry → persistent rule) · `import_rules`
@@ -268,7 +269,14 @@ Values are documented in [`deploy/helm/mcm-engine/README.md`](deploy/helm/mcm-en
 `report_outcome` (correctness; author≠judge) · `supersede_rule` (soft-expire old→new) ·
 `find_duplicate_rules` · `find_conflicting_rules`
 
-**Relationships.** `link_knowledge` (typed edges) · `get_related`
+**Relationships.** `link_knowledge` (typed edges) · `unlink_knowledge` (retract one edge) ·
+`get_related`
+
+**Corpus audit.** `scroll_entries` (paged enumerate of one type) · `get_entry` (point-read
+by id; the confirm-before-mutate guard) · `recall_entry` (remove a flagged entry) ·
+`recall_events` (read the recall audit trail) · `find_duplicate_entries` /
+`find_conflicting_entries` (dedup/conflict for knowledge/negative/error). Postgres-backed
+tools: `recall_entry`, `recall_events`.
 
 **Session and hygiene.** `session_start` (context + last handoff + token-ledger net) ·
 `session_handoff` (snapshot for next session) · `session_summary` · `save_snapshot`
