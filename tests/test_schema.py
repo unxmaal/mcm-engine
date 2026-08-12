@@ -171,6 +171,45 @@ class TestMigrationFramework:
         ).fetchone()
         assert row["version"] == CORE_VERSION
 
+    def test_fresh_install_has_knowledge_lifecycle(self, tmp_path):
+        """Fresh install carries the knowledge lifecycle columns (issue #111)."""
+        db = KnowledgeDB(tmp_path / "fresh.db")
+        migrate_core(db)
+        assert _has_column(db, "knowledge", "status")
+        assert _has_column(db, "knowledge", "superseded_by")
+
+    def test_v13_to_v14_adds_knowledge_lifecycle(self, tmp_path):
+        """A v13 database gains knowledge.status + superseded_by, existing rows
+        default to active, and it bumps to v14 (issue #111)."""
+        db = KnowledgeDB(tmp_path / "v13.db")
+        db.executescript("""
+            CREATE TABLE knowledge (
+                id INTEGER PRIMARY KEY, topic TEXT NOT NULL, summary TEXT NOT NULL,
+                source_classification TEXT
+            );
+            CREATE TABLE _mcm_versions (
+                component TEXT PRIMARY KEY, version INTEGER NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        db.execute_write("INSERT INTO knowledge (topic, summary) VALUES ('t', 's')")
+        db.execute_write(
+            "INSERT INTO _mcm_versions (component, version) VALUES ('core', 13)")
+        db.commit()
+        assert not _has_column(db, "knowledge", "status")
+        assert not _has_column(db, "knowledge", "superseded_by")
+
+        migrate_core(db)
+
+        assert _has_column(db, "knowledge", "status")
+        assert _has_column(db, "knowledge", "superseded_by")
+        got = db.execute("SELECT status FROM knowledge WHERE topic = 't'").fetchone()
+        assert got["status"] == "active"
+        row = db.execute(
+            "SELECT version FROM _mcm_versions WHERE component = 'core'"
+        ).fetchone()
+        assert row["version"] == CORE_VERSION
+
     def test_idempotent_migration(self, tmp_path):
         """Running migrate_core twice should be safe."""
         db = KnowledgeDB(tmp_path / "idempotent.db")

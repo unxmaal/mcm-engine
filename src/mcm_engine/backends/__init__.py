@@ -134,6 +134,11 @@ class KnowledgeRow:
     # Issue #105 (v13): optional source-assigned data-classification label.
     # Free-form; carried, never interpreted by the engine.
     source_classification: Optional[str] = None
+    # Issue #111 (v14): knowledge lifecycle. status 'active' | 'superseded';
+    # superseded_by points at the replacement finding. Mirrors the rule
+    # lifecycle so a knowledge finding can be soft-expired, not only deleted.
+    status: str = "active"
+    superseded_by: Optional[int] = None
 
 
 @dataclass
@@ -365,6 +370,17 @@ class StorageBackend(Protocol):
     def insert_knowledge(self, row: KnowledgeRow) -> int: ...
     def update_knowledge(self, knowledge_id: int, **fields: Any) -> None: ...
 
+    def supersede_knowledge(self, old_id: int, new_id: int) -> None:
+        """Soft-expire a knowledge finding in favor of another (issue #111):
+        status 'superseded', superseded_by set. Drops out of default search but
+        stays inspectable."""
+        ...
+
+    def unsupersede_knowledge(self, knowledge_id: int) -> None:
+        """Revive a superseded knowledge finding (issue #111): status back to
+        'active', superseded_by cleared. Inverse of supersede_knowledge."""
+        ...
+
     # ---- Negative ----
     def insert_negative(self, row: NegativeRow) -> int: ...
 
@@ -476,6 +492,20 @@ class StorageBackend(Protocol):
     def insert_relation(self, row: RelationRow) -> Optional[int]:
         """Returns the new id, or None if the unique constraint was
         violated (relation already exists)."""
+        ...
+
+    def delete_relation(
+        self,
+        source_type: EntityType,
+        source_id: int,
+        target_type: EntityType,
+        target_id: int,
+        relation: str,
+        *,
+        caller: Optional[str] = None,
+    ) -> int:
+        """Remove one relationship, keyed on the full (source, target, relation)
+        tuple. Returns the number of rows deleted (0 if absent) — idempotent."""
         ...
 
     def list_outgoing_relations(

@@ -85,6 +85,8 @@ _DDL_STATEMENTS: list[str] = [
         created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
         source_classification TEXT,
+        status               TEXT NOT NULL DEFAULT 'active',
+        superseded_by        BIGINT,
         tsv  tsvector GENERATED ALWAYS AS (
             setweight(to_tsvector('english', coalesce(topic, '')),   'A') ||
             setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
@@ -302,6 +304,23 @@ _DDL_STATEMENTS: list[str] = [
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                        WHERE table_name = 'rules' AND column_name = 'source_classification') THEN
             ALTER TABLE rules ADD COLUMN source_classification TEXT;
+        END IF;
+    END$$
+    """,
+
+    # v14: knowledge lifecycle (issue #111) on EXISTING postgres deployments —
+    # status + superseded_by so a finding can be soft-expired, not only deleted.
+    # Not in the tsv generated column, so no tsv rebuild. Idempotent guards.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'knowledge' AND column_name = 'status') THEN
+            ALTER TABLE knowledge ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'knowledge' AND column_name = 'superseded_by') THEN
+            ALTER TABLE knowledge ADD COLUMN superseded_by BIGINT;
         END IF;
     END$$
     """,
@@ -551,6 +570,8 @@ def _knowledge_from_row(r: dict[str, Any]) -> KnowledgeRow:
         created_at=_as_dt(r["created_at"]),
         updated_at=_as_dt(r["updated_at"]),
         source_classification=r.get("source_classification"),
+        status=r.get("status") or "active",
+        superseded_by=r.get("superseded_by"),
     )
 
 
@@ -837,6 +858,28 @@ class PostgresStorage:
             cur.execute(
                 f"UPDATE knowledge SET {cols}, updated_at = now() WHERE id = %s",
                 values,
+            )
+        self._commit()
+
+    def supersede_knowledge(self, old_id: int, new_id: int) -> None:
+        """Soft-expire a knowledge finding (issue #111): status 'superseded' +
+        superseded_by set. Drops out of default search, stays inspectable."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE knowledge SET status = 'superseded', superseded_by = %s, "
+                "updated_at = now() WHERE id = %s",
+                (new_id, old_id),
+            )
+        self._commit()
+
+    def unsupersede_knowledge(self, knowledge_id: int) -> None:
+        """Clear a knowledge finding's superseded state (issue #111): status
+        back to active, superseded_by cleared."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE knowledge SET status = 'active', superseded_by = NULL, "
+                "updated_at = now() WHERE id = %s",
+                (knowledge_id,),
             )
         self._commit()
 
@@ -1233,6 +1276,22 @@ class PostgresStorage:
         except self._psycopg.errors.UniqueViolation:
             self._conn.rollback()
             return None
+
+    def delete_relation(
+        self, source_type: EntityType, source_id: int,
+        target_type: EntityType, target_id: int, relation: str,
+        *, caller: Optional[str] = None,
+    ) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM relations WHERE source_type = %s AND source_id = %s "
+                "AND target_type = %s AND target_id = %s AND relation = %s",
+                (source_type.value, source_id, target_type.value, target_id,
+                 relation),
+            )
+            n = cur.rowcount
+        self._commit()
+        return n
 
     def list_outgoing_relations(
         self, source_type: EntityType, source_id: int,

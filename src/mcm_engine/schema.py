@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 13
+CORE_VERSION = 14
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -27,7 +27,13 @@ CREATE TABLE IF NOT EXISTS knowledge (
     updated_at TEXT DEFAULT (datetime('now')),
     -- v13: optional source-assigned data-classification label (issue #105).
     -- Free-form; the engine carries it, never interprets it. Not FTS-indexed.
-    source_classification TEXT
+    source_classification TEXT,
+    -- v14: knowledge lifecycle (issue #111). status 'active' | 'superseded';
+    -- superseded_by points at the replacement finding. Superseded rows drop out
+    -- of default search but stay inspectable (get_entry / include_archived).
+    -- Not FTS-indexed, mirroring the rules lifecycle columns.
+    status TEXT NOT NULL DEFAULT 'active',
+    superseded_by INTEGER
 );
 
 -- What doesn't work
@@ -664,6 +670,23 @@ def _migrate_v12_to_v13(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v13_to_v14(db: KnowledgeDB) -> None:
+    """v13 -> v14: knowledge lifecycle columns (issue #111) — status and
+    superseded_by, so a knowledge finding can be soft-expired in favor of
+    another (supersede_knowledge) instead of only hard-deleted (recall) or
+    corrected prose-only. Additive; existing rows default to status='active'.
+    Not FTS-indexed, so knowledge_fts is left untouched."""
+    if not _has_column(db, "knowledge", "status"):
+        db.execute_write(
+            "ALTER TABLE knowledge ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        log("Migration v13->v14: added knowledge.status")
+    if not _has_column(db, "knowledge", "superseded_by"):
+        db.execute_write(
+            "ALTER TABLE knowledge ADD COLUMN superseded_by INTEGER")
+        log("Migration v13->v14: added knowledge.superseded_by")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -678,6 +701,7 @@ _MIGRATIONS = [
     (10, 11, _migrate_v10_to_v11),
     (11, 12, _migrate_v11_to_v12),
     (12, 13, _migrate_v12_to_v13),
+    (13, 14, _migrate_v13_to_v14),
 ]
 
 
