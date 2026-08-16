@@ -6,6 +6,36 @@ versioning.
 
 ## [Unreleased]
 
+## [3.10.0] — 2026-08-16
+
+### Added
+- **Per-turn fixation breaker** in the PreToolUse hook. After N consecutive edits
+  to the same file with no look-first compliance read in between, the hook emits
+  an advisory reframe on stderr ("is this load-bearing, or route around it?").
+  Fail-open — never blocks. `MCM_FIXATION_THRESHOLD` (default 8, 0 disables). A
+  compliance read or switching files resets the run; Bash between edits does not.
+- **Per-session efficiency telemetry (diagnostic only)**. A new `session_metrics`
+  table (core schema **v15**, both adapters) keyed on the Claude Code session id.
+  The PreToolUse hook accumulates LOC added/removed, churn (re-edits), and a
+  comment-vs-code split from each mutator's input; a new **SessionEnd hook**
+  (`mcm-engine session-end`) parses the transcript for real token totals
+  (in-process, no dependency) and records one row via the new
+  `record_session_metrics` MCP tool — remote over HTTP when a server is
+  configured, else the local embedded store. Fail-open throughout.
+- **`session_metrics_report`** (read-only) and a **`session_start` efficiency
+  block**: recent sessions with token spend, LOC/churn, comment ratio, and
+  fixations, plus a latest-vs-median context line. Explicitly framed as
+  DIAGNOSTIC, not a score to beat — it prompts a human/agent lesson via
+  `add_knowledge` / `add_negative`; the engine never auto-optimizes against it
+  (Goodhart). `MetricsConfig` (`metrics.enabled`, `metrics.report_limit`;
+  `MCM_METRICS_ENABLED`).
+
+### Notes
+- Real token counts (from the transcript) are kept distinct from the existing
+  `token_ledger`, which is a `chars/4` KB-value heuristic, not measured spend.
+- Verified end-to-end against Postgres over HTTP (hook → server → storage) and
+  the local embedded path.
+
 ## [3.9.0] — 2026-08-11
 
 ### Added
