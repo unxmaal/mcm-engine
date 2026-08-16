@@ -108,6 +108,21 @@ class AdjudicatorConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """Session efficiency telemetry (Phase 3). DIAGNOSTIC ONLY — never an
+    optimization target (Goodhart). ``enabled`` gates the session_start retro
+    block; ``report_limit`` bounds the recent-sessions summary there.
+
+    Note: the per-turn fixation breaker runs in the PreToolUse HOOK, a separate
+    process that does not load this server config, so its threshold is read from
+    the ``MCM_FIXATION_THRESHOLD`` env var, not from here.
+    """
+
+    enabled: bool = True
+    report_limit: int = 3
+
+
+@dataclass
 class MCMConfig:
     """Top-level configuration for an MCM Engine instance."""
 
@@ -118,6 +133,7 @@ class MCMConfig:
     nudges: NudgeConfig = field(default_factory=NudgeConfig)
     backends: BackendsConfig = field(default_factory=BackendsConfig)
     adjudicator: AdjudicatorConfig = field(default_factory=AdjudicatorConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     # Source-of-authority axis (issue #16). "files": markdown under rules_path
     # is authoritative and the watcher enforces files-win (World A / local
     # stdio). "database": the DB is authoritative — rules are pushed in via
@@ -311,6 +327,13 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     query_mode = os.environ.get("MCM_SEARCH_QUERY_MODE")
     if query_mode and backends.search == "postgres":
         backends.search_options.setdefault("query_mode", query_mode)
+    # Metrics master toggle via env (YAML metrics.enabled wins via setdefault).
+    metrics_enabled = os.environ.get("MCM_METRICS_ENABLED")
+    if metrics_enabled is not None:
+        raw.setdefault("metrics", {})
+        if isinstance(raw["metrics"], dict):
+            raw["metrics"].setdefault(
+                "enabled", metrics_enabled.strip().lower() in ("1", "true", "on", "yes"))
 
     # Extract adjudicator sub-config — same strict-key hygiene (Slice 3).
     adjudicator_raw = raw.pop("adjudicator", {})
@@ -324,10 +347,22 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
         )
     adjudicator = AdjudicatorConfig(**adjudicator_raw)
 
+    # Extract metrics sub-config — same strict-key hygiene (Phase 3).
+    metrics_raw = raw.pop("metrics", {})
+    metrics_fields = MetricsConfig.__dataclass_fields__
+    unknown_metrics = sorted(set(metrics_raw) - set(metrics_fields))
+    if unknown_metrics:
+        valid = ", ".join(sorted(metrics_fields))
+        raise ValueError(
+            f"unknown metrics key(s): {', '.join(unknown_metrics)}. "
+            f"Valid metrics keys: {valid}"
+        )
+    metrics = MetricsConfig(**metrics_raw)
+
     # Build top-level config — fail closed on unknown keys, except for the
     # explicit `extra:` block which is the documented escape hatch.
     known_fields = set(MCMConfig.__dataclass_fields__.keys()) - {
-        "nudges", "backends", "adjudicator"}
+        "nudges", "backends", "adjudicator", "metrics"}
     unknown_top = sorted(set(raw) - known_fields)
     if unknown_top:
         valid = ", ".join(sorted(known_fields))
@@ -340,5 +375,6 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     config_kwargs["nudges"] = nudges
     config_kwargs["backends"] = backends
     config_kwargs["adjudicator"] = adjudicator
+    config_kwargs["metrics"] = metrics
 
     return MCMConfig(**config_kwargs)

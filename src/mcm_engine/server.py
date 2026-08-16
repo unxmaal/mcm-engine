@@ -188,6 +188,8 @@ class MCMServer:
             invariants_cap=config.resume_invariants_cap,
             field_chars=config.resume_field_chars,
             max_pinned=config.resume_max_pinned,
+            metrics_enabled=config.metrics.enabled,
+            metrics_report_limit=config.metrics.report_limit,
         )
 
         # Rules tools
