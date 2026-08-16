@@ -16,6 +16,7 @@ from .schema import migrate_core, migrate_plugin
 from .tracker import ScopedTracker
 from .tools.corpus import register_corpus_tools
 from .tools.knowledge import register_knowledge_tools
+from .tools.metrics import register_metrics_tools
 from .tools.relations import register_relations_tools
 from .tools.rules import register_rules_tools
 from .tools.search import register_search_tools
@@ -202,6 +203,11 @@ class MCMServer:
 
         # Corpus governance tools (scroll_entries #104, recall_entry #103)
         register_corpus_tools(self.mcp, self.ctx, self.tracker)
+
+        # Session efficiency metrics (record_session_metrics + report)
+        register_metrics_tools(
+            self.mcp, self.ctx, self.tracker, project_name=config.project_name
+        )
 
         # Register plugin tools
         for plugin in self._plugins:
