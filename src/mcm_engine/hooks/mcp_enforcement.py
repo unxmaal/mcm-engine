@@ -82,6 +82,7 @@ import re
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -97,6 +98,23 @@ BLOCK_THRESHOLD = 6
 # with the tracker's hyper_focus_threshold — focused work edits one file a few
 # times legitimately, so the bar is deliberately high to avoid nagging.
 FIXATION_THRESHOLD = 8
+
+# Line-comment prefixes by file extension, for the comment-vs-code split in the
+# per-session metric accumulator (Phase 2). Line-prefix heuristic only (no block
+# comments) — a cheap, honest approximation, not a parser. Unknown extensions
+# count every non-blank added line as code.
+_COMMENT_PREFIX = {
+    ".py": "#", ".sh": "#", ".rb": "#", ".yaml": "#", ".yml": "#",
+    ".toml": "#", ".cfg": "#", ".ini": "#", ".pl": "#", ".r": "#",
+    ".js": "//", ".jsx": "//", ".ts": "//", ".tsx": "//", ".go": "//",
+    ".rs": "//", ".java": "//", ".c": "//", ".h": "//", ".cpp": "//",
+    ".hpp": "//", ".cs": "//", ".kt": "//", ".swift": "//", ".scala": "//",
+}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 # Drop per-session counter entries whose last_reset_at is older than this.
 # Each Claude Code session gets a fresh UUID, so without pruning the state
@@ -459,6 +477,79 @@ def _fixation_check(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Per-session code-metric accumulation (Phase 2) — feeds the SessionEnd hook.
+#
+# The PreToolUse hook is the only place that sees every mutator's tool_input, so
+# it is where LOC / churn / comment-ratio are tallied. DIAGNOSTIC ONLY — these
+# numbers are never a target. Deliberately cheap and honest (line counts, not a
+# real diff): precision here would cost far more than the signal is worth.
+# ---------------------------------------------------------------------------
+
+
+def _line_count(text: str) -> int:
+    return text.count("\n") + 1 if text else 0
+
+
+def _comment_code_split(text: str, ext: str) -> tuple[int, int]:
+    """(comment_lines, code_lines) among the non-blank lines of ``text``, by the
+    line-prefix heuristic. Unknown extensions count all non-blank lines as code."""
+    prefix = _COMMENT_PREFIX.get(ext.lower())
+    comment = code = 0
+    for line in text.splitlines():
+        st = line.strip()
+        if not st:
+            continue
+        if prefix and st.startswith(prefix):
+            comment += 1
+        else:
+            code += 1
+    return comment, code
+
+
+def _accumulate_metrics(
+    tool_name: str, event: dict, session_state: dict[str, Any]
+) -> None:
+    """Tally per-session code metrics from a mutator's tool_input into
+    ``session_state['metrics']``. Best-effort; the caller swallows exceptions.
+
+    loc_churned is a proxy: re-editing a file already touched THIS session is
+    counted as rework (the agent-attributed 'wasted work' signal). It is not a
+    line-level add-then-delete diff — deliberately, to stay cheap."""
+    norm = _normalize_builtin_tool(tool_name)
+    if norm not in BLOCKING_BUILTIN_TOOLS:
+        return
+    ti = event.get("tool_input") or {}
+    path = ti.get("file_path") or ti.get("path") or ti.get("notebook_path")
+
+    removed_lines = 0
+    if norm == "write":
+        added_text = str(ti.get("content") or "")
+    elif norm == "edit":
+        added_text = str(ti.get("new_string") or "")
+        removed_lines = _line_count(str(ti.get("old_string") or ""))
+    else:  # notebookedit / apply_patch — shapes vary; count what we can find.
+        added_text = str(ti.get("new_source") or ti.get("content") or "")
+
+    added_lines = _line_count(added_text)
+    ext = Path(str(path)).suffix if path else ""
+    comment_lines, code_lines = _comment_code_split(added_text, ext)
+
+    m = session_state.setdefault("metrics", {})
+    m["loc_added"] = m.get("loc_added", 0) + added_lines
+    m["loc_removed"] = m.get("loc_removed", 0) + removed_lines
+    m["comment_lines_added"] = m.get("comment_lines_added", 0) + comment_lines
+    m["code_lines_added"] = m.get("code_lines_added", 0) + code_lines
+
+    if path:
+        ef = session_state.setdefault("edited_files", {})
+        prior = ef.get(path, 0)
+        ef[path] = prior + 1
+        m["edit_cycles_max"] = max(m.get("edit_cycles_max", 0), prior + 1)
+        if prior > 0:
+            m["loc_churned"] = m.get("loc_churned", 0) + added_lines + removed_lines
+
+
 def _default_ambient_search(query: str, cwd: Path):
     """Best-effort ambient recall — returns ``(title, file_path)`` of the top
     rule hit or None. Adapts to how the KB is reached (issue #57/#58):
@@ -683,7 +774,9 @@ def main(argv: list[str] | None = None) -> int:
     s = state.setdefault(session_id, {
         "builtin_calls": 0,
         "last_reset_at": time.time(),
+        "first_seen_at": _now_iso(),
     })
+    s.setdefault("first_seen_at", _now_iso())
 
     exit_code, message = _decide(tool_name, s)
 
@@ -694,6 +787,13 @@ def main(argv: list[str] | None = None) -> int:
         fixation = _fixation_check(tool_name, event, s)
     except Exception:
         fixation = None
+
+    # Per-session code-metric accumulation (Phase 2). Best-effort; mutates `s`
+    # before _write_state so the SessionEnd hook can read the totals.
+    try:
+        _accumulate_metrics(tool_name, event, s)
+    except Exception:
+        pass
 
     # Opt-in ambient recall (#35). Never raises, never blocks; mutates `s` (the
     # dedup list) only when MCM_AMBIENT_RECALL is set, so it's a no-op otherwise.
