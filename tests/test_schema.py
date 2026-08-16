@@ -210,6 +210,43 @@ class TestMigrationFramework:
         ).fetchone()
         assert row["version"] == CORE_VERSION
 
+    def test_fresh_install_has_session_metrics(self, tmp_path):
+        """Fresh install carries the session_metrics table (v15)."""
+        db = KnowledgeDB(tmp_path / "fresh.db")
+        migrate_core(db)
+        cols = {r["name"] for r in db.execute(
+            "PRAGMA table_info(session_metrics)").fetchall()}
+        assert {"cc_session_id", "out_tokens", "loc_churned"} <= cols
+
+    def test_v14_to_v15_adds_session_metrics(self, tmp_path):
+        """A v14 database gains the session_metrics table and bumps to v15."""
+        db = KnowledgeDB(tmp_path / "v14.db")
+        db.executescript("""
+            CREATE TABLE knowledge (
+                id INTEGER PRIMARY KEY, topic TEXT NOT NULL, summary TEXT NOT NULL
+            );
+            CREATE TABLE _mcm_versions (
+                component TEXT PRIMARY KEY, version INTEGER NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        db.execute_write(
+            "INSERT INTO _mcm_versions (component, version) VALUES ('core', 14)")
+        db.commit()
+        assert not db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND "
+            "name='session_metrics'").fetchone()
+
+        migrate_core(db)
+
+        assert db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND "
+            "name='session_metrics'").fetchone()
+        row = db.execute(
+            "SELECT version FROM _mcm_versions WHERE component = 'core'"
+        ).fetchone()
+        assert row["version"] == CORE_VERSION
+
     def test_idempotent_migration(self, tmp_path):
         """Running migrate_core twice should be safe."""
         db = KnowledgeDB(tmp_path / "idempotent.db")

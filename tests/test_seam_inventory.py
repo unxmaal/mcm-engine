@@ -32,7 +32,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # Original v1 surface — tools still hold their SQL directly until the
     # tool-side refactor lands (a follow-up step of MCM2-02).
     "db.py":               7,
-    "schema.py":           63,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE; +3 issue #64 v10→v11 hierarchy ALTERs; +1 c5 v11→v12 knowledge.refs_json ALTER; +1 #105 v12→v13 source_classification ALTER (one execute_write site, looped over 4 tables); +2 #111 v13→v14 knowledge.status + superseded_by ALTERs
+    "schema.py":           64,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE; +3 issue #64 v10→v11 hierarchy ALTERs; +1 c5 v11→v12 knowledge.refs_json ALTER; +1 #105 v12→v13 source_classification ALTER (one execute_write site, looped over 4 tables); +2 #111 v13→v14 knowledge.status + superseded_by ALTERs; +1 v14→v15 session_metrics CREATE
     "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
     "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
@@ -42,14 +42,14 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "tools/session.py":    0,   # MCM2-02 rewire complete
     # MCM2-02 embedded SQLite adapter — SQL extracted out of tools into the
     # repository. These files are the new authoritative home for SQL.
-    "adapters/sqlite/storage.py":  65,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT); +2 #100 (unsupersede_rule UPDATE/INSERT); +1 #104 (page_entries SELECT); +1 #111 (delete_relation DELETE); +2 #111 (supersede/unsupersede_knowledge UPDATE)
+    "adapters/sqlite/storage.py":  68,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT); +2 #100 (unsupersede_rule UPDATE/INSERT); +1 #104 (page_entries SELECT); +1 #111 (delete_relation DELETE); +2 #111 (supersede/unsupersede_knowledge UPDATE); +3 v15 session_metrics (upsert INSERT + list SELECT x2 branches)
     "adapters/sqlite/search.py":   5,   # +2 for MCM2-07 search_plugin (FTS + LIKE)
     "adapters/sqlite/counters.py": 4,
     # MCM2-08 Postgres adapter — first non-embedded reference. SQL count
     # matches SqliteStorage's contract surface minus the FTS-table reads
     # (Postgres folds FTS into the same row via tsvector generated columns).
     # +7 MCM2-11 id-preserving inserts, +4 iter, +1 bump_sequences.
-    "adapters/postgres/storage.py": 67,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +1 #64 (_mcm_versions version stamp in ensure_schema); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT); +2 #100 (unsupersede_rule UPDATE/INSERT); +1 #104 (page_entries SELECT); +1 #111 (delete_relation DELETE); +2 #111 (supersede/unsupersede_knowledge UPDATE)
+    "adapters/postgres/storage.py": 70,  # +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +1 #64 (_mcm_versions version stamp in ensure_schema); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT); +2 #100 (unsupersede_rule UPDATE/INSERT); +1 #104 (page_entries SELECT); +1 #111 (delete_relation DELETE); +2 #111 (supersede/unsupersede_knowledge UPDATE); +3 v15 session_metrics (upsert INSERT + list SELECT x2 branches)
     # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
     "adapters/postgres/counters.py": 5,
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
