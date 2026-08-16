@@ -261,6 +261,33 @@ class SnapshotRow:
 
 
 @dataclass
+class SessionMetricsRow:
+    """Per-session efficiency telemetry (v15). Keyed on the Claude Code session
+    id (`cc_session_id`), since mcm has no session id until handoff. DIAGNOSTIC
+    ONLY — never an optimization target. Token counts come from the transcript
+    and are distinct from the token_ledger (a chars/4 KB-value heuristic)."""
+    id: int
+    cc_session_id: str
+    project: Optional[str] = None
+    first_seen_at: Optional[str] = None
+    ended_at: Optional[datetime] = None
+    out_tokens: int = 0
+    in_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    loc_added: int = 0
+    loc_removed: int = 0
+    loc_churned: int = 0
+    comment_lines_added: int = 0
+    code_lines_added: int = 0
+    edit_cycles_max: int = 0
+    fixation_events: int = 0
+    tool_failures: int = 0
+    extras_json: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+@dataclass
 class RelationRow:
     id: int
     source_type: EntityType
@@ -528,6 +555,20 @@ class StorageBackend(Protocol):
     def get_last_snapshot(
         self, *, caller: Optional[str] = None
     ) -> Optional[SnapshotRow]: ...
+
+    # ---- Session metrics (v15) ----
+    def upsert_session_metrics(self, row: SessionMetricsRow) -> None:
+        """Insert or update a per-session efficiency record, keyed on
+        cc_session_id (a session ends once, but the hook may fire the write more
+        than once — last write wins)."""
+        ...
+
+    def list_session_metrics(
+        self, *, after_id: int = 0, limit: int = 20, project: Optional[str] = None,
+        caller: Optional[str] = None,
+    ) -> list[SessionMetricsRow]:
+        """Recent session-metrics rows, newest first (for the read-only retro)."""
+        ...
 
     # ---- Cross-entity (driven by dynamic-table sites in the inventory) ----
     def set_pinned(self, entity_type: EntityType, entity_id: int, value: bool) -> None: ...

@@ -689,6 +689,28 @@ Visibility is enforced outside the SQL count: `search.py`
 they orchestrate `storage.supersede_knowledge` / `unsupersede_knowledge` plus a
 `supersedes` audit relation via the existing `insert_relation` / `delete_relation`.
 
+## Addendum — session_metrics table (v15, session efficiency telemetry)
+
+Per-session efficiency telemetry (tokens/LOC/churn/comment-ratio/fixation),
+DIAGNOSTIC ONLY. A brand-new table keyed on the Claude Code `session_id`
+(`cc_session_id`), present in both adapters. Real token counts come from parsing
+the session transcript and are kept distinct from `token_ledger` (a chars/4
+KB-value heuristic).
+
+- `schema.py`: 63 → 64. `_migrate_v14_to_v15` adds the table via one idempotent
+  `execute_write` CREATE (CORE_VERSION 14 → 15). Fresh installs get it from
+  CORE_SCHEMA; existing DBs from the migration (CORE_SCHEMA runs first in
+  `migrate_core`, so the migration's CREATE is belt-and-suspenders).
+- `adapters/sqlite/storage.py`: 65 → 68. `upsert_session_metrics` (one
+  `INSERT ... ON CONFLICT(cc_session_id) DO UPDATE`) + `list_session_metrics`
+  (two SELECT branches: with / without project filter).
+- `adapters/postgres/storage.py`: 67 → 70. Same two methods (INSERT ... ON
+  CONFLICT + two SELECT branches). The CREATE lives in `_DDL_STATEMENTS` (a
+  string literal, no `.execute` site) and the table is added to `_OWNED_TABLES`.
+
+`SessionMetricsRow` in `backends/__init__.py`; Protocol methods
+`upsert_session_metrics` / `list_session_metrics`.
+
 ## Addendum — knowledge.refs_json (c5 modernization, Phase 5)
 
 Structured references on knowledge entries: a nullable JSON column holding a

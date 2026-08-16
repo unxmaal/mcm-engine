@@ -22,6 +22,7 @@ from ...backends import (
     RelationRow,
     RuleEventRow,
     RuleRow,
+    SessionMetricsRow,
     SessionRow,
     SnapshotRow,
     StorageIdentity,
@@ -186,6 +187,30 @@ def _snapshot_from_row(r: sqlite3.Row) -> SnapshotRow:
         next_steps=r["next_steps"],
         active_files=r["active_files"],
         key_decisions=r["key_decisions"],
+        created_at=_parse_dt(r["created_at"]),
+    )
+
+
+def _session_metrics_from_row(r: sqlite3.Row) -> SessionMetricsRow:
+    return SessionMetricsRow(
+        id=r["id"],
+        cc_session_id=r["cc_session_id"],
+        project=r["project"],
+        first_seen_at=r["first_seen_at"],
+        ended_at=_parse_dt(r["ended_at"]),
+        out_tokens=r["out_tokens"] or 0,
+        in_tokens=r["in_tokens"] or 0,
+        cache_read_tokens=r["cache_read_tokens"] or 0,
+        cache_write_tokens=r["cache_write_tokens"] or 0,
+        loc_added=r["loc_added"] or 0,
+        loc_removed=r["loc_removed"] or 0,
+        loc_churned=r["loc_churned"] or 0,
+        comment_lines_added=r["comment_lines_added"] or 0,
+        code_lines_added=r["code_lines_added"] or 0,
+        edit_cycles_max=r["edit_cycles_max"] or 0,
+        fixation_events=r["fixation_events"] or 0,
+        tool_failures=r["tool_failures"] or 0,
+        extras_json=_col(r, "extras_json"),
         created_at=_parse_dt(r["created_at"]),
     )
 
@@ -822,6 +847,53 @@ class SqliteStorage:
             "SELECT * FROM snapshots ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return _snapshot_from_row(r) if r else None
+
+    # ---- Session metrics (v15) ----
+
+    def upsert_session_metrics(self, row: SessionMetricsRow) -> None:
+        self._db.execute_write(
+            "INSERT INTO session_metrics "
+            "(cc_session_id, project, first_seen_at, ended_at, out_tokens, "
+            " in_tokens, cache_read_tokens, cache_write_tokens, loc_added, "
+            " loc_removed, loc_churned, comment_lines_added, code_lines_added, "
+            " edit_cycles_max, fixation_events, tool_failures, extras_json) "
+            "VALUES (?, ?, ?, COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?, ?, "
+            " ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(cc_session_id) DO UPDATE SET "
+            " project=excluded.project, first_seen_at=excluded.first_seen_at, "
+            " ended_at=excluded.ended_at, out_tokens=excluded.out_tokens, "
+            " in_tokens=excluded.in_tokens, cache_read_tokens=excluded.cache_read_tokens, "
+            " cache_write_tokens=excluded.cache_write_tokens, loc_added=excluded.loc_added, "
+            " loc_removed=excluded.loc_removed, loc_churned=excluded.loc_churned, "
+            " comment_lines_added=excluded.comment_lines_added, "
+            " code_lines_added=excluded.code_lines_added, "
+            " edit_cycles_max=excluded.edit_cycles_max, "
+            " fixation_events=excluded.fixation_events, "
+            " tool_failures=excluded.tool_failures, extras_json=excluded.extras_json",
+            (row.cc_session_id, row.project, row.first_seen_at, row.ended_at,
+             row.out_tokens, row.in_tokens, row.cache_read_tokens,
+             row.cache_write_tokens, row.loc_added, row.loc_removed, row.loc_churned,
+             row.comment_lines_added, row.code_lines_added, row.edit_cycles_max,
+             row.fixation_events, row.tool_failures, row.extras_json),
+        )
+        self._db.commit()
+
+    def list_session_metrics(
+        self, *, after_id: int = 0, limit: int = 20, project: Optional[str] = None,
+        caller: Optional[str] = None,
+    ) -> list[SessionMetricsRow]:
+        if project:
+            rows = self._db.execute(
+                "SELECT * FROM session_metrics WHERE id > ? AND project = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (after_id, project, limit),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM session_metrics WHERE id > ? ORDER BY id DESC LIMIT ?",
+                (after_id, limit),
+            ).fetchall()
+        return [_session_metrics_from_row(r) for r in rows]
 
     # ---- Cross-entity (enum-driven) ----
 

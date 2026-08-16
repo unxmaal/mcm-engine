@@ -96,6 +96,8 @@ def register_session_tools(
     invariants_cap: int = 25,
     field_chars: int = 0,
     max_pinned: int = 0,
+    metrics_enabled: bool = True,
+    metrics_report_limit: int = 3,
 ) -> None:
     """Register session_start, session_handoff, session_summary,
     save_snapshot, get_resume_context.
@@ -163,6 +165,31 @@ def register_session_tools(
             )
         except Exception:
             pass
+
+        # Session efficiency (Phase 3). DIAGNOSTIC ONLY — surfaced to reflect on,
+        # never a target. Read-only and resilient: any error (older store without
+        # the table) silently skips the block.
+        if metrics_enabled:
+            try:
+                lim = metrics_report_limit if metrics_report_limit > 0 else 3
+                sm = storage.list_session_metrics(limit=lim)
+                if sm:
+                    mlines = ["\n--- Efficiency (recent sessions, diagnostic) ---"]
+                    for r in sm:
+                        denom = r.code_lines_added + r.comment_lines_added
+                        ratio = (f", comments {round(100 * r.comment_lines_added / denom)}%"
+                                 if denom else "")
+                        mlines.append(
+                            f"  {(r.cc_session_id or '')[:8]}: {r.out_tokens} out-tok, "
+                            f"+{r.loc_added}/-{r.loc_removed} loc (churn {r.loc_churned})"
+                            f"{ratio}, fixations {r.fixation_events}"
+                        )
+                    mlines.append(
+                        "  Reflect on what drove waste; store a lesson via "
+                        "add_knowledge / add_negative. (Not a score to beat.)")
+                    parts.append("\n".join(mlines))
+            except Exception:
+                pass
 
         # Stale knowledge (>90 days, no recent hit, not pinned).
         try:

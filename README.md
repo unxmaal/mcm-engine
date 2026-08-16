@@ -278,9 +278,16 @@ by id; the confirm-before-mutate guard) · `recall_entry` (remove a flagged entr
 `find_conflicting_entries` (dedup/conflict for knowledge/negative/error). Postgres-backed
 tools: `recall_entry`, `recall_events`.
 
-**Session and hygiene.** `session_start` (context + last handoff + token-ledger net) ·
-`session_handoff` (snapshot for next session) · `session_summary` · `save_snapshot`
-(mid-session checkpoint) · `get_resume_context` · `consolidation_report`
+**Session and hygiene.** `session_start` (context + last handoff + token-ledger net +
+efficiency retro) · `session_handoff` (snapshot for next session) · `session_summary` ·
+`save_snapshot` (mid-session checkpoint) · `get_resume_context` · `consolidation_report`
+
+**Session efficiency (diagnostic, not a target).** `record_session_metrics` (written by the
+SessionEnd hook — real transcript token totals + hook-measured LOC/churn/comment-ratio/
+fixations, keyed on the Claude Code session id) · `session_metrics_report` (read-only retro:
+recent sessions with latest-vs-median context). These surface waste to reflect on; the engine
+never auto-optimizes against them (Goodhart). The per-turn **fixation breaker** rides the
+PreToolUse hook (advisory reframe after repeated same-file edits; `MCM_FIXATION_THRESHOLD`).
 
 **Pinning.** `pin_item` / `unpin_item` (always loaded, never stale)
 
@@ -301,6 +308,7 @@ find_duplicate_rules / find_conflicting_rules   →   review   →   supersede_r
 | `mcm-engine init --project NAME` | Scaffold `mcm-engine.yaml`, `.claude/knowledge.db`, `rules/`. |
 | `mcm-engine hook` | The PreToolUse enforcement hook (reads one event on stdin). |
 | `mcm-engine session-start` | The SessionStart hook (prints resume context as `additionalContext`). |
+| `mcm-engine session-end` | The SessionEnd hook (records per-session efficiency telemetry; always exits 0). |
 | `mcm-engine migrate --from DSN --to DSN` | Copy every row between backends, IDs preserved. |
 | `mcm-engine ingest SOURCE` | Import from an external corpus (e.g. a Markdown vault). |
 | `mcm-engine ingest SOURCE --remote` | Sift a **local** codebase against a **remote** KB over MCP — spans (not files) go to `sift_candidates`; no direct DB access. Add `--remote-loose` to also surface descriptive facts (architecture, "X does Y") that carry no normative marker. |

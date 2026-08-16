@@ -220,6 +220,15 @@ def cmd_session_start(args):
     sys.exit(ss_main())
 
 
+def cmd_session_end(args):
+    """Run the SessionEnd hook. Reads a SessionEnd event from stdin, parses the
+    transcript for token totals, reads the PreToolUse hook's accumulated code
+    metrics, and records one session_metrics row (remote MCP tool or local
+    store). Always exits 0 (telemetry must never disrupt session teardown)."""
+    from .hooks.session_end import main as se_main
+    sys.exit(se_main())
+
+
 def _collect_remote_spans(groups, *, strict: bool = True) -> list[dict]:
     """Client side of remote ingest (#72): extract rule-like spans locally from
     the already-walked ingester rows. Pure/corpus-free — only the spans that
@@ -1022,6 +1031,14 @@ def main():
              "and prints resume context as additionalContext JSON. Always exits 0.",
     )
     ss_parser.set_defaults(func=cmd_session_start)
+
+    # session-end (SessionEnd efficiency-telemetry hook)
+    se_parser = subparsers.add_parser(
+        "session-end",
+        help="SessionEnd hook for Claude Code. Reads one event from stdin, "
+             "records per-session efficiency telemetry, and always exits 0.",
+    )
+    se_parser.set_defaults(func=cmd_session_end)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(

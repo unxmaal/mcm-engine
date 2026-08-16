@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 14
+CORE_VERSION = 15
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -73,6 +73,33 @@ CREATE TABLE IF NOT EXISTS sessions (
     next_steps TEXT,
     blockers TEXT,
     context_snapshot TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Per-session efficiency telemetry (v15). One row per Claude Code session,
+-- keyed on the harness session id (there is no mcm session id until handoff).
+-- DIAGNOSTIC ONLY — never an optimization target (Goodhart). Real token counts
+-- come from parsing the session transcript, kept distinct from token_ledger
+-- (a chars/4 KB-value heuristic).
+CREATE TABLE IF NOT EXISTS session_metrics (
+    id INTEGER PRIMARY KEY,
+    cc_session_id TEXT NOT NULL UNIQUE,
+    project TEXT,
+    first_seen_at TEXT,
+    ended_at TEXT DEFAULT (datetime('now')),
+    out_tokens INTEGER DEFAULT 0,
+    in_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    loc_added INTEGER DEFAULT 0,
+    loc_removed INTEGER DEFAULT 0,
+    loc_churned INTEGER DEFAULT 0,
+    comment_lines_added INTEGER DEFAULT 0,
+    code_lines_added INTEGER DEFAULT 0,
+    edit_cycles_max INTEGER DEFAULT 0,
+    fixation_events INTEGER DEFAULT 0,
+    tool_failures INTEGER DEFAULT 0,
+    extras_json TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -687,6 +714,26 @@ def _migrate_v13_to_v14(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v14_to_v15(db: KnowledgeDB) -> None:
+    """v14 -> v15: session_metrics table (per-session efficiency telemetry).
+    A brand-new table, so fresh installs get it from CORE_SCHEMA and existing
+    DBs get it here via an idempotent CREATE. No data migration; diagnostic
+    only. Kept distinct from token_ledger (a chars/4 heuristic)."""
+    db.execute_write(
+        "CREATE TABLE IF NOT EXISTS session_metrics ("
+        "id INTEGER PRIMARY KEY, cc_session_id TEXT NOT NULL UNIQUE, project TEXT, "
+        "first_seen_at TEXT, ended_at TEXT DEFAULT (datetime('now')), "
+        "out_tokens INTEGER DEFAULT 0, in_tokens INTEGER DEFAULT 0, "
+        "cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0, "
+        "loc_added INTEGER DEFAULT 0, loc_removed INTEGER DEFAULT 0, "
+        "loc_churned INTEGER DEFAULT 0, comment_lines_added INTEGER DEFAULT 0, "
+        "code_lines_added INTEGER DEFAULT 0, edit_cycles_max INTEGER DEFAULT 0, "
+        "fixation_events INTEGER DEFAULT 0, tool_failures INTEGER DEFAULT 0, "
+        "extras_json TEXT, created_at TEXT DEFAULT (datetime('now')))"
+    )
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -702,6 +749,7 @@ _MIGRATIONS = [
     (11, 12, _migrate_v11_to_v12),
     (12, 13, _migrate_v12_to_v13),
     (13, 14, _migrate_v13_to_v14),
+    (14, 15, _migrate_v14_to_v15),
 ]
 
 

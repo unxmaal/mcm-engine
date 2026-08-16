@@ -82,12 +82,39 @@ import re
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 
 WARN_THRESHOLD = 3
 BLOCK_THRESHOLD = 6
+
+# Fixation breaker (advisory, issue: session-metrics). After this many
+# CONSECUTIVE edits to the SAME file in one session (a look-first compliance
+# read resets it), emit a reframe on stderr asking whether the locus is really
+# load-bearing. Purely advisory: fail-open, never blocks, never changes the
+# exit code. Env override MCM_FIXATION_THRESHOLD (0 disables). Default 8 aligns
+# with the tracker's hyper_focus_threshold — focused work edits one file a few
+# times legitimately, so the bar is deliberately high to avoid nagging.
+FIXATION_THRESHOLD = 8
+
+# Line-comment prefixes by file extension, for the comment-vs-code split in the
+# per-session metric accumulator (Phase 2). Line-prefix heuristic only (no block
+# comments) — a cheap, honest approximation, not a parser. Unknown extensions
+# count every non-blank added line as code.
+_COMMENT_PREFIX = {
+    ".py": "#", ".sh": "#", ".rb": "#", ".yaml": "#", ".yml": "#",
+    ".toml": "#", ".cfg": "#", ".ini": "#", ".pl": "#", ".r": "#",
+    ".js": "//", ".jsx": "//", ".ts": "//", ".tsx": "//", ".go": "//",
+    ".rs": "//", ".java": "//", ".c": "//", ".h": "//", ".cpp": "//",
+    ".hpp": "//", ".cs": "//", ".kt": "//", ".swift": "//", ".scala": "//",
+}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 # Drop per-session counter entries whose last_reset_at is older than this.
 # Each Claude Code session gets a fresh UUID, so without pruning the state
@@ -279,6 +306,10 @@ def _decide(
     if _is_compliance_mcp_tool(tool_name):
         session_state["builtin_calls"] = 0
         session_state["mutator_calls"] = 0
+        # A look-first read breaks a fixation run: pausing to consult is exactly
+        # the behavior the breaker wants to elicit, so it clears the streak.
+        session_state["fixation_locus"] = None
+        session_state["fixation_run"] = 0
         session_state["last_reset_at"] = time.time()
         return 0, ""
 
@@ -375,6 +406,148 @@ def _ambient_query(tool_name: str, event: dict) -> Optional[str]:
     stem = Path(str(path)).stem
     toks = [t for t in re.split(r"[^A-Za-z0-9]+", stem) if len(t) > 2]
     return " ".join(toks) if toks else None
+
+
+# ---------------------------------------------------------------------------
+# Fixation breaker (advisory) — a per-turn rabbit-hole circuit-breaker.
+#
+# Prior art (StuckLoopDetection, circuit-breaker patterns) detects a stuck agent
+# by EXTERNAL observation rather than asking the model to notice. The hook is
+# already that external observer: it sees every mutator's file path and holds
+# per-session state. The signal here is deliberately narrow and honest — N
+# CONSECUTIVE edits to one file with no compliance read in between — because the
+# hook fires PreToolUse and has no test-pass/progress signal to lean on.
+# ---------------------------------------------------------------------------
+
+
+def _fixation_threshold() -> int:
+    """Effective threshold: env MCM_FIXATION_THRESHOLD overrides the default;
+    0 disables the breaker; a malformed value falls back to the default."""
+    raw = os.environ.get("MCM_FIXATION_THRESHOLD", "").strip()
+    if not raw:
+        return FIXATION_THRESHOLD
+    try:
+        v = int(raw)
+    except ValueError:
+        return FIXATION_THRESHOLD
+    return v if v >= 0 else FIXATION_THRESHOLD
+
+
+def _mutator_path(tool_name: str, event: dict) -> Optional[str]:
+    """The file path a mutator tool targets, or None for non-mutators / no path."""
+    if _normalize_builtin_tool(tool_name) not in BLOCKING_BUILTIN_TOOLS:
+        return None
+    ti = event.get("tool_input") or {}
+    path = ti.get("file_path") or ti.get("path") or ti.get("notebook_path")
+    return str(path) if path else None
+
+
+def _fixation_check(
+    tool_name: str, event: dict, session_state: dict[str, Any]
+) -> Optional[str]:
+    """Track consecutive same-file edits and return a reframe advisory once the
+    run reaches the threshold (then again at each multiple, to throttle). Mutates
+    ``session_state`` (fixation_locus / fixation_run / fixation_events). Returns
+    None for non-mutator events, a different-file edit, or a below-threshold run.
+    Never blocks — the caller always keeps _decide's exit code.
+    """
+    threshold = _fixation_threshold()
+    if threshold <= 0:
+        return None
+    path = _mutator_path(tool_name, event)
+    if path is None:
+        return None
+
+    if path == session_state.get("fixation_locus"):
+        run = session_state.get("fixation_run", 0) + 1
+    else:
+        session_state["fixation_locus"] = path
+        run = 1
+    session_state["fixation_run"] = run
+
+    if run >= threshold and run % threshold == 0:
+        session_state["fixation_events"] = session_state.get("fixation_events", 0) + 1
+        return (
+            f"[mcm-engine] FIXATION CHECK — {run} consecutive edits to {path} "
+            "this session with no look-first MCP read in between. Step back: is "
+            "this the load-bearing problem, or can you route around it (stub it, "
+            "skip the test, defer, or ask)? If a hygiene trigger is pushing you "
+            "to keep hammering this one spot, that trigger may be wrong here."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Per-session code-metric accumulation (Phase 2) — feeds the SessionEnd hook.
+#
+# The PreToolUse hook is the only place that sees every mutator's tool_input, so
+# it is where LOC / churn / comment-ratio are tallied. DIAGNOSTIC ONLY — these
+# numbers are never a target. Deliberately cheap and honest (line counts, not a
+# real diff): precision here would cost far more than the signal is worth.
+# ---------------------------------------------------------------------------
+
+
+def _line_count(text: str) -> int:
+    return text.count("\n") + 1 if text else 0
+
+
+def _comment_code_split(text: str, ext: str) -> tuple[int, int]:
+    """(comment_lines, code_lines) among the non-blank lines of ``text``, by the
+    line-prefix heuristic. Unknown extensions count all non-blank lines as code."""
+    prefix = _COMMENT_PREFIX.get(ext.lower())
+    comment = code = 0
+    for line in text.splitlines():
+        st = line.strip()
+        if not st:
+            continue
+        if prefix and st.startswith(prefix):
+            comment += 1
+        else:
+            code += 1
+    return comment, code
+
+
+def _accumulate_metrics(
+    tool_name: str, event: dict, session_state: dict[str, Any]
+) -> None:
+    """Tally per-session code metrics from a mutator's tool_input into
+    ``session_state['metrics']``. Best-effort; the caller swallows exceptions.
+
+    loc_churned is a proxy: re-editing a file already touched THIS session is
+    counted as rework (the agent-attributed 'wasted work' signal). It is not a
+    line-level add-then-delete diff — deliberately, to stay cheap."""
+    norm = _normalize_builtin_tool(tool_name)
+    if norm not in BLOCKING_BUILTIN_TOOLS:
+        return
+    ti = event.get("tool_input") or {}
+    path = ti.get("file_path") or ti.get("path") or ti.get("notebook_path")
+
+    removed_lines = 0
+    if norm == "write":
+        added_text = str(ti.get("content") or "")
+    elif norm == "edit":
+        added_text = str(ti.get("new_string") or "")
+        removed_lines = _line_count(str(ti.get("old_string") or ""))
+    else:  # notebookedit / apply_patch — shapes vary; count what we can find.
+        added_text = str(ti.get("new_source") or ti.get("content") or "")
+
+    added_lines = _line_count(added_text)
+    ext = Path(str(path)).suffix if path else ""
+    comment_lines, code_lines = _comment_code_split(added_text, ext)
+
+    m = session_state.setdefault("metrics", {})
+    m["loc_added"] = m.get("loc_added", 0) + added_lines
+    m["loc_removed"] = m.get("loc_removed", 0) + removed_lines
+    m["comment_lines_added"] = m.get("comment_lines_added", 0) + comment_lines
+    m["code_lines_added"] = m.get("code_lines_added", 0) + code_lines
+
+    if path:
+        ef = session_state.setdefault("edited_files", {})
+        prior = ef.get(path, 0)
+        ef[path] = prior + 1
+        m["edit_cycles_max"] = max(m.get("edit_cycles_max", 0), prior + 1)
+        if prior > 0:
+            m["loc_churned"] = m.get("loc_churned", 0) + added_lines + removed_lines
 
 
 def _default_ambient_search(query: str, cwd: Path):
@@ -601,9 +774,26 @@ def main(argv: list[str] | None = None) -> int:
     s = state.setdefault(session_id, {
         "builtin_calls": 0,
         "last_reset_at": time.time(),
+        "first_seen_at": _now_iso(),
     })
+    s.setdefault("first_seen_at", _now_iso())
 
     exit_code, message = _decide(tool_name, s)
+
+    # Fixation breaker (advisory). Mutates `s` (fixation run counters) so it must
+    # run before _write_state. Fail-open: any error yields no advisory and never
+    # affects the exit code.
+    try:
+        fixation = _fixation_check(tool_name, event, s)
+    except Exception:
+        fixation = None
+
+    # Per-session code-metric accumulation (Phase 2). Best-effort; mutates `s`
+    # before _write_state so the SessionEnd hook can read the totals.
+    try:
+        _accumulate_metrics(tool_name, event, s)
+    except Exception:
+        pass
 
     # Opt-in ambient recall (#35). Never raises, never blocks; mutates `s` (the
     # dedup list) only when MCM_AMBIENT_RECALL is set, so it's a no-op otherwise.
@@ -638,8 +828,19 @@ def main(argv: list[str] | None = None) -> int:
             "builtin_calls": s.get("builtin_calls", 0),
             "mutator_calls": s.get("mutator_calls", 0),
         })
+    if fixation:
+        _append_event(_events_path(cwd), {
+            "ts": time.time(),
+            "session_id": session_id,
+            "tool": tool_name,
+            "action": "fixation",
+            "locus": s.get("fixation_locus"),
+            "run": s.get("fixation_run", 0),
+        })
 
     out = message
+    if fixation:
+        out = f"{out}\n{fixation}" if out else fixation
     if ambient:
         out = f"{out}\n{ambient}" if out else ambient
     if out:
