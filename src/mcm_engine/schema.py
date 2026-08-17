@@ -294,7 +294,7 @@ CREATE TABLE IF NOT EXISTS relations (
     source_id INTEGER NOT NULL,
     target_type TEXT NOT NULL,
     target_id INTEGER NOT NULL,
-    relation TEXT NOT NULL,     -- 'fixes', 'causes', 'supersedes', 'contradicts', 'related'
+    relation TEXT NOT NULL,     -- 'fixes','causes','supersedes','contradicts','related','depends_on'
     note TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(source_type, source_id, target_type, target_id, relation)

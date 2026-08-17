@@ -15,6 +15,7 @@ from .registry import AdapterRegistry
 from .schema import migrate_core, migrate_plugin
 from .tracker import ScopedTracker
 from .tools.corpus import register_corpus_tools
+from .tools.decisions import register_decisions_tools
 from .tools.knowledge import register_knowledge_tools
 from .tools.metrics import register_metrics_tools
 from .tools.relations import register_relations_tools
@@ -202,6 +203,11 @@ class MCMServer:
 
         # Relations tools
         register_relations_tools(self.mcp, self.ctx, self.tracker)
+
+        # First-class decisions (record_decision -> kind='decision' + depends_on)
+        register_decisions_tools(
+            self.mcp, self.ctx, self.tracker, project_name=config.project_name
+        )
 
         # Corpus governance tools (scroll_entries #104, recall_entry #103)
         register_corpus_tools(self.mcp, self.ctx, self.tracker)

@@ -18,7 +18,13 @@ VALID_TYPES = {e.value for e in EntityType}
 # enum in the MCP tool schema (issue #49 — callers couldn't discover the allowed
 # values), and VALID_RELATIONS is derived from it so the runtime check and the
 # schema can never drift apart.
-RelationType = Literal["causes", "contradicts", "fixes", "related", "supersedes"]
+#
+# "depends_on" (v3.11.0) is the causal-provenance verb for first-class decisions:
+# a decision --[depends_on]--> the knowledge/error/rule/decision it rests on. It
+# is the directed edge trace_chain walks to reconstruct a decision's ancestry.
+RelationType = Literal[
+    "causes", "contradicts", "fixes", "related", "supersedes", "depends_on",
+]
 VALID_RELATIONS = set(get_args(RelationType))
 
 
