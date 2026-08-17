@@ -6,6 +6,38 @@ versioning.
 
 ## [Unreleased]
 
+## [3.11.0] — 2026-08-17
+
+### Added
+- **First-class decisions.** A new `record_decision` MCP tool records a decision
+  as a queryable, traceable knowledge row (`kind='decision'`) capturing
+  scenario → reasoning → outcome (+ confidence). Its `based_on` refs
+  (`["knowledge#41","error#7",…]`) become `depends_on` edges to the evidence the
+  decision rests on; `supersedes_decision` soft-expires a prior decision via the
+  existing supersede path. No new entity or table — decisions ride the knowledge
+  table plus the relations graph. Discover them with `search(scope="knowledge")`.
+- **`depends_on` relation verb.** Added to the sealed `RelationType` vocabulary —
+  the directed causal-provenance edge a decision lays down and `trace_chain`
+  walks. The `relations.relation` column is free-text, so no schema change.
+- **`trace_chain`** (read-only). Walks the relations graph from an entry up to
+  `max_depth` hops and renders the reachable chain as an indented tree — a
+  decision's full `depends_on` ancestry or a `supersedes` lineage. Generalizes
+  the 1-hop `get_related`/spreading-activation into a bounded, single-verb,
+  directional (outgoing/incoming/both) traversal with a cycle guard and a
+  surfaced node cap. Uses only existing storage primitives (no new SQL site).
+- **`knowledge.valid_until`** (core schema **v16**, both adapters) — forward-dated
+  validity mirroring `rules.valid_until`. When set and in the past, search tags
+  the row `[EXPIRED]` and sinks its rank while still returning it — "expired by
+  validity", distinct from the `[STALE]` recency tag. Settable via
+  `add_knowledge`, `record_decision`, and (for rules) `set_rule_metadata`.
+
+### Changed
+- **Search now honors `valid_until` for both knowledge and rules** — the first
+  read of `rules.valid_until`, which was previously inert past hydration.
+  Superseded rows are still dropped before the expiry check (no double-tag).
+- `set_rule_metadata` accepts an optional `valid_until` (a non-vocab field),
+  giving active rules a forward-date write path.
+
 ## [3.10.0] — 2026-08-16
 
 ### Added

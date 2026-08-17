@@ -766,3 +766,23 @@ precise.
 
 - `adapters/postgres/search.py`: 4 → 5 (one new `cur.execute` for the OR-rank
   fallback). SQLite is unchanged — `query_mode` is Postgres-only.
+
+## Addendum — knowledge.valid_until (v15 → v16)
+
+Forward-dated validity on knowledge, mirroring `rules.valid_until`, honored in
+search as a soft `[EXPIRED]` tag + rank penalty for BOTH entity types (the first
+read of `rules.valid_until`, previously inert past hydration).
+
+- `schema.py`: 64 → 65. One new `db.execute_write` in `_migrate_v15_to_v16` (the
+  `ALTER TABLE knowledge ADD COLUMN valid_until TEXT`). The column also lands in
+  CORE_SCHEMA for fresh installs (no site).
+- `adapters/sqlite/storage.py`: unchanged (68). `insert_knowledge` and
+  `update_knowledge` thread `valid_until` into their existing statements;
+  `set_rule_metadata` folds an optional `valid_until` into its existing UPDATE.
+  No new `.execute*` sites.
+- `adapters/postgres/storage.py`: unchanged (70). The column is added to the
+  knowledge `CREATE TABLE` DDL plus one guarded `DO $$ ... $$` ALTER block for
+  existing deployments — DDL string literals, no new `.execute` site. Insert /
+  update / set_rule_metadata thread the value through existing sites.
+- `tools/search.py`: unchanged (0). Expiry is computed from the hydrated
+  `valid_until` field — no SQL.

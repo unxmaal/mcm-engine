@@ -73,6 +73,7 @@ def _knowledge_from_row(r: sqlite3.Row) -> KnowledgeRow:
         source_classification=_col(r, "source_classification"),
         status=_col(r, "status", "active") or "active",
         superseded_by=_col(r, "superseded_by"),
+        valid_until=_parse_dt(_col(r, "valid_until")),
     )
 
 
@@ -323,23 +324,26 @@ class SqliteStorage:
         return [_knowledge_from_row(r) for r in rows]
 
     def insert_knowledge(self, row: KnowledgeRow) -> int:
+        # valid_until is a TEXT column; bind ISO text (never a datetime object —
+        # sqlite3's datetime adapter is deprecated in 3.12).
+        vu = row.valid_until.isoformat() if row.valid_until else None
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO knowledge "
-                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification, valid_until) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.topic, row.kind, row.summary, row.detail, row.tags,
                  row.project, row.rationale, row.alternatives, dump_refs(row.references),
-                 row.source_classification),
+                 row.source_classification, vu),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO knowledge "
-                "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification, valid_until) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.topic, row.kind, row.summary, row.detail, row.tags,
                  row.project, row.rationale, row.alternatives, dump_refs(row.references),
-                 row.source_classification),
+                 row.source_classification, vu),
             )
         self._db.commit()
         return cur.lastrowid
@@ -348,12 +352,16 @@ class SqliteStorage:
         if not fields:
             return
         allowed = {"topic", "kind", "summary", "detail", "tags", "project",
-                   "rationale", "alternatives", "refs_json"}
+                   "rationale", "alternatives", "refs_json", "valid_until"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"unknown knowledge fields: {sorted(bad)}")
         cols = ", ".join(f"{k} = ?" for k in fields)
-        values = tuple(fields.values()) + (knowledge_id,)
+        # Bind any datetime (valid_until) as ISO text, per insert_knowledge.
+        values = tuple(
+            v.isoformat() if isinstance(v, datetime) else v
+            for v in fields.values()
+        ) + (knowledge_id,)
         self._db.execute_write(
             f"UPDATE knowledge SET {cols}, updated_at = datetime('now') WHERE id = ?",
             values,
@@ -539,14 +547,18 @@ class SqliteStorage:
         scope: Optional[str] = None,
         kind: Optional[str] = None,
         category: Optional[str] = None,
+        valid_until: Optional[datetime] = None,
         actor: str = "nobody",
     ) -> Optional[RuleRow]:
-        """Set the hierarchy axes (issue #64). Validates against the vocab
-        (raising ValueError before any write), updates only the provided
-        fields, stamps updated_by, and emits an audited 'metadata' rule_events
-        row. Atomic. Returns the updated row, the unchanged row if nothing was
-        provided, or None if the rule is absent."""
+        """Set the hierarchy axes (issue #64) and/or a forward-dated
+        valid_until (v16). Validates the vocab axes (raising ValueError before
+        any write), updates only the provided fields, stamps updated_by, and
+        emits an audited 'metadata' rule_events row. Atomic. Returns the updated
+        row, the unchanged row if nothing was provided, or None if absent."""
         updates = validated_metadata_updates(importance, scope, kind, category)
+        if valid_until is not None:
+            # Not a vocab axis; bind ISO text (TEXT column, no datetime adapter).
+            updates["valid_until"] = valid_until.isoformat()
         if self.find_by_id(EntityType.RULE, rule_id) is None:
             return None
         if not updates:

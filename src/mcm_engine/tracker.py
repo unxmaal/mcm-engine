@@ -61,7 +61,7 @@ class SessionTracker:
     READ_ONLY_TOOLS: frozenset[str] = frozenset({
         "sift_candidates", "find_duplicate_rules", "find_conflicting_rules",
         "consolidation_report", "list_rules", "get_related", "scroll_entries",
-        "get_entry", "recall_events",
+        "get_entry", "recall_events", "trace_chain",
         "find_duplicate_entries", "find_conflicting_entries",
         "session_metrics_report",
     })

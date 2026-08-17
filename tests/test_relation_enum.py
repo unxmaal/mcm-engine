@@ -24,7 +24,9 @@ from mcm_engine.tracker import NudgeConfig, SessionTracker
 
 def test_valid_relations_is_derived_from_the_literal():
     assert VALID_RELATIONS == set(get_args(RelationType))
-    assert VALID_RELATIONS == {"causes", "contradicts", "fixes", "related", "supersedes"}
+    assert VALID_RELATIONS == {
+        "causes", "contradicts", "fixes", "related", "supersedes", "depends_on",
+    }
 
 
 class _FakeMCP:

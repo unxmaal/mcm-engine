@@ -40,6 +40,16 @@ class MissingDependencyError(ImportError):
     """
 
 
+def parse_valid_until(value: str) -> Optional[datetime]:
+    """Parse a user-supplied ISO date/datetime string into a datetime for the
+    ``valid_until`` field (v16). "" / None -> None (never expires). A date-only
+    string ("2026-08-17") is accepted (midnight). Raises ValueError on anything
+    else so the calling tool can reject it rather than silently drop it."""
+    if not value:
+        return None
+    return datetime.fromisoformat(value.strip())
+
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -139,6 +149,10 @@ class KnowledgeRow:
     # lifecycle so a knowledge finding can be soft-expired, not only deleted.
     status: str = "active"
     superseded_by: Optional[int] = None
+    # v16: forward-dated validity, mirroring rules.valid_until. When set and in
+    # the past, search tags the row [EXPIRED] and sinks its rank ("expired by
+    # validity", distinct from the recency [STALE] tag). None = never expires.
+    valid_until: Optional[datetime] = None
 
 
 @dataclass
@@ -443,12 +457,14 @@ class StorageBackend(Protocol):
         scope: Optional[str] = None,
         kind: Optional[str] = None,
         category: Optional[str] = None,
+        valid_until: Optional[datetime] = None,
         actor: str = "nobody",
     ) -> Optional[RuleRow]:
-        """Set the rule hierarchy axes (issue #64). Validates against the vocab,
-        updates only the provided fields, stamps updated_by, and emits an
-        audited 'metadata' rule_events row. Returns the updated row, the
-        unchanged row if nothing was provided, or None if the rule is absent."""
+        """Set the rule hierarchy axes (issue #64) and/or a forward-dated
+        valid_until (v16, a non-vocab field). Validates the vocab axes, updates
+        only the provided fields, stamps updated_by, and emits an audited
+        'metadata' rule_events row. Returns the updated row, the unchanged row
+        if nothing was provided, or None if the rule is absent."""
         ...
     def list_archived_rules(
         self, *, caller: Optional[str] = None
