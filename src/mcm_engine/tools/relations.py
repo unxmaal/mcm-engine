@@ -27,6 +27,11 @@ RelationType = Literal[
 ]
 VALID_RELATIONS = set(get_args(RelationType))
 
+# trace_chain bounds — a hop ceiling and a total-nodes cap so a dense or cyclic
+# graph can't produce runaway output. The cap is surfaced (not silent) when hit.
+_MAX_TRACE_DEPTH = 20
+_MAX_TRACE_NODES = 200
+
 
 def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) -> str:
     nudge = tracker.get_nudge(topic)
@@ -211,3 +216,89 @@ def register_relations_tools(
                 parts.append(line)
 
         return _with_nudge("\n".join(parts), tracker)
+
+    @mcp.tool()
+    def trace_chain(
+        entry_type: EntityTypeLiteral,
+        entry_id: int,
+        relation: str = "",
+        direction: str = "outgoing",
+        max_depth: int = 5,
+    ) -> str:
+        """Walk the relations graph from one entry up to `max_depth` hops and
+        render the reachable chain as an indented tree. Where `get_related` shows
+        one hop, this follows edges transitively — e.g. a decision's full
+        `depends_on` ancestry, or a `supersedes` lineage.
+
+        relation: restrict the walk to a single verb (one of causes / contradicts
+        / fixes / related / supersedes / depends_on); "" (default) walks any verb.
+        direction: "outgoing" follows source->target (default); "incoming" follows
+        target->source; "both" walks either way.
+        max_depth: hop limit (clamped to 1..20). Cycles are guarded and the total
+        node count is capped (surfaced, not silent, when hit).
+        """
+        tracker.record_call("trace_chain", topic=f"{entry_type}#{entry_id}")
+
+        if entry_type not in VALID_TYPES:
+            return _with_nudge(
+                f"Invalid entry_type '{entry_type}'. Use: {', '.join(sorted(VALID_TYPES))}",
+                tracker,
+            )
+        if relation and relation not in VALID_RELATIONS:
+            return _with_nudge(
+                f"Invalid relation '{relation}'. Use: "
+                f"{', '.join(sorted(VALID_RELATIONS))} (or '' for any).", tracker,
+            )
+        if direction not in ("outgoing", "incoming", "both"):
+            return _with_nudge(
+                f"Invalid direction '{direction}'. Use: outgoing, incoming, both.",
+                tracker,
+            )
+        etype = EntityType(entry_type)
+        if not storage.entry_exists(etype, entry_id):
+            return _with_nudge(f"{entry_type} #{entry_id} not found.", tracker)
+
+        depth_cap = max(1, min(int(max_depth), _MAX_TRACE_DEPTH))
+        want_out = direction in ("outgoing", "both")
+        want_in = direction in ("incoming", "both")
+
+        seen = {(etype, entry_id)}
+        lines = [_entry_label(storage, entry_type, entry_id)]
+        queue: list[tuple[EntityType, int, int]] = [(etype, entry_id, 0)]
+        truncated = False
+        while queue and not truncated:
+            cur_type, cur_id, d = queue.pop(0)
+            if d >= depth_cap:
+                continue
+            edges = []  # (dir, relation, neighbor_type, neighbor_id, note)
+            if want_out:
+                for r in storage.list_outgoing_relations(cur_type, cur_id):
+                    if not relation or r.relation == relation:
+                        edges.append(("out", r.relation, r.target_type,
+                                      r.target_id, r.note))
+            if want_in:
+                for r in storage.list_incoming_relations(cur_type, cur_id):
+                    if not relation or r.relation == relation:
+                        edges.append(("in", r.relation, r.source_type,
+                                      r.source_id, r.note))
+            for kind, rel, ntype, nid, note in edges:
+                key = (ntype, nid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                indent = "  " * (d + 1)
+                arrow = f"--[{rel}]-->" if kind == "out" else f"<--[{rel}]--"
+                line = f"{indent}{arrow} {_entry_label(storage, ntype.value, nid)}"
+                if note:
+                    line += f"  ({note})"
+                lines.append(line)
+                if len(seen) - 1 >= _MAX_TRACE_NODES:
+                    truncated = True
+                    break
+                queue.append((ntype, nid, d + 1))
+
+        if len(lines) == 1:
+            lines.append("  (no relationships in that direction)")
+        if truncated:
+            lines.append(f"  ... truncated at {_MAX_TRACE_NODES} nodes.")
+        return _with_nudge("\n".join(lines), tracker)
