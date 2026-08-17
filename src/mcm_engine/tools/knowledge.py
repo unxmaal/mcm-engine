@@ -18,6 +18,7 @@ from ..backends import (
     KnowledgeRow,
     NegativeRow,
     RelationRow,
+    parse_valid_until,
 )
 from ..refs import dump_refs, validate_refs
 from ..tracker import SessionTracker
@@ -82,6 +83,7 @@ def register_knowledge_tools(
         project: str = "",
         references: list[dict] | None = None,
         source_classification: str = "",
+        valid_until: str = "",
     ) -> str:
         """Store a learning (finding, decision, or insight). Exact topic match
         updates the existing entry; a fuzzy match warns but still inserts.
@@ -92,6 +94,9 @@ def register_knowledge_tools(
         Omit to leave unchanged on update; pass [] to clear.
         source_classification: optional data-classification label the source
         assigned (e.g. public/internal/confidential). Carried, not interpreted.
+        valid_until: optional ISO date/datetime ("2026-12-31") after which this
+        finding is treated as expired in search (soft [EXPIRED] tag + rank
+        penalty). Omit for a durable fact that never expires.
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
@@ -100,6 +105,12 @@ def register_knowledge_tools(
             validated_refs = validate_refs(references) if refs_provided else None
         except ValueError as e:
             return _with_nudge(f"add_knowledge rejected: {e}", tracker, topic)
+        try:
+            valid_until_dt = parse_valid_until(valid_until)
+        except ValueError:
+            return _with_nudge(
+                f"add_knowledge rejected: valid_until '{valid_until}' is not an "
+                f"ISO date/datetime (e.g. 2026-12-31).", tracker, topic)
         try:  # #37: storing knowledge cost tokens.
             storage.record_token_event(
                 "spent", max(1, (len(summary) + len(detail or "")) // 4))
@@ -118,6 +129,8 @@ def register_knowledge_tools(
             )
             if refs_provided:
                 update_fields["refs_json"] = dump_refs(validated_refs)
+            if valid_until:
+                update_fields["valid_until"] = valid_until_dt
             storage.update_knowledge(existing.id, **update_fields)
             return _with_nudge(
                 f"Updated existing {kind}: {topic} (was: {existing.summary[:80]})",
@@ -145,6 +158,7 @@ def register_knowledge_tools(
             alternatives=alternatives or None,
             references=validated_refs,
             source_classification=source_classification or None,
+            valid_until=valid_until_dt,
         ))
         msg = f"Stored {kind}: {topic} — {summary}"
         if warning:

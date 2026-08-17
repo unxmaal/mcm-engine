@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 15
+CORE_VERSION = 16
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -33,7 +33,12 @@ CREATE TABLE IF NOT EXISTS knowledge (
     -- of default search but stay inspectable (get_entry / include_archived).
     -- Not FTS-indexed, mirroring the rules lifecycle columns.
     status TEXT NOT NULL DEFAULT 'active',
-    superseded_by INTEGER
+    superseded_by INTEGER,
+    -- v16: forward-dated validity. When set and in the past, search tags the
+    -- row [EXPIRED] and sinks its rank (distinct from the recency [STALE] tag:
+    -- "expired by validity" vs "stale by disuse"). Mirrors rules.valid_until.
+    -- Not FTS-indexed.
+    valid_until TEXT
 );
 
 -- What doesn't work
@@ -734,6 +739,18 @@ def _migrate_v14_to_v15(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v15_to_v16(db: KnowledgeDB) -> None:
+    """v15 -> v16: knowledge.valid_until (forward-dated validity), mirroring
+    rules.valid_until. When set and in the past, search tags the row [EXPIRED]
+    and sinks its rank — "expired by validity", distinct from the recency
+    [STALE] tag. Additive; existing rows default NULL (never expires). Not
+    FTS-indexed, so knowledge_fts is left untouched."""
+    if not _has_column(db, "knowledge", "valid_until"):
+        db.execute_write("ALTER TABLE knowledge ADD COLUMN valid_until TEXT")
+        log("Migration v15->v16: added knowledge.valid_until")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -750,6 +767,7 @@ _MIGRATIONS = [
     (12, 13, _migrate_v12_to_v13),
     (13, 14, _migrate_v13_to_v14),
     (14, 15, _migrate_v14_to_v15),
+    (15, 16, _migrate_v15_to_v16),
 ]
 
 

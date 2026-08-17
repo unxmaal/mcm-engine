@@ -17,7 +17,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from ..backends import EntityType, RuleRow
+from ..backends import EntityType, RuleRow, parse_valid_until
 from ..hierarchy import KindLiteral, ScopeLiteral
 from ..db import log
 from ..destructive import archive_would_storm
@@ -668,15 +668,25 @@ def register_rules_tools(
     def set_rule_metadata(
         rule_id: int, importance: int = -1,
         scope: ScopeLiteral | None = None, kind: KindLiteral | None = None,
-        category: str = "", actor: str = "",
+        category: str = "", valid_until: str = "", actor: str = "",
     ) -> str:
         """Tune a rule's hierarchy axes: importance (0..2, 2=invariant), scope,
         kind, category (free text). Only arguments you pass change; omit a field
         (or leave importance at -1) to skip it. Emits an audited 'metadata'
-        event; actor falls back to MCM_ACTOR / transport principal / 'nobody'."""
+        event; actor falls back to MCM_ACTOR / transport principal / 'nobody'.
+
+        valid_until: optional ISO date/datetime to forward-date the rule's
+        expiry — after it passes, search tags the rule [EXPIRED] and sinks its
+        rank (distinct from supersession, which hides it). Omit to leave as-is."""
         tracker.record_call("set_rule_metadata", topic=str(rule_id))
         tracker.record_store()
         who = resolve_actor(actor)
+        try:
+            valid_until_dt = parse_valid_until(valid_until)
+        except ValueError:
+            return _with_nudge(
+                f"set_rule_metadata rejected: valid_until '{valid_until}' is not "
+                f"an ISO date/datetime (e.g. 2026-12-31).", tracker)
         try:
             updated = storage.set_rule_metadata(
                 rule_id,
@@ -684,6 +694,7 @@ def register_rules_tools(
                 scope=(scope or None),
                 kind=(kind or None),
                 category=(category or None),
+                valid_until=valid_until_dt,
                 actor=who,
             )
         except ValueError as e:

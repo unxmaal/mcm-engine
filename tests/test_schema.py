@@ -247,6 +247,43 @@ class TestMigrationFramework:
         ).fetchone()
         assert row["version"] == CORE_VERSION
 
+    def test_fresh_install_has_knowledge_valid_until(self, tmp_path):
+        """Fresh install carries knowledge.valid_until (v16)."""
+        db = KnowledgeDB(tmp_path / "fresh.db")
+        migrate_core(db)
+        assert _has_column(db, "knowledge", "valid_until")
+
+    def test_v15_to_v16_adds_knowledge_valid_until(self, tmp_path):
+        """A v15 database gains knowledge.valid_until (existing rows NULL =
+        never expires) and bumps to v16."""
+        db = KnowledgeDB(tmp_path / "v15.db")
+        db.executescript("""
+            CREATE TABLE knowledge (
+                id INTEGER PRIMARY KEY, topic TEXT NOT NULL, summary TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active', superseded_by INTEGER
+            );
+            CREATE TABLE _mcm_versions (
+                component TEXT PRIMARY KEY, version INTEGER NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        db.execute_write("INSERT INTO knowledge (topic, summary) VALUES ('t', 's')")
+        db.execute_write(
+            "INSERT INTO _mcm_versions (component, version) VALUES ('core', 15)")
+        db.commit()
+        assert not _has_column(db, "knowledge", "valid_until")
+
+        migrate_core(db)
+
+        assert _has_column(db, "knowledge", "valid_until")
+        got = db.execute(
+            "SELECT valid_until FROM knowledge WHERE topic = 't'").fetchone()
+        assert got["valid_until"] is None
+        row = db.execute(
+            "SELECT version FROM _mcm_versions WHERE component = 'core'"
+        ).fetchone()
+        assert row["version"] == CORE_VERSION
+
     def test_idempotent_migration(self, tmp_path):
         """Running migrate_core twice should be safe."""
         db = KnowledgeDB(tmp_path / "idempotent.db")

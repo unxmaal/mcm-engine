@@ -61,6 +61,19 @@ def _staleness_tag(age_days: float | None, last_hit_age_days: float | None, pinn
     return " [STALE]"
 
 
+# valid_until (v16): a row past its validity window is "expired by validity" —
+# distinct from [STALE] ("stale by disuse"). Soft-handled: tagged and heavily
+# deprioritized (rank multiplier) so it sinks below live hits, but still
+# returned (the min_rank gate is on raw relevance, not this composite, so the
+# penalty only reorders — it never drops the row). Mirrors rules + knowledge.
+EXPIRED_PENALTY = 0.1
+
+
+def _is_expired(valid_until: datetime | None) -> bool:
+    age = _age_days(valid_until)
+    return age is not None and age > 0  # valid_until in the past
+
+
 def _pinned_tag(pinned: bool) -> str:
     return " [PINNED]" if pinned else ""
 
@@ -119,11 +132,15 @@ def _score_and_format_knowledge(
         pinned=bool(snap.get("pinned")),
         age_days=_age_days(row.created_at),
     )
+    expired = _is_expired(getattr(row, "valid_until", None))
+    if expired:
+        composite *= EXPIRED_PENALTY
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)
     stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
+    expired_tag = " [EXPIRED]" if expired else ""
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()} #{row.id}]{stale}{pinned} {row.topic}: {row.summary}"
+    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()} #{row.id}]{stale}{expired_tag}{pinned} {row.topic}: {row.summary}"
     if row.detail:
         entry += f"\n  Detail: {row.detail}"
     if row.tags:
@@ -189,11 +206,18 @@ def _score_and_format_rule(
         importance=getattr(row, "importance", 0),
         scope=getattr(row, "scope", None),
     )
+    # First honoring of rules.valid_until (previously inert past hydration). A
+    # superseded rule is already dropped above, so supersede's valid_until=now()
+    # never reaches here — this only tags a still-active rule past its expiry.
+    expired = _is_expired(getattr(row, "valid_until", None))
+    if expired:
+        composite *= EXPIRED_PENALTY
     age_d = _age_days(row.created_at)
     last_hit_d = _age_days(row.last_hit_at)
     stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
+    expired_tag = " [EXPIRED]" if expired else ""
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[RULE #{row.id}]{stale}{pinned} {row.title}"
+    entry = f"[RULE #{row.id}]{stale}{expired_tag}{pinned} {row.title}"
     if row.category:
         entry += f" ({row.category})"
     if row.description:

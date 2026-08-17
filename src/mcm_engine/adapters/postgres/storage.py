@@ -88,6 +88,7 @@ _DDL_STATEMENTS: list[str] = [
         source_classification TEXT,
         status               TEXT NOT NULL DEFAULT 'active',
         superseded_by        BIGINT,
+        valid_until          TIMESTAMPTZ,
         tsv  tsvector GENERATED ALWAYS AS (
             setweight(to_tsvector('english', coalesce(topic, '')),   'A') ||
             setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
@@ -322,6 +323,19 @@ _DDL_STATEMENTS: list[str] = [
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                        WHERE table_name = 'knowledge' AND column_name = 'superseded_by') THEN
             ALTER TABLE knowledge ADD COLUMN superseded_by BIGINT;
+        END IF;
+    END$$
+    """,
+
+    # v16: knowledge.valid_until (forward-dated validity) on EXISTING postgres
+    # deployments, mirroring rules.valid_until. Not in the tsv column, so no tsv
+    # rebuild. Idempotent guard.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'knowledge' AND column_name = 'valid_until') THEN
+            ALTER TABLE knowledge ADD COLUMN valid_until TIMESTAMPTZ;
         END IF;
     END$$
     """,
@@ -601,6 +615,7 @@ def _knowledge_from_row(r: dict[str, Any]) -> KnowledgeRow:
         source_classification=r.get("source_classification"),
         status=r.get("status") or "active",
         superseded_by=r.get("superseded_by"),
+        valid_until=_as_dt(r.get("valid_until")),
     )
 
 
@@ -878,20 +893,20 @@ class PostgresStorage:
             if row.id:
                 cur.execute(
                     "INSERT INTO knowledge "
-                    "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(id, topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification, valid_until) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.id, row.topic, row.kind, row.summary, row.detail, row.tags,
                      row.project, row.rationale, row.alternatives, dump_refs(row.references),
-                     row.source_classification),
+                     row.source_classification, row.valid_until),
                 )
             else:
                 cur.execute(
                     "INSERT INTO knowledge "
-                    "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(topic, kind, summary, detail, tags, project, rationale, alternatives, refs_json, source_classification, valid_until) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.topic, row.kind, row.summary, row.detail, row.tags,
                      row.project, row.rationale, row.alternatives, dump_refs(row.references),
-                     row.source_classification),
+                     row.source_classification, row.valid_until),
                 )
             new_id = cur.fetchone()["id"]
         self._commit()
@@ -901,7 +916,7 @@ class PostgresStorage:
         if not fields:
             return
         allowed = {"topic", "kind", "summary", "detail", "tags", "project",
-                   "rationale", "alternatives", "refs_json"}
+                   "rationale", "alternatives", "refs_json", "valid_until"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"unknown knowledge fields: {sorted(bad)}")
@@ -1107,16 +1122,19 @@ class PostgresStorage:
         scope: Optional[str] = None,
         kind: Optional[str] = None,
         category: Optional[str] = None,
+        valid_until: Optional[datetime] = None,
         actor: str = "nobody",
     ) -> Optional[RuleRow]:
-        """Set the hierarchy axes (issue #64). Validates against the vocab
-        (raising ValueError before any write), updates only the provided
-        fields, stamps updated_by, and emits an audited 'metadata' rule_events
-        row. Atomic. Returns the updated row, the unchanged row if nothing was
-        provided, or None if the rule is absent."""
+        """Set the hierarchy axes (issue #64) and/or a forward-dated
+        valid_until (v16). Validates the vocab axes (raising ValueError before
+        any write), updates only the provided fields, stamps updated_by, and
+        emits an audited 'metadata' rule_events row. Atomic. Returns the updated
+        row, the unchanged row if nothing was provided, or None if absent."""
         from ...hierarchy import validated_metadata_updates
 
         updates = validated_metadata_updates(importance, scope, kind, category)
+        if valid_until is not None:
+            updates["valid_until"] = valid_until  # TIMESTAMPTZ accepts datetime
         if self.find_by_id(EntityType.RULE, rule_id) is None:
             return None
         if not updates:

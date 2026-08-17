@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from ..backends import EntityType, KnowledgeRow, RelationRow
+from ..backends import EntityType, KnowledgeRow, RelationRow, parse_valid_until
 from ..tracker import SessionTracker
 from ..wiring import coerce_context
 
@@ -63,6 +63,7 @@ def register_decisions_tools(
         confidence: float = 0.0,
         based_on: list[str] | None = None,
         supersedes_decision: int = 0,
+        valid_until: str = "",
         tags: str = "",
         project: str = "",
     ) -> str:
@@ -78,6 +79,9 @@ def register_decisions_tools(
         supersedes_decision: id of a prior decision this one replaces; the old
         decision is soft-expired (status='superseded') and a `supersedes` audit
         relation is recorded — identical to supersede_knowledge.
+        valid_until: optional ISO date/datetime after which this decision is
+        treated as expired in search (soft [EXPIRED] tag + rank penalty), e.g. a
+        decision that only holds until a planned migration.
         confidence: 0.0–1.0, carried in the stored detail; not interpreted.
 
         Discover past decisions with `search(scope="knowledge")` (they carry
@@ -89,6 +93,13 @@ def register_decisions_tools(
         if not topic.strip() or not outcome.strip():
             return _with_nudge(
                 "record_decision needs at least a topic and an outcome.", tracker,
+            )
+        try:
+            valid_until_dt = parse_valid_until(valid_until)
+        except ValueError:
+            return _with_nudge(
+                f"record_decision rejected: valid_until '{valid_until}' is not an "
+                f"ISO date/datetime (e.g. 2026-12-31).", tracker,
             )
 
         # Validate the supersede target up front so we never create a decision
@@ -123,6 +134,7 @@ def register_decisions_tools(
             tags=tags or None,
             project=project or project_name,
             rationale=reasoning or None,
+            valid_until=valid_until_dt,
         ))
 
         # depends_on edges to the evidence.
