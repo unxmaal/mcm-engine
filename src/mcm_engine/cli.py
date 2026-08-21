@@ -1002,7 +1002,7 @@ def main():
     )
     consolidate_parser.set_defaults(func=cmd_consolidate)
 
-    # mint-token (LODESTONE bearer token)
+    # mint-token (bearer token)
     mint_parser = subparsers.add_parser(
         "mint-token",
         help="Mint a bearer token for the HTTP/streamable-HTTP transport "

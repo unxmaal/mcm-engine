@@ -191,7 +191,7 @@ build, ship, or maintain it.
 
 ## Non-goals (do NOT do these)
 
-- **NG-1**: Do not build LODESTONE features — no source connectors (GitLab/
+- **NG-1**: Do not build remote-platform features — no source connectors (GitLab/
   SharePoint/Confluence), no risk sieve, no quarantine, no ingestion pipeline.
 - **NG-2**: Do not require any external service for local operation. If `init`
   on a clean machine produces something that needs an external service to

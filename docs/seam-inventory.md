@@ -534,7 +534,7 @@ These ARE on the `StorageBackend` Protocol (additive methods, no
 CONTRACT_VERSION bump — same precedent as the Phase 1 `iter_*` additions).
 
 
-## LODESTONE additive surface (POC)
+## Token-auth additive surface (POC)
 
 `src/mcm_engine/tokens.py` — 4 sites
 - `mint_token` — `INSERT INTO tokens (token_hash, principal) VALUES (?, ?)`
@@ -550,14 +550,14 @@ CONTRACT_VERSION bump — same precedent as the Phase 1 `iter_*` additions).
   provenance) VALUES (...) RETURNING id`. The `/v1/claims` REST shim the
   sieve POSTs to after the regex pass clears.
 
-`src/mcm_engine/tools/knowledge.py` — 3 sites (LODESTONE additions only;
+`src/mcm_engine/tools/knowledge.py` — 3 sites (token-auth additions only;
 the rest of the file is rewired through `ctx.storage`)
 - `kb_recall` — `SELECT id, topic FROM knowledge WHERE id = ?`
 - `kb_recall` — `INSERT INTO recall_log (claim_id, principal, reason)
   VALUES (?, ?, ?)`
 - `kb_recall` — `DELETE FROM knowledge WHERE id = ?`
 
-These three files are the only places LODESTONE-specific SQL lives. Tokens
+These three files are the only places token-auth-specific SQL lives. Tokens
 and `/v1/claims` are HTTP-transport concerns; `kb_recall` is an MCP tool.
 The Claim-shaped columns on `knowledge` (subject_keys, governance_tags,
 scope, status, provenance) are populated through normal `insert_knowledge`

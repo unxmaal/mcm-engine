@@ -35,7 +35,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     "schema.py":           65,  # +7 issue #21 v8→v9; +1 issue #37 v9→v10 token_ledger CREATE; +3 issue #64 v10→v11 hierarchy ALTERs; +1 c5 v11→v12 knowledge.refs_json ALTER; +1 #105 v12→v13 source_classification ALTER (one execute_write site, looped over 4 tables); +2 #111 v13→v14 knowledge.status + superseded_by ALTERs; +1 v14→v15 session_metrics CREATE; +1 v15→v16 knowledge.valid_until ALTER
     "plugin.py":           0,   # MCM2-07 — SearchScope.search SQL moved to SqliteSearch.search_plugin
     "tools/search.py":     0,   # MCM2-02 rewire complete (composite rank in scoring.py)
-    "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for LODESTONE kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
+    "tools/knowledge.py":  3,   # MCM2-02 rewire complete — uses ctx adapters. +3 for token-auth kb_recall (SELECT/INSERT/DELETE recall path; single-store, no adapter abstraction warranted).
     "tools/rules.py":      0,   # MCM2-02 rewire complete
     "tools/corpus.py":     6,   # #103 recall_entry raw-SQL path (postgres-only, mirrors kb_recall): SELECT exists + INSERT recall_log + rule branch (UPDATE status + INSERT rule_events) + non-rule branch (DELETE). +1 #110 recall_events SELECT (postgres-only paged read of recall_log). scroll_entries/get_entry hold no SQL (page_entries / find_by_id).
     "tools/relations.py":  0,   # MCM2-02 rewire complete
@@ -55,7 +55,7 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
     # plugin search via ILIKE).
     "adapters/postgres/search.py": 5,  # +1 #107 natural-mode OR-rank fallback (to_tsquery)
-    # LODESTONE additive surface (see lodestone-lite-plan.md).
+    # token-auth additive surface (token-auth additive plan).
     # tokens.py: mint INSERT, validate SELECT + UPDATE-touch, revoke UPDATE.
     "tokens.py": 4,
     # transport.py: /v1/claims INSERT into knowledge.
