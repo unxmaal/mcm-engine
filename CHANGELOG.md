@@ -6,6 +6,17 @@ versioning.
 
 ## [Unreleased]
 
+## [3.11.1] — 2026-09-03
+
+### Security
+- **CVE-2026-48710 (starlette).** Bumped Starlette past the vulnerable range
+  (`0.52.1` → `1.6.0`). Starlette is a transitive dependency (via `mcp` and
+  `sse-starlette`), so this is a direct `starlette>=1.0.1` floor in
+  `pyproject.toml`; the `mcp>=1.0.0,<2` pin is unchanged (`mcp` requires only
+  `starlette>=0.27`). No `fastapi` dependency exists in this project. Verified:
+  full suite (SQLite + Postgres) green and a live streamable-http transport
+  smoke test passes on Starlette 1.6.0.
+
 ## [3.11.0] — 2026-08-17
 
 ### Added
