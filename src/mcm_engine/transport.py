@@ -12,7 +12,7 @@ adds operational endpoints:
   - GET /healthz — liveness probe; never depends on adapter health
   - GET /readyz  — readiness probe; pings every wired adapter
 
-LODESTONE additive surface:
+Token-auth additive surface:
   - POST /v1/claims — REST shim the sieve POSTs to after the regex
     pass clears. Wraps storage.insert_knowledge with the Claim-shaped
     fields (subject_keys, governance_tags, scope, status, provenance).
@@ -89,7 +89,7 @@ def _make_readyz(server: Any):
 
 
 # ---------------------------------------------------------------------------
-# LODESTONE additive surface: bearer-token middleware + /v1/claims shim.
+# Token-auth additive surface: bearer-token middleware + /v1/claims shim.
 # ---------------------------------------------------------------------------
 
 # Paths the middleware lets through without auth. Health probes must

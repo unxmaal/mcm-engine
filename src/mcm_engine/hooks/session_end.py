@@ -79,7 +79,10 @@ def _build_arguments(
     m = (entry or {}).get("metrics", {}) or {}
     args: dict[str, Any] = {
         "cc_session_id": session_id,
-        "first_seen_at": (entry or {}).get("first_seen_at"),
+        # "" not None: record_session_metrics types this as `str` and
+        # rejects null, so a session with no PreToolUse state would 400 and be
+        # silently swallowed by the fail-open guard below.
+        "first_seen_at": (entry or {}).get("first_seen_at") or "",
         "in_tokens": tokens["in"],
         "out_tokens": tokens["out"],
         "cache_read_tokens": tokens["cache_read"],

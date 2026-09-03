@@ -451,9 +451,9 @@ _DDL_STATEMENTS: list[str] = [
     """,
 
     # -----------------------------------------------------------------
-    # LODESTONE additive columns + tables.
+    # token-auth additive columns + tables.
     #
-    # Option B per lodestone-lite-plan.md: extend `knowledge` with the
+    # Option B (token-auth additive plan): extend `knowledge` with the
     # Claim axes (subject_keys[], governance_tags[], scope, status,
     # provenance) rather than introducing a separate Claim row shape.
     # The change is additive — existing consumers (agent_tricks,
@@ -578,7 +578,7 @@ _OWNED_TABLES: list[str] = [
     "negative_knowledge",
     "knowledge",
     "_mcm_versions",
-    # LODESTONE additive tables.
+    # token-auth additive tables.
     "sieve_rejections",
     "recall_log",
     "tokens",

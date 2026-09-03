@@ -359,7 +359,7 @@ def _decide(
             "action should be `mcp__knowledge__search` with a query matching "
             "the topic at hand, NOT another Edit/Write/Bash. If the search "
             "returns nothing relevant, say so explicitly in your reply and "
-            "then continue. Confidently asserting Corning-specific facts "
+            "then continue. Confidently asserting project-specific facts "
             "from pretrained memory is the failure mode this hook exists to "
             "catch.\n"
             "\n"

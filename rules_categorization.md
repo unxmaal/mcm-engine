@@ -14,8 +14,8 @@ rules tree consumed by multiple projects via `rules_path`):
   title. Duplicate-detection is title-string-equality only.
 - No category vocabulary — any string a contributor passes becomes a
   directory.
-- Visible sprawl pairs already in the tree: `aws` / `corning-aws`,
-  `sso` / `corning-sso`, `gitlab` / `gitlab-ci` / `gitlab-runner`,
+- Visible sprawl pairs already in the tree: `aws` / `org-aws`,
+  `sso` / `org-sso`, `gitlab` / `gitlab-ci` / `gitlab-runner`,
   `ci-cd` (1 file) parallel to `gitlab-ci` (5 files),
   `spec-generation` / `specstack` / `retrodoc` (adjacent topics).
 - One empty category (`tctv`) accumulating.
@@ -56,8 +56,8 @@ Two checks wire it up:
   `Category:` is in the vocabulary. PRs that introduce a new category
   must also touch `categories.yaml` — implicit review gate.
 
-Bootstrap by collapsing the existing 36 → ~15: `corning-aws` folds into
-`aws`, `corning-sso` into `sso`, `gitlab-runner` into `gitlab-ci`,
+Bootstrap by collapsing the existing 36 → ~15: `org-aws` folds into
+`aws`, `org-sso` into `sso`, `gitlab-runner` into `gitlab-ci`,
 `ci-cd` either disappears or absorbs `gitlab-ci`, `tctv` deletes (empty),
 `spec-generation` / `specstack` / `retrodoc` either consolidate or get
 clear scope statements.
@@ -97,7 +97,7 @@ emits a markdown report. Doesn't need to live inside mcm-engine.
 
 ## Optional / further-out
 
-- **Tags as frontmatter** (`tags: [gitlab, ci, corning]`) for
+- **Tags as frontmatter** (`tags: [gitlab, ci, backend]`) for
   cross-cutting topics that want to live in one directory but be findable
   from many lenses. Additive; search becomes (category OR tag) match.
 - **Stale auto-archive**: rules >180d with zero hits move to

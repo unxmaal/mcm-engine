@@ -1,6 +1,6 @@
 """Bearer-token authentication for the HTTP/streamable-HTTP transport.
 
-LODESTONE additive surface. The tokens table is created by the
+Token-auth additive surface. The tokens table is created by the
 Postgres adapter's DDL; this module hashes, mints, validates, and
 revokes against that table.
 
@@ -126,7 +126,7 @@ def auth_required() -> bool:
     """True when MCM_AUTH_REQUIRED env var enables enforcement.
 
     Default is False so existing deployments (stdio, single-tenant
-    daemons) are unaffected. LODESTONE's chart sets it to true.
+    daemons) are unaffected. The deployment's Helm chart sets it to true.
     """
     return os.environ.get("MCM_AUTH_REQUIRED", "false").lower() in {
         "true", "1", "yes",

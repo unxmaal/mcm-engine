@@ -1,4 +1,4 @@
-"""Tests for the LODESTONE tokens module + bearer-token middleware
+"""Tests for the token-auth tokens module + bearer-token middleware
 + /v1/claims REST shim.
 
 Runs only when MCM_TEST_POSTGRES_DSN is set, same gate as the rest
