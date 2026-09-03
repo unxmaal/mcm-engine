@@ -29,6 +29,11 @@ dependencies = [
     # (not the lockfile), so an unbounded pin makes every image build grab the
     # latest mcp. Stay on the 1.x line where the vendored FastMCP lives.
     "mcp>=1.0.0,<2",
+    # CVE-2026-48710: starlette < 1.0.1 is vulnerable. starlette is only a
+    # transitive dep (via mcp + sse-starlette), so pin a direct floor to force
+    # the resolve past the vulnerable range. mcp 1.26.0 requires only
+    # starlette>=0.27 (no upper cap), so this does not disturb the mcp pin.
+    "starlette>=1.0.1",
     "pyyaml>=6.0",
     "watchdog>=4.0",
 ]
