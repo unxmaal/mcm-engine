@@ -50,6 +50,27 @@ _SCOPE_MAP: dict[str, frozenset[EntityType]] = {
 SearchScope = Literal["all", "knowledge", "negative", "errors", "rules"]
 assert set(get_args(SearchScope)) == set(_SCOPE_MAP), "SearchScope drifted from _SCOPE_MAP"
 
+# Progressive disclosure (issue #119): a search hit's body (knowledge Detail,
+# negative Why/Fix, error root_cause/fix) is the dominant source of tool-output
+# tokens in a session, re-read from the prompt cache every later turn. Default
+# search to a compact one-line-summary hit; callers pull a body on demand via
+# get_entry / read_rule, or pass detail="full" for the old behavior.
+DetailLevel = Literal["summary", "full"]
+
+
+def _body_hint(result: str, detail: DetailLevel) -> str:
+    """Append a once-per-response pointer telling a summary caller how to pull a
+    body. get_entry handles all four entity types by id (read_rule takes a path,
+    not the id shown in results, so it is deliberately not named here). Full
+    responses and empty results are returned unchanged."""
+    if not result or detail != "summary":
+        return result
+    return (
+        result
+        + "\n\n(summary view — fetch any full body with get_entry(\"<type>\", <id>); "
+        "pass detail=\"full\" to search to include all bodies inline.)"
+    )
+
 
 def _staleness_tag(age_days: float | None, last_hit_age_days: float | None, pinned: bool) -> str:
     if pinned or age_days is None:
@@ -113,6 +134,7 @@ def _score_and_format_knowledge(
     project: str,
     relevance: float = 1.0,
     include_archived: bool = False,
+    detail: DetailLevel = "summary",
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.KNOWLEDGE, hit.entity_id)
     if row is None:
@@ -141,13 +163,18 @@ def _score_and_format_knowledge(
     expired_tag = " [EXPIRED]" if expired else ""
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()} #{row.id}]{stale}{expired_tag}{pinned} {row.topic}: {row.summary}"
-    if row.detail:
-        entry += f"\n  Detail: {row.detail}"
-    if row.tags:
+    if detail == "full":
+        if row.detail:
+            entry += f"\n  Detail: {row.detail}"
+        if row.tags:
+            entry += f"\n  Tags: {row.tags}"
+        refs = format_refs(getattr(row, "references", None))
+        if refs:
+            entry += f"\n{refs}"
+    elif row.tags:
+        # Summary keeps the one-line tags (cheap, aids selection); the Detail
+        # body and refs come from get_entry.
         entry += f"\n  Tags: {row.tags}"
-    refs = format_refs(getattr(row, "references", None))
-    if refs:
-        entry += f"\n{refs}"
     return composite, entry
 
 
@@ -157,6 +184,7 @@ def _score_and_format_rule(
     counters: CounterStore,
     include_archived: bool = False,
     relevance: float = 1.0,
+    detail: DetailLevel = "summary",
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.RULE, hit.entity_id)
     if row is None:
@@ -222,7 +250,7 @@ def _score_and_format_rule(
         entry += f" ({row.category})"
     if row.description:
         entry += f"\n  {row.description}"
-    if row.file_path:
+    if detail == "full" and row.file_path:
         entry += f"\n  File: {row.file_path}"
     return composite, entry
 
@@ -232,6 +260,7 @@ def _score_and_format_negative(
     storage: StorageBackend,
     project: str,
     relevance: float = 1.0,
+    detail: DetailLevel = "summary",
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.NEGATIVE, hit.entity_id)
     if row is None:
@@ -241,10 +270,11 @@ def _score_and_format_negative(
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[NEGATIVE #{row.id}]{pinned} {row.category}: {row.what_failed}"
-    if row.why_failed:
-        entry += f"\n  Why: {row.why_failed}"
-    if row.correct_approach:
-        entry += f"\n  Fix: {row.correct_approach}"
+    if detail == "full":
+        if row.why_failed:
+            entry += f"\n  Why: {row.why_failed}"
+        if row.correct_approach:
+            entry += f"\n  Fix: {row.correct_approach}"
     return composite, entry
 
 
@@ -253,6 +283,7 @@ def _score_and_format_error(
     storage: StorageBackend,
     project: str,
     relevance: float = 1.0,
+    detail: DetailLevel = "summary",
 ) -> tuple[float, str] | None:
     row = storage.find_by_id(EntityType.ERROR, hit.entity_id)
     if row is None:
@@ -262,14 +293,15 @@ def _score_and_format_error(
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[ERROR #{row.id}]{pinned} {row.pattern}"
-    if row.root_cause:
-        entry += f"\n  Root cause: {row.root_cause}"
-    if row.fix:
-        entry += f"\n  Fix: {row.fix}"
+    if detail == "full":
+        if row.root_cause:
+            entry += f"\n  Root cause: {row.root_cause}"
+        if row.fix:
+            entry += f"\n  Fix: {row.fix}"
     return composite, entry
 
 
-def _spread_related_rules(top, storage, counters, *, include_archived, cap):
+def _spread_related_rules(top, storage, counters, *, include_archived, cap, detail="summary"):
     """One-hop spreading activation (#35): surface rules LINKED to the direct
     hits (via the relations graph) that the query itself missed on tokens.
     Returns formatted strings marked ``[related]`` to append AFTER the direct
@@ -294,7 +326,7 @@ def _spread_related_rules(top, storage, counters, *, include_archived, cap):
     related: list[str] = []
     for nid in neighbor_ids[:cap]:
         hit = SearchHit(entity_type=EntityType.RULE, entity_id=nid, score=0.0)
-        res = _score_and_format_rule(hit, storage, counters, include_archived, 0.0)
+        res = _score_and_format_rule(hit, storage, counters, include_archived, 0.0, detail)
         if res is None:  # archived / superseded / missing -> not surfaced
             continue
         _, formatted = res
@@ -316,6 +348,7 @@ def _scope_block(
     min_rank: float,
     bump_counters: bool,
     include_archived: bool = False,
+    detail: DetailLevel = "summary",
 ) -> list[str]:
     """Search one entity scope and return formatted result strings."""
     # Pull more than `limit` so the threshold filter still has options to
@@ -335,13 +368,13 @@ def _scope_block(
             continue
         relevance = minmax_normalize(hit.score, _lo, _hi)
         if etype is EntityType.KNOWLEDGE:
-            result = _score_and_format_knowledge(hit, storage, counters, project, relevance, include_archived)
+            result = _score_and_format_knowledge(hit, storage, counters, project, relevance, include_archived, detail)
         elif etype is EntityType.RULE:
-            result = _score_and_format_rule(hit, storage, counters, include_archived, relevance)
+            result = _score_and_format_rule(hit, storage, counters, include_archived, relevance, detail)
         elif etype is EntityType.NEGATIVE:
-            result = _score_and_format_negative(hit, storage, project, relevance)
+            result = _score_and_format_negative(hit, storage, project, relevance, detail)
         elif etype is EntityType.ERROR:
-            result = _score_and_format_error(hit, storage, project, relevance)
+            result = _score_and_format_error(hit, storage, project, relevance, detail)
         else:
             continue
         if result is None:
@@ -368,6 +401,7 @@ def _scope_block(
     if etype is EntityType.RULE and top:
         out_lines += _spread_related_rules(
             top, storage, counters, include_archived=include_archived, cap=limit,
+            detail=detail,
         )
     return out_lines
 
@@ -384,6 +418,7 @@ def _search_all_scopes(
     project: str,
     entity_types: frozenset[EntityType] = frozenset(EntityType),
     include_archived: bool = False,
+    detail: DetailLevel = "summary",
 ) -> str:
     results: list[str] = []
 
@@ -396,21 +431,21 @@ def _search_all_scopes(
             EntityType.KNOWLEDGE, search_backend, storage, counters,
             query=query, limit=limit, project=project,
             min_rank=gate, bump_counters=True,
-            include_archived=include_archived,
+            include_archived=include_archived, detail=detail,
         ))
 
     if EntityType.NEGATIVE in entity_types:
         results.extend(_scope_block(
             EntityType.NEGATIVE, search_backend, storage, counters,
             query=query, limit=limit, project=project,
-            min_rank=gate, bump_counters=False,
+            min_rank=gate, bump_counters=False, detail=detail,
         ))
 
     if EntityType.ERROR in entity_types:
         results.extend(_scope_block(
             EntityType.ERROR, search_backend, storage, counters,
             query=query, limit=limit, project=project,
-            min_rank=gate, bump_counters=False,
+            min_rank=gate, bump_counters=False, detail=detail,
         ))
 
     if EntityType.RULE in entity_types:
@@ -419,7 +454,7 @@ def _search_all_scopes(
             EntityType.RULE, search_backend, storage, counters,
             query=query, limit=limit, project="",
             min_rank=gate, bump_counters=True,
-            include_archived=include_archived,
+            include_archived=include_archived, detail=detail,
         ))
 
     # Plugin search scopes route through the SearchBackend (MCM2-07).
@@ -455,14 +490,17 @@ def register_search_tools(
     counters = ctx.counters
     search_backend = ctx.search
 
-    def search_all(query: str, limit: int = 10) -> str:
+    def search_all(query: str, limit: int = 10, detail: DetailLevel = "summary") -> str:
         """Internal search function used by report_error. Applies quality
-        gate and project scope."""
-        return _search_all_scopes(
+        gate and project scope. Defaults to the compact summary (issue #119):
+        report_error returns candidate ids/titles, and the caller pulls the
+        matching fix body with get_entry("<type>", <id>)."""
+        result = _search_all_scopes(
             search_backend, storage, counters, query, limit,
             plugin_search_scopes,
-            min_rank=RANK_THRESHOLD, project=project_name,
+            min_rank=RANK_THRESHOLD, project=project_name, detail=detail,
         )
+        return _body_hint(result, detail)
 
     @mcp.tool()
     def search(
@@ -471,6 +509,7 @@ def register_search_tools(
         limit: int = 10,
         project: str = "",
         include_archived: bool = False,
+        detail: DetailLevel = "summary",
     ) -> str:
         """Search across knowledge, negative knowledge, errors, rules,
         and plugin data.
@@ -482,6 +521,12 @@ def register_search_tools(
             project: filter knowledge/negative/error rows by project name.
             include_archived: include soft-deleted rules. Default False —
                 archived rules are invisible to everyday search.
+            detail: "summary" (default) returns one compact line per hit —
+                id, kind, title/topic, the one-line summary, tags/category and
+                score — and omits the long body (knowledge Detail, negative
+                Why/Fix, error root_cause/fix). Fetch a body on demand with
+                get_entry("<type>", <id>). "full" returns every body inline,
+                the pre-#119 behavior.
 
         Uses FTS5 full-text search with LIKE fallback. Results are ranked by
         a composite of text relevance, hit frequency, reinforcement, and
@@ -497,6 +542,7 @@ def register_search_tools(
             min_rank=0.0, project=project,
             entity_types=entity_types,
             include_archived=include_archived,
+            detail=detail,
         )
         if not result:
             hint = ""
@@ -507,6 +553,6 @@ def register_search_tools(
                     " sentence."
                 )
             return _with_nudge(f"No results for '{query}'.{hint}", tracker, query)
-        return _with_nudge(result, tracker, query)
+        return _with_nudge(_body_hint(result, detail), tracker, query)
 
     return search_all

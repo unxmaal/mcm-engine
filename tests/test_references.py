@@ -128,7 +128,9 @@ def test_add_knowledge_surfaces_references_in_search(tools):
     tools["add_knowledge"](
         topic="Cache policy", summary="LWW per name",
         references=[{"type": "file", "target": "index.html:100"}])
-    out = tools["search"]("Cache")
+    # References are body content (issue #119): they render in detail="full",
+    # not in the default compact summary.
+    out = tools["search"]("Cache", detail="full")
     assert "ref[file]: index.html:100" in out
 
 
@@ -136,8 +138,8 @@ def test_add_knowledge_rejects_bad_references(tools):
     msg = tools["add_knowledge"](
         topic="X", summary="s", references=[{"type": "nope", "target": "t"}])
     assert "rejected" in msg
-    # nothing stored
-    assert "ref[" not in tools["search"]("X")
+    # nothing stored (check full so absence means unstored, not just hidden)
+    assert "ref[" not in tools["search"]("X", detail="full")
 
 
 def test_update_replaces_and_omit_preserves(tools):
@@ -145,13 +147,13 @@ def test_update_replaces_and_omit_preserves(tools):
                            references=[{"type": "url", "target": "https://a"}])
     # Re-store same topic WITHOUT references -> existing refs preserved
     tools["add_knowledge"](topic="T", summary="s2")
-    out = tools["search"]("T")
+    out = tools["search"]("T", detail="full")
     assert "https://a" in out
     # Re-store WITH new references -> replaced
     tools["add_knowledge"](topic="T", summary="s3",
                            references=[{"type": "url", "target": "https://b"}])
-    out = tools["search"]("T")
+    out = tools["search"]("T", detail="full")
     assert "https://b" in out and "https://a" not in out
     # Clear with []
     tools["add_knowledge"](topic="T", summary="s4", references=[])
-    assert "ref[" not in tools["search"]("T")
+    assert "ref[" not in tools["search"]("T", detail="full")
