@@ -58,7 +58,7 @@ def cmd_init(args):
             "mandatory_stop_turns": 50,
         },
     }
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
 
     print(f"Created {config_file}")

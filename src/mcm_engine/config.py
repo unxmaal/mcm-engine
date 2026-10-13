@@ -225,7 +225,7 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     # Load YAML
     raw: dict[str, Any] = {}
     if config_path and config_path.exists():
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
     # Env var overrides (MCM_PROJECT_NAME, MCM_DB_PATH, MCM_LOG_PATH, MCM_SERVER_NAME)
