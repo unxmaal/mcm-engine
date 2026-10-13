@@ -138,18 +138,99 @@ def cmd_migrate(args):
     print(format_report(report))
 
 
+def _export_remote_call(url, headers, offset, limit, *, timeout=None):
+    """Call the remote export_rules tool. Indirection so tests stub transport."""
+    from .hooks.mcp_enforcement import mcp_http_call_tool
+
+    return mcp_http_call_tool(
+        url, "export_rules", {"offset": offset, "limit": limit},
+        headers=headers, timeout=timeout)
+
+
+def _export_remote_fetch(url, headers, *, page=100, timeout=30.0):
+    """Page export_rules until has_more is false; return row-like objects for
+    mirror.render_rules_to_tree. Export is read-only and idempotent (a re-run
+    rewrites the tree), so transient/timeout errors get a bounded retry and an
+    auth error aborts — no resume state needed."""
+    from types import SimpleNamespace
+
+    rows = []
+    offset = 0
+    while True:
+        attempt = 0
+        while True:
+            try:
+                raw = _export_remote_call(url, headers, offset, page, timeout=timeout)
+                break
+            except _RemoteAuthError:
+                raise
+            except Exception as e:  # noqa: BLE001 — classified below
+                kind = _classify_remote_error(e)
+                if kind == "auth":
+                    raise _RemoteAuthError(str(e))
+                attempt += 1
+                if attempt >= _REMOTE_ATTEMPTS:
+                    raise _RemoteBatchError(f"export page at offset {offset}: {e}")
+                _sleep(min(0.5 * (2 ** (attempt - 1)), 8))
+        data = json.loads(raw)
+        for d in data.get("rules", []):
+            rows.append(SimpleNamespace(
+                title=d.get("title", ""), keywords=d.get("keywords", ""),
+                category=d.get("category", ""), content=d.get("content", "")))
+        returned = data.get("returned", len(data.get("rules", [])))
+        if not data.get("has_more") or returned == 0:
+            break
+        offset = data.get("offset", offset) + returned
+    return rows
+
+
 def cmd_export_mirror(args):
-    """One-way DB -> git review mirror of active rules (issue #22)."""
+    """One-way DB -> git review mirror of active rules (issue #22; MCP-native
+    via --remote, issue #78)."""
     from pathlib import Path
 
-    from .mirror import export_mirror
+    from .mirror import export_mirror, git_commit_tree, render_rules_to_tree
 
-    storage = open_storage(args.source)
-    result = export_mirror(storage, Path(args.out))
-    if result["committed"]:
-        print(f"Mirrored {result['written']} active rules to {args.out} (new commit).")
-    else:
-        print(f"Mirror up to date: {result['written']} active rules, no changes.")
+    remote = getattr(args, "remote", False)
+    if remote and args.source:
+        print("error: --remote and --from are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+    if not remote and not args.source:
+        print("error: export-mirror needs --from <DSN> or --remote.", file=sys.stderr)
+        sys.exit(2)
+
+    out = Path(args.out)
+
+    if not remote:
+        result = export_mirror(open_storage(args.source), out)
+        if result["committed"]:
+            print(f"Mirrored {result['written']} active rules to {args.out} (new commit).")
+        else:
+            print(f"Mirror up to date: {result['written']} active rules, no changes.")
+        return
+
+    # --remote (#78): page export_rules over MCP, render the tree client-side.
+    url, headers = _remote_endpoint(Path.cwd())
+    if not url:
+        print("error: --remote needs an MCP HTTP endpoint — set MCM_MCP_URL or a "
+              "`type: http` server in .mcp.json", file=sys.stderr)
+        sys.exit(2)
+    try:
+        rows = _export_remote_fetch(url, headers, page=args.remote_page)
+    except _RemoteAuthError as e:
+        print(f"error: authentication failed ({e}) — set MCM_MCP_TOKEN or a "
+              "`headers` block in .mcp.json", file=sys.stderr)
+        sys.exit(1)
+    except _RemoteBatchError as e:
+        print(f"error: export failed ({e})", file=sys.stderr)
+        sys.exit(1)
+    written = render_rules_to_tree(rows, out)
+    if args.no_commit:
+        print(f"Mirrored {written} active rules to {args.out} (no commit).")
+        return
+    committed = git_commit_tree(out, written)
+    tail = " (new commit)." if committed else " — no changes."
+    print(f"Mirrored {written} active rules to {args.out}{tail}")
 
 
 def cmd_consolidate(args):
@@ -977,12 +1058,29 @@ def main():
              "never authoritative; read-only, never touches rules_paths).",
     )
     mirror_parser.add_argument(
-        "--from", dest="source", required=True,
-        help="Source storage DSN (sqlite:///path or postgresql://...).",
+        "--from", dest="source", default=None,
+        help="Source storage DSN (sqlite:///path or postgresql://...). "
+             "Mutually exclusive with --remote.",
+    )
+    mirror_parser.add_argument(
+        "--remote", action="store_true",
+        help="MCP-native export (issue #78): page active rules over the MCP "
+             "server (MCM_MCP_URL or a `type: http` .mcp.json entry) instead of "
+             "connecting to the store directly. Mutually exclusive with --from.",
     )
     mirror_parser.add_argument(
         "--out", required=True,
         help="Output git directory (created and git-init'd if absent).",
+    )
+    mirror_parser.add_argument(
+        "--no-commit", action="store_true",
+        help="Write the tree but skip git add/commit (a fresh client may lack "
+             "a git identity).",
+    )
+    mirror_parser.add_argument(
+        "--remote-page", type=int, default=100,
+        help="--remote: rules per export_rules call (default 100; clamped to "
+             "the server's MCM_EXPORT_PAGE_MAX).",
     )
     mirror_parser.set_defaults(func=cmd_export_mirror)
 

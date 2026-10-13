@@ -8,6 +8,7 @@ direction (MCM2-23) and the v7 schema columns.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -262,6 +263,20 @@ def _sift_max_spans() -> int:
         return v if v > 0 else _DEFAULT_SIFT_MAX_SPANS
     except ValueError:
         return _DEFAULT_SIFT_MAX_SPANS
+
+
+_DEFAULT_EXPORT_PAGE_MAX = 200
+
+
+def _export_page_max() -> int:
+    """Per-call rule ceiling for export_rules (issue #78). Env-tunable via
+    MCM_EXPORT_PAGE_MAX; a requested limit above this is clamped, not refused,
+    so a client that pages always makes progress."""
+    try:
+        v = int(os.environ.get("MCM_EXPORT_PAGE_MAX", "") or _DEFAULT_EXPORT_PAGE_MAX)
+        return v if v > 0 else _DEFAULT_EXPORT_PAGE_MAX
+    except ValueError:
+        return _DEFAULT_EXPORT_PAGE_MAX
 
 
 def _active_conflict_items(storage):
@@ -1049,6 +1064,55 @@ def register_rules_tools(
             "  Decide per candidate: add_rule (NOVEL) / "
             "supersede_rule|reinforce_rule (REFINE) / skip.")
         return _with_nudge("\n".join(lines), tracker)
+
+    @mcp.tool()
+    def export_rules(offset: int = 0, limit: int = 100) -> str:
+        """Page the ACTIVE rule corpus WITH full bodies, for an MCP-native
+        `.md` export (issue #78 — the export twin of the remote ingest funnel).
+        Read-only.
+
+        Returns a JSON object:
+          {"rules": [{"id","title","keywords","category","content","status"}],
+           "offset", "limit", "returned", "total", "has_more"}
+        ordered by id. Archived and superseded rules are skipped (same scope as
+        `export-mirror`). `limit` is clamped to MCM_EXPORT_PAGE_MAX (default
+        200), never refused — total transfer is O(rules), so the client MUST
+        page with the returned `offset`+`returned` until `has_more` is false."""
+        tracker.record_call("export_rules")
+        from ..mirror import is_active_rule
+
+        cap = _export_page_max()
+        eff_limit = max(1, min(int(limit or 0) or cap, cap))
+        off = max(0, int(offset or 0))
+
+        # Same active-rule predicate as the direct export_mirror (shared in
+        # mirror.is_active_rule) so direct and remote exports never diverge.
+        active = [
+            r for r in storage.iter_entries(EntityType.RULE) if is_active_rule(r)
+        ]
+        active.sort(key=lambda r: r.id)
+        page = active[off:off + eff_limit]
+        payload = {
+            "rules": [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "keywords": r.keywords,
+                    "category": r.category or "",
+                    "content": r.content or "",
+                    "status": getattr(r, "status", "active"),
+                }
+                for r in page
+            ],
+            "offset": off,
+            "limit": eff_limit,
+            "returned": len(page),
+            "total": len(active),
+            "has_more": off + len(page) < len(active),
+        }
+        # Raw JSON, NOT _with_nudge: the client json.loads() this, and a nudge
+        # appended to the string would make the page unparseable.
+        return json.dumps(payload)
 
     @mcp.tool()
     def find_conflicting_rules(topic_threshold: float = 0.5,

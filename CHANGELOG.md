@@ -6,6 +6,21 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **MCP-native rule export: `export-mirror --remote` (issue #78).** The export
+  twin of `ingest --remote`. A new read-only `export_rules(offset, limit)` MCP
+  tool pages the active rule corpus with full bodies as JSON (limit clamped to
+  `MCM_EXPORT_PAGE_MAX`, default 200; `has_more` for paging), and
+  `mcm-engine export-mirror --remote --out DIR` pages it over MCP and renders
+  the same `rules/<category>/<slug>.md` tree client-side, so dumping a hosted,
+  auth-required KB to a diffable `.md` tree needs no pod exec and never touches
+  the remote Postgres directly. Reuses the remote-ingest auth/resilience
+  transport; `--no-commit` skips git for a client with no git identity;
+  `--remote` and `--from` are mutually exclusive. The renderer
+  (`mirror.render_rules_to_tree`) and the active-rule predicate
+  (`mirror.is_active_rule`) are shared with the direct `export-mirror` so the
+  two paths cannot diverge. No schema/SQL change (sourced from `iter_entries`).
+
 ### Fixed
 - **Text files opened without explicit `encoding=` (issue #123).** The YAML
   config writer (`cli.py`), config reader (`config.py`), and debug-log append
