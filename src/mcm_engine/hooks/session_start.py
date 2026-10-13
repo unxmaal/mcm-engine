@@ -54,11 +54,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception:
         pass
 
+    # issue #63: re-surface the positive voice exemplar at session start to
+    # fight instruction decay, as a positive target rather than a denylist.
+    try:
+        from ..style import VOICE_EXEMPLAR
+        context = RESUME_DIRECTIVE + "\n\n" + VOICE_EXEMPLAR
+    except Exception:
+        context = RESUME_DIRECTIVE
+
     try:
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "additionalContext": RESUME_DIRECTIVE,
+                "additionalContext": context,
             }
         }))
     except Exception:

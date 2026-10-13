@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **Positive voice exemplar + mechanical tic counter (issue #63).** A new
+  `mcm_engine.style` module: `count_style_tics(text)` counts the
+  mechanically-detectable house-style tics (emoji, em-dash) as a number rather
+  than an eyeballed impression, and `VOICE_EXEMPLAR` states the house voice as a
+  positive target with before/after pairs instead of a denylist (an
+  all-prohibition rule pulls prose toward flat/clinical; an exemplar gives the
+  model something to pattern-match). The SessionStart hook now surfaces the
+  exemplar to fight instruction decay. Deferred follow-ups (noted to avoid
+  destabilizing the escalation-prone nudge machinery in a patch, and an extra
+  migration): mid-session periodic re-surfacing of the exemplar via the nudge
+  system, and persisting per-session tic counts into `session_metrics`.
+
 ### Fixed
 - **Text files opened without explicit `encoding=` (issue #123).** The YAML
   config writer (`cli.py`), config reader (`config.py`), and debug-log append
