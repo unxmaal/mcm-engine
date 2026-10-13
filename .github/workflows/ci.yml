@@ -55,13 +55,51 @@ jobs:
             --ignore=tests/test_orthogonal_wiring.py \
             -v
 
+  changes:
+    # Decide whether a PR needs the slow real-adapter matrix. Before #130 the
+    # cross-adapter job was main-only, so a Postgres-only regression (a NULL
+    # ORDER BY that behaves differently on sqlite vs postgres) merged green on
+    # the PR and only went red at merge time. Now a PR that touches an adapter,
+    # the schema, the backend protocol, the shared conformance suite, or this
+    # workflow gets the matrix too; everything else keeps fast PR feedback.
+    name: Detect adapter/schema changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cross: ${{ steps.filter.outputs.cross }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Non-PR events (push to main, nightly, tags) always run the matrix.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "cross=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"; echo "$changed"
+          if echo "$changed" | grep -qE '^(src/mcm_engine/adapters/|src/mcm_engine/schema\.py$|src/mcm_engine/backends/|src/mcm_engine/testing/conformance\.py$|\.github/workflows/ci\.yml$)'; then
+            echo "cross=true" >> "$GITHUB_OUTPUT"
+            echo "-> adapter/schema surface changed: running cross-adapter matrix"
+          else
+            echo "cross=false" >> "$GITHUB_OUTPUT"
+            echo "-> no adapter/schema change: embedded suite is sufficient"
+          fi
+
   cross-adapter:
     name: Cross-adapter conformance (postgres + redis + opensearch)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Run on main + nightly. PRs hit only the embedded suite above to
-    # keep PR feedback fast; full matrix runs at merge time.
-    if: github.event_name != 'pull_request'
+    # Always on push to main + nightly + tags; on PRs only when the adapter /
+    # schema / backend / conformance surface changed (issue #130). PRs that
+    # don't touch it stay on the fast embedded suite above.
+    needs: changes
+    if: needs.changes.outputs.cross == 'true'
 
     services:
       postgres:
