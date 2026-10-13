@@ -1445,15 +1445,20 @@ class PostgresStorage:
                 r = cur.fetchone()
             return _session_from_row(r) if r else None
         conds, where_params, order, order_params = [], [], [], []
+        # COALESCE(.. , FALSE): a NULL-scope (fallback) row makes `col = %s`
+        # evaluate to NULL, and Postgres sorts NULL FIRST under DESC (SQLite
+        # sorts it LAST) — so without the coalesce the fallback row would
+        # outrank an exact scope match on Postgres only. Fold NULL to FALSE so
+        # the exact match wins in both dialects (issue #116 cross-adapter bug).
         if principal is not None:
             conds.append("(principal = %s OR principal IS NULL)")
             where_params.append(principal)
-            order.append("(principal = %s) DESC")
+            order.append("COALESCE(principal = %s, FALSE) DESC")
             order_params.append(principal)
         if workspace is not None:
             conds.append("(workspace = %s OR workspace IS NULL)")
             where_params.append(workspace)
-            order.append("(workspace = %s) DESC")
+            order.append("COALESCE(workspace = %s, FALSE) DESC")
             order_params.append(workspace)
         where = " AND ".join(conds)
         order_sql = ", ".join(order + ["id DESC"])
