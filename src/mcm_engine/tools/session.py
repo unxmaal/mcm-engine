@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, SessionRow, SnapshotRow
 from ..db import KnowledgeDB
+from ..principal import get_transport_principal
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -231,7 +232,7 @@ def register_session_tools(
             pass
 
         # Last handoff (most recent session row).
-        handoff = storage.get_last_session()
+        handoff = storage.get_last_session(principal=get_transport_principal())
         if handoff is not None:
             parts.append(f"\n--- Last handoff ({handoff.created_at}) ---")
             parts.append(f"Status: {handoff.status}")
@@ -272,8 +273,14 @@ def register_session_tools(
         current_task: str = "",
         next_steps: str = "",
         blockers: str = "",
+        workspace: str = "",
     ) -> str:
-        """Snapshot session state for the next session to pick up."""
+        """Snapshot session state for the next session to pick up.
+
+        workspace: optional label separating one principal's multiple projects
+        on a shared store (issue #116). The transport principal is stamped
+        automatically; pass workspace when one identity works several projects.
+        """
         tracker.record_call("session_handoff")
         # Compute suggestions BEFORE reset_all clears session tracking.
         suggestions = _handoff_suggestions(storage, tracker)
@@ -294,6 +301,8 @@ def register_session_tools(
             next_steps=next_steps or None,
             blockers=blockers or None,
             context_snapshot=context,
+            principal=get_transport_principal(),
+            workspace=workspace or None,
         ))
 
         # Auto-snapshot with the handoff data.
@@ -359,7 +368,7 @@ def register_session_tools(
         tracker.record_call("save_snapshot")
         tracker.last_checkpoint_turn = tracker.turn_count
 
-        last_session = storage.get_last_session()
+        last_session = storage.get_last_session(principal=get_transport_principal())
         session_id = last_session.id if last_session else None
         seq = storage.next_snapshot_seq(session_id)
 
@@ -392,7 +401,7 @@ def register_session_tools(
             return rows, 0
 
         # Last session.
-        session = storage.get_last_session()
+        session = storage.get_last_session(principal=get_transport_principal())
         if session is not None:
             parts.append("--- Last Session ---")
             parts.append(f"Status: {session.status}")

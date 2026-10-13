@@ -161,8 +161,23 @@ _DDL_STATEMENTS: list[str] = [
         next_steps        TEXT,
         blockers          TEXT,
         context_snapshot  TEXT,
-        created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        principal         TEXT,
+        workspace         TEXT
     )
+    """,
+
+    # issue #116: scope existing sessions tables (fresh installs get the
+    # columns from the CREATE above). Guarded so it is idempotent per boot.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'sessions' AND column_name = 'principal') THEN
+            ALTER TABLE sessions ADD COLUMN principal TEXT;
+            ALTER TABLE sessions ADD COLUMN workspace TEXT;
+        END IF;
+    END$$
     """,
 
     """
@@ -706,6 +721,8 @@ def _session_from_row(r: dict[str, Any]) -> SessionRow:
         blockers=r["blockers"],
         context_snapshot=r["context_snapshot"],
         created_at=_as_dt(r["created_at"]),
+        principal=r.get("principal"),
+        workspace=r.get("workspace"),
     )
 
 
@@ -1397,18 +1414,20 @@ class PostgresStorage:
             if row.id:
                 cur.execute(
                     "INSERT INTO sessions "
-                    "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.id, row.status, row.current_task, row.findings_summary,
-                     row.next_steps, row.blockers, row.context_snapshot),
+                     row.next_steps, row.blockers, row.context_snapshot,
+                     row.principal, row.workspace),
                 )
             else:
                 cur.execute(
                     "INSERT INTO sessions "
-                    "(status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.status, row.current_task, row.findings_summary,
-                     row.next_steps, row.blockers, row.context_snapshot),
+                     row.next_steps, row.blockers, row.context_snapshot,
+                     row.principal, row.workspace),
                 )
             new_id = cur.fetchone()["id"]
         self._commit()
@@ -1416,9 +1435,33 @@ class PostgresStorage:
 
     def get_last_session(
         self, *, caller: Optional[str] = None,
+        principal: Optional[str] = None, workspace: Optional[str] = None,
     ) -> Optional[SessionRow]:
+        # issue #116: scoped resume with NULL-scope fallback (scoped sorts
+        # first), mirroring the SQLite adapter. No scope key -> global latest.
+        if principal is None and workspace is None:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
+                r = cur.fetchone()
+            return _session_from_row(r) if r else None
+        conds, where_params, order, order_params = [], [], [], []
+        if principal is not None:
+            conds.append("(principal = %s OR principal IS NULL)")
+            where_params.append(principal)
+            order.append("(principal = %s) DESC")
+            order_params.append(principal)
+        if workspace is not None:
+            conds.append("(workspace = %s OR workspace IS NULL)")
+            where_params.append(workspace)
+            order.append("(workspace = %s) DESC")
+            order_params.append(workspace)
+        where = " AND ".join(conds)
+        order_sql = ", ".join(order + ["id DESC"])
         with self._conn.cursor() as cur:
-            cur.execute("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
+            cur.execute(
+                f"SELECT * FROM sessions WHERE {where} ORDER BY {order_sql} LIMIT 1",
+                (*where_params, *order_params),
+            )
             r = cur.fetchone()
         return _session_from_row(r) if r else None
 
