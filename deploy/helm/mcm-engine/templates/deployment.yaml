@@ -56,20 +56,30 @@ spec:
             - name: http
               containerPort: {{ .Values.mcm.port }}
               protocol: TCP
+          # Liveness must restart a DEAD pod, not a BUSY one. FastMCP runs tool
+          # handlers inline on the serialized event loop, so a long synchronous
+          # tool (a sustained sift_candidates / ingest run) can make even the
+          # trivial /healthz handler miss its window — the pod is busy, not
+          # dead. A tolerant failureThreshold stops Kubernetes killing it
+          # (issue #89: exit-137 restart loop that failed in-flight sift
+          # batches). Readiness stays stricter: it only sheds the pod from the
+          # Service while busy, which is harmless.
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            timeoutSeconds: 3
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            timeoutSeconds: 3
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

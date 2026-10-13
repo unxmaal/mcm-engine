@@ -7,6 +7,17 @@ versioning.
 ## [Unreleased]
 
 ### Fixed
+- **`/healthz` liveness killed busy pods under sift load (issue #89).** FastMCP
+  runs tool handlers inline on a serialized event loop, so a sustained
+  synchronous `sift_candidates` / ingest run makes even the trivial `/healthz`
+  miss its probe window — the pod is busy, not dead — and Kubernetes killed it
+  (exit 137) in a restart loop that failed in-flight sift batches. The Helm
+  chart's liveness probe is now tolerant (default `failureThreshold: 6`,
+  `timeoutSeconds: 5` → ~60s unresponsive before restart) and tunable via
+  `values.yaml`; readiness stays stricter (it only sheds the pod from the
+  Service). Threading the tool was rejected: it would run against the shared DB
+  connection and re-introduce the `_tx_depth` corruption class. Not reproducible
+  locally — verified by chart render/lint; confirm on the pod.
 - **Text files opened without explicit `encoding=` (issue #123).** The YAML
   config writer (`cli.py`), config reader (`config.py`), and debug-log append
   (`db.py`) used the platform-default encoding (cp1252 on Windows,

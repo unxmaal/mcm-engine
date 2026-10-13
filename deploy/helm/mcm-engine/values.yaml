@@ -37,6 +37,25 @@ mcm:
   # Extra raw env vars, e.g. [{name: MCM_TRUST_DEFAULT, value: "1.0"}].
   extraEnv: []
 
+# Health probes (issue #89). FastMCP runs tool handlers inline on a serialized
+# event loop, so a long synchronous tool (a sustained sift_candidates / ingest
+# run) can make even the trivial /healthz miss its window. Liveness therefore
+# defaults to a TOLERANT failureThreshold so a busy-but-alive pod is not killed
+# (failureThreshold x periodSeconds ~= 60s of unresponsiveness before restart);
+# it still catches a genuinely dead process within ~1 min. Raise further for
+# very long batch runs. Readiness is stricter on purpose: it only removes a busy
+# pod from the Service, shedding load without losing in-flight work.
+livenessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
 # Bundled Postgres. Set enabled=false to use an external database instead
 # (fill in externalDatabase below). This is a minimal first-party StatefulSet,
 # not a third-party subchart, so there is no external chart dependency.
