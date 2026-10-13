@@ -7,6 +7,15 @@ versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Stale rules index was invisible in stdio mode (issue #109).** When the
+  startup file→DB sync failed (e.g. another process holding a write lock), the
+  server came up, reported ready, and served a stale index — searches returned
+  confident "no results" for rules present on disk, with nothing in the session
+  to signal it. The failure is now recorded on the shared `Context`
+  (`stale_index_warning`) and prefixed as `[STALE INDEX] …` onto `search` and
+  `session_start` responses, so the gap shows at the point of use (and a "no
+  results" is flagged as possibly staleness, not absence). Fail-open; startup is
+  never blocked.
 - **Text files opened without explicit `encoding=` (issue #123).** The YAML
   config writer (`cli.py`), config reader (`config.py`), and debug-log append
   (`db.py`) used the platform-default encoding (cp1252 on Windows,
