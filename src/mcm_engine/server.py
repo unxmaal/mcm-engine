@@ -293,6 +293,17 @@ class MCMServer:
                 log(f"sync_rules at stdio startup: {counts}")
             except Exception as e:
                 log(f"sync_rules at stdio startup failed (non-fatal): {e}")
+                # issue #109: the log above lands in log_path only (never stderr),
+                # so the client otherwise serves a stale index with no signal.
+                # Record it on the shared Context so search / session_start can
+                # warn at the point of use. Fail-open: a stale index is worse
+                # unsignalled than signalled, but never block startup.
+                self.ctx.stale_index_warning = (
+                    f"on-disk rules index may be stale: startup file->DB sync "
+                    f"failed ({e}). Rules present in rules/*.md may be missing "
+                    f"from search until the server is restarted after the holder "
+                    f"clears. A 'no results' here is not proof a rule is absent."
+                )
         else:
             log("source_of_truth=database: skipping startup file sync "
                 "(DB is authoritative)")

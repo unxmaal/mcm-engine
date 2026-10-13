@@ -786,3 +786,26 @@ read of `rules.valid_until`, previously inert past hydration).
   update / set_rule_metadata thread the value through existing sites.
 - `tools/search.py`: unchanged (0). Expiry is computed from the hydrated
   `valid_until` field — no SQL.
+
+## Addendum — sessions scoping (v16 → v17, issue #116)
+
+`sessions.principal` + `sessions.workspace` so a shared store resumes the right
+session instead of the global latest. `session_handoff` stamps the transport
+principal (and an optional workspace); `get_last_session` filters by them with a
+NULL-scope (pre-migration / unscoped) fallback; `session_start` /
+`get_resume_context` pass the in-flight principal. No index (sessions is a
+low-volume table; a scan under a single-row LIMIT is cheap).
+
+- `schema.py`: 65 → 67. Two new `db.execute_write` in `_migrate_v16_to_v17`
+  (`ALTER TABLE sessions ADD COLUMN principal/workspace`). The columns also land
+  in CORE_SCHEMA for fresh installs (no site). The index was deliberately NOT
+  added: an index on migration-era columns cannot live in CORE_SCHEMA (it runs
+  against old tables before the ALTER), and sessions is tiny.
+- `adapters/sqlite/storage.py`: 68 → 69. `get_last_session` gains one scoped
+  SELECT branch (the unscoped path is unchanged); `insert_session` threads
+  principal/workspace into its existing two statements (no new site).
+- `adapters/postgres/storage.py`: 70 → 71. Same: one scoped SELECT branch in
+  `get_last_session`. Columns added via the sessions `CREATE TABLE` DDL plus a
+  guarded `DO $$ ... $$` ALTER block for existing deployments — DDL string
+  literals, no new `.execute` site.
+- `tools/session.py`: unchanged (0 SQL). Stamps/reads via the storage methods.

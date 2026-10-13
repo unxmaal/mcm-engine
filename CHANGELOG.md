@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **Positive voice exemplar + mechanical tic counter (issue #63).** A new
+  `mcm_engine.style` module: `count_style_tics(text)` counts the
+  mechanically-detectable house-style tics (emoji, em-dash) as a number rather
+  than an eyeballed impression, and `VOICE_EXEMPLAR` states the house voice as a
+  positive target with before/after pairs instead of a denylist (an
+  all-prohibition rule pulls prose toward flat/clinical; an exemplar gives the
+  model something to pattern-match). The SessionStart hook now surfaces the
+  exemplar to fight instruction decay. Deferred follow-ups (noted to avoid
+  destabilizing the escalation-prone nudge machinery in a patch, and an extra
+  migration): mid-session periodic re-surfacing of the exemplar via the nudge
+  system, and persisting per-session tic counts into `session_metrics`.
+
 ### Fixed
 - **`/healthz` liveness killed busy pods under sift load (issue #89).** FastMCP
   runs tool handlers inline on a serialized event loop, so a sustained
@@ -18,6 +31,26 @@ versioning.
   Service). Threading the tool was rejected: it would run against the shared DB
   connection and re-introduce the `_tx_depth` corruption class. Not reproducible
   locally — verified by chart render/lint; confirm on the pod.
+- **Shared deployments resumed the wrong session (issue #116).**
+  `get_last_session` was unscoped — it returned the global-latest handoff — so a
+  store shared by multiple callers (one server, many clients) or one user across
+  projects would hand back a different context's handoff. `sessions` now carries
+  `principal` (the transport identity, stamped automatically at
+  `session_handoff`) and an optional `workspace` label (new `session_handoff`
+  arg); `get_last_session` filters by them with a NULL-scope (pre-migration /
+  unscoped) fallback, and `session_start` / `get_resume_context` pass the
+  in-flight principal. Additive schema v16→v17 (both adapters, guarded);
+  pre-existing rows are a clearly-labeled global fallback. Local /
+  unauthenticated use (no principal) keeps the original global-latest behavior.
+- **Stale rules index was invisible in stdio mode (issue #109).** When the
+  startup file→DB sync failed (e.g. another process holding a write lock), the
+  server came up, reported ready, and served a stale index — searches returned
+  confident "no results" for rules present on disk, with nothing in the session
+  to signal it. The failure is now recorded on the shared `Context`
+  (`stale_index_warning`) and prefixed as `[STALE INDEX] …` onto `search` and
+  `session_start` responses, so the gap shows at the point of use (and a "no
+  results" is flagged as possibly staleness, not absence). Fail-open; startup is
+  never blocked.
 - **Text files opened without explicit `encoding=` (issue #123).** The YAML
   config writer (`cli.py`), config reader (`config.py`), and debug-log append
   (`db.py`) used the platform-default encoding (cp1252 on Windows,

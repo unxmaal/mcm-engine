@@ -309,6 +309,25 @@ class StorageConformance:
         assert last.id == new_id
         assert last.status == "working"
 
+    def test_get_last_session_scoped_by_principal(self, storage):
+        # issue #116 — exercised against BOTH adapters so the sqlite and
+        # postgres scoping SQL (hand-written in two dialects) cannot drift.
+        storage.insert_session(SessionRow(id=0, status="alice-1", principal="alice"))
+        storage.insert_session(SessionRow(id=0, status="bob-latest", principal="bob"))
+        storage.insert_session(SessionRow(id=0, status="alice-2", principal="alice"))
+        # bob is the global latest, but alice resumes alice's own session.
+        assert storage.get_last_session(principal="alice").status == "alice-2"
+        assert storage.get_last_session(principal="bob").status == "bob-latest"
+        # no scope key -> global latest (unchanged behavior).
+        assert storage.get_last_session().status == "alice-2"
+        # a principal with no row of their own falls back to a NULL-scope row.
+        storage.insert_session(SessionRow(id=0, status="legacy", principal=None))
+        assert storage.get_last_session(principal="carol").status == "legacy"
+        # workspace separates one principal's projects.
+        storage.insert_session(SessionRow(id=0, status="wA", principal="dave", workspace="A"))
+        storage.insert_session(SessionRow(id=0, status="wB", principal="dave", workspace="B"))
+        assert storage.get_last_session(principal="dave", workspace="A").status == "wA"
+
     def test_snapshot_seq_increments_per_session(self, storage):
         s1 = storage.insert_session(SessionRow(id=0, status="s1"))
         s2 = storage.insert_session(SessionRow(id=0, status="s2"))
