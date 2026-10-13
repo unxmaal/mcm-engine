@@ -547,6 +547,10 @@ def register_search_tools(
             include_archived=include_archived,
             detail=detail,
         )
+        # issue #109: if the startup file->DB sync failed, the index may be
+        # behind the files — warn at the point of use (a "no results" here may
+        # be the staleness, not a genuine absence).
+        stale = f"[STALE INDEX] {ctx.stale_index_warning}\n\n" if ctx.stale_index_warning else ""
         if not result:
             hint = ""
             if len(query.split()) > 2:
@@ -555,7 +559,7 @@ def register_search_tools(
                     " AND-ed. Retry with 1-3 core keywords instead of a"
                     " sentence."
                 )
-            return _with_nudge(f"No results for '{query}'.{hint}", tracker, query)
-        return _with_nudge(_body_hint(result, detail), tracker, query)
+            return _with_nudge(stale + f"No results for '{query}'.{hint}", tracker, query)
+        return _with_nudge(stale + _body_hint(result, detail), tracker, query)
 
     return search_all

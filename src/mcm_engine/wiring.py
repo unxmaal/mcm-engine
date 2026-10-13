@@ -36,6 +36,11 @@ class Context:
     counters: CounterStore
     search: SearchBackend
     session: SessionStore
+    # Set by the server when a startup file->DB sync fails in stdio mode
+    # (issue #109): a non-empty string is surfaced as a staleness prefix on
+    # search / session_start responses so the agent learns the on-disk rules
+    # index may be behind the files at the point of use. None = index trusted.
+    stale_index_warning: Optional[str] = None
 
 
 def _embedded_db_path(name: str, options: dict) -> Optional[str]:
