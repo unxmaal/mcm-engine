@@ -260,6 +260,10 @@ def register_session_tools(
                     pass
 
         parts.append(f"\nProject: {project_name}")
+        # issue #109: surface a failed startup file->DB sync at the point a
+        # session orients itself, so a stale rules index is not silent.
+        if ctx.stale_index_warning:
+            parts.insert(0, f"[STALE INDEX] {ctx.stale_index_warning}")
         return "\n".join(parts)
 
     @mcp.tool()
