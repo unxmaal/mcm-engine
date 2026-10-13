@@ -6,6 +6,8 @@ versioning.
 
 ## [Unreleased]
 
+## [3.12.0] — 2026-10-13
+
 ### Added
 - **MCP-native rule export: `export-mirror --remote` (issue #78).** The export
   twin of `ingest --remote`. A new read-only `export_rules(offset, limit)` MCP
