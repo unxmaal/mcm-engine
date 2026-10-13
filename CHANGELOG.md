@@ -6,6 +6,15 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **Text files opened without explicit `encoding=` (issue #123).** The YAML
+  config writer (`cli.py`), config reader (`config.py`), and debug-log append
+  (`db.py`) used the platform-default encoding (cp1252 on Windows,
+  locale-dependent on POSIX), so non-ASCII content round-tripped wrong or raised
+  off the author's machine. All three now pass `encoding="utf-8"`. A Tier-1
+  scanner test (`tests/test_encoding_scanner.py`) AST-scans `src/` for any text
+  open/`read_text`/`write_text` missing `encoding=` and holds it at zero.
+
 ### Changed
 - **`search` progressive disclosure (issue #119).** The `search` tool now
   returns a compact one-line summary per hit by default — id, kind,

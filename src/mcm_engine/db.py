@@ -24,7 +24,7 @@ def log(msg: str) -> None:
         return
     try:
         if _log_file is None:
-            _log_file = open(_log_path, "a")
+            _log_file = open(_log_path, "a", encoding="utf-8")
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         _log_file.write(f"[{ts}] {msg}\n")
         _log_file.flush()
