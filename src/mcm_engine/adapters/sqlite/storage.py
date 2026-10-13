@@ -824,15 +824,21 @@ class SqliteStorage:
             ).fetchone()
             return _session_from_row(r) if r else None
         conds, where_params, order, order_params = [], [], [], []
+        # COALESCE(.. , 0): a NULL-scope (fallback) row makes `col = ?` evaluate
+        # to NULL. SQLite happens to sort NULL LAST under DESC (so the exact
+        # match already wins here), but Postgres sorts it FIRST — fold NULL to a
+        # concrete 0 so BOTH dialects rank the exact match over the fallback and
+        # cannot drift (issue #116 cross-adapter bug; kept identical to the PG
+        # adapter's COALESCE(.., FALSE)).
         if principal is not None:
             conds.append("(principal = ? OR principal IS NULL)")
             where_params.append(principal)
-            order.append("(principal = ?) DESC")
+            order.append("COALESCE(principal = ?, 0) DESC")
             order_params.append(principal)
         if workspace is not None:
             conds.append("(workspace = ? OR workspace IS NULL)")
             where_params.append(workspace)
-            order.append("(workspace = ?) DESC")
+            order.append("COALESCE(workspace = ?, 0) DESC")
             order_params.append(workspace)
         where = " AND ".join(conds)
         order_sql = ", ".join(order + ["id DESC"])  # exact-scope match first, newest within
