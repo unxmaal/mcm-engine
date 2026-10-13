@@ -659,3 +659,116 @@ def test_silent_allow_is_not_logged(tmp_path):
 def test_compliance_read_is_not_logged(tmp_path):
     _invoke("mcp__mcm-engine__search", cwd=tmp_path, session_id="cr")
     assert _read_events(_events_path(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# The nudge has to actually reach the model
+# ---------------------------------------------------------------------------
+# Diagnosed 2026-09-07: this hook was registered, ran in 0.33s against a 2s
+# timeout, and counted correctly -- and wrote every nudge to STDERR with EXIT 0.
+# Claude Code surfaces a PreToolUse hook's stderr to the model only on exit 2
+# (block); on exit 0 it is debug output the model never sees. The agent received
+# ZERO nudges across several hundred built-in tool calls in a full session.
+#
+# The hook is deliberately fail-open (issue #19), so exit 2 is not an option:
+# a warning that blocks is not a warning. The non-blocking channel is JSON on
+# STDOUT, which is what hooks/session_start.py already uses successfully.
+
+def _drive_json(tmp_path, tool="Bash", n=1, session="jsonprobe"):
+    """Drive main() and return (exit_code, parsed stdout json or None)."""
+    import io
+    import json as _json
+    import sys as _sys
+    from unittest.mock import patch
+
+    out = None
+    for _ in range(n):
+        stdin = io.StringIO(_json.dumps({
+            "session_id": session, "tool_name": tool,
+            "tool_input": {"command": "echo x"}, "cwd": str(tmp_path)}))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(_sys, "stdin", stdin), \
+             patch.object(_sys, "stdout", stdout), \
+             patch.object(_sys, "stderr", stderr):
+            rc = main()
+        text = stdout.getvalue().strip()
+        out = _json.loads(text) if text else None
+    return rc, out
+
+
+def test_a_nudge_is_emitted_as_json_on_stdout(tmp_path):
+    """stderr on exit 0 is invisible to the model. JSON on stdout is not."""
+    rc, payload = _drive_json(tmp_path, n=WARN_THRESHOLD + 1)
+    assert rc == 0, "the hook is fail-open and must never block"
+    assert payload is not None, "nudge went nowhere the model can see it"
+    hso = payload["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert "mcm-engine" in hso["additionalContext"]
+
+
+def test_a_quiet_call_emits_no_json(tmp_path):
+    """Only speak when there is something to say; an empty payload on every
+    single tool call is noise the agent learns to skip."""
+    rc, payload = _drive_json(tmp_path, n=1, session="quietprobe")
+    assert rc == 0
+    assert payload is None
+
+
+def test_the_nudge_names_a_tool_that_actually_exists(tmp_path):
+    """It said `mcp__knowledge__search`. The tool in this deployment is
+    `mcp__mcm-engine__search`, so an agent obeying literally would call
+    something that does not exist."""
+    _, payload = _drive_json(tmp_path, n=WARN_THRESHOLD + 1, session="nameprobe")
+    text = payload["hookSpecificOutput"]["additionalContext"]
+    assert "mcp__knowledge__search" not in text
+
+
+# ---------------------------------------------------------------------------
+# Escalate a consultation gap to the human, not to a dead end
+# ---------------------------------------------------------------------------
+# Item 1(b), 2026-09-07. The hook has never blocked. RULE #61 records the reason
+# as fail-open safety -- a block would strand the agent when the knowledge
+# backend is down, "the one moment it cannot call a reset tool". TESTED AND
+# FALSE: the counter resets in _decide on the PreToolUse ATTEMPT, before the
+# tool runs and regardless of whether it succeeds, so a down backend traps
+# nothing.
+#
+# What IS a real trap, and was never written down: a subagent with a restricted
+# toolset. `statusline-setup` ships with Tools: Read, Edit and no MCP tools at
+# all, so a hard deny would strand it permanently with no reset available to it.
+#
+# So the gap escalates with permissionDecision "ask": the tool still is not
+# denied by the hook, the human decides. Worst case becomes one click rather
+# than a stuck agent, which also covers the restricted-subagent trap.
+
+def test_a_consultation_gap_asks_the_human(tmp_path):
+    rc, payload = _drive_json(tmp_path, tool="Edit",
+                              n=BLOCK_THRESHOLD + 1, session="gapask")
+    assert rc == 0, "still never a hard deny; the human is the escape hatch"
+    hso = payload["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "ask"
+    assert "mcm-engine" in hso["permissionDecisionReason"]
+
+
+def test_a_mere_warning_does_not_ask(tmp_path):
+    """Warnings are for the model to read, not for Eric to click through."""
+    _, payload = _drive_json(tmp_path, tool="Bash",
+                             n=WARN_THRESHOLD + 1, session="warnonly")
+    hso = payload["hookSpecificOutput"]
+    assert "permissionDecision" not in hso
+    assert "additionalContext" in hso
+
+
+def test_bash_never_asks_however_many_calls(tmp_path):
+    """Only file mutators can reach a gap. Read-only investigation must never
+    put a permission prompt in front of the user."""
+    _, payload = _drive_json(tmp_path, tool="Bash",
+                             n=BLOCK_THRESHOLD + 5, session="bashnoask")
+    assert "permissionDecision" not in payload["hookSpecificOutput"]
+
+
+def test_the_thresholds_match_what_the_contract_advertises(tmp_path):
+    """CLAUDE.md has always said warn at 8, block at 20. The code drifted to 3
+    and 6, and warn-at-3 fired twice inside one turn of read-only work."""
+    assert WARN_THRESHOLD == 8
+    assert BLOCK_THRESHOLD == 20

@@ -87,8 +87,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-WARN_THRESHOLD = 3
-BLOCK_THRESHOLD = 6
+# These are the numbers the project contract has always advertised. The code
+# had drifted to 3 and 6, which is far too tight to act on: warn-at-3 fired
+# twice inside a single turn of read-only investigation, on a topic where the
+# knowledge base held nothing to read.
+WARN_THRESHOLD = 8
+BLOCK_THRESHOLD = 20
 
 # Fixation breaker (advisory, issue: session-metrics). After this many
 # CONSECUTIVE edits to the SAME file in one session (a look-first compliance
@@ -340,7 +344,9 @@ def _decide(
         msg = (
             "[mcm-engine] CONSULTATION GAP recorded — "
             f"{mutators} file edits this session with no look-first MCP read. "
-            "This edit is ALLOWED (fail-open); the gap is logged to "
+            "The hook does NOT deny it — it asks the human to approve, which "
+            "is the escape hatch a restricted-tool subagent would otherwise "
+            "not have. The gap is logged to "
             ".claude/mcp-enforcement-events.jsonl and counts against this "
             "session's informed-vs-blind ratio. The knowledge base is "
             "authoritative for project specifics, not your pretrained weights "
@@ -356,14 +362,15 @@ def _decide(
             f"You have made {total} built-in tool calls "
             f"({mutators} edits) this session with no look-first MCP read. "
             "This is not a runway counter — it is a directive. The next "
-            "action should be `mcp__knowledge__search` with a query matching "
+            "action should be the MCP knowledge `search` tool with a query matching "
             "the topic at hand, NOT another Edit/Write/Bash. If the search "
             "returns nothing relevant, say so explicitly in your reply and "
             "then continue. Confidently asserting project-specific facts "
             "from pretrained memory is the failure mode this hook exists to "
             "catch.\n"
             "\n"
-            f"Mutator block fires at {BLOCK_THRESHOLD} edits. Reset tools: "
+            f"At {BLOCK_THRESHOLD} edits this asks Eric to approve instead. "
+            f"Reset tools: "
             f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
         )
         return 0, msg
@@ -838,13 +845,49 @@ def main(argv: list[str] | None = None) -> int:
             "run": s.get("fixation_run", 0),
         })
 
+    # A CONSULTATION GAP ESCALATES TO THE HUMAN, not to a dead end.
+    #
+    # RULE #61 recorded the reason for never blocking as fail-open safety: a
+    # block would strand the agent when the knowledge backend is down, "the one
+    # moment it cannot call a reset tool". That is false, and tested: the
+    # counter resets in _decide on the PreToolUse ATTEMPT, before the tool runs
+    # and regardless of whether it succeeds. A down backend traps nothing.
+    #
+    # The real trap was never written down: a subagent with a restricted
+    # toolset. `statusline-setup` ships with Read and Edit and no MCP tools at
+    # all, so a hard deny would strand it permanently with nothing it could call
+    # to recover. So the hook still never denies. It asks, and the human decides
+    # -- which turns the worst case from a stuck agent into one click, and
+    # covers the restricted-subagent trap at the same time.
+    ask_reason = message if at_gap else None
+
     out = message
     if fixation:
         out = f"{out}\n{fixation}" if out else fixation
     if ambient:
         out = f"{out}\n{ambient}" if out else ambient
     if out:
+        # THE MODEL ONLY SEES STDERR ON EXIT 2. This hook is deliberately
+        # fail-open (issue #19) and never returns 2, so for years every nudge
+        # it produced went to a stream nobody reads: an agent ran several
+        # hundred built-in tool calls in one session and received none of them.
+        #
+        # The non-blocking channel is JSON on STDOUT, which is what
+        # hooks/session_start.py already uses successfully. stderr is kept as
+        # well, so `mcm-engine hook` still says something useful when a human
+        # runs it by hand and so existing tests keep their assertion.
         print(out, file=sys.stderr)
+        if exit_code == 0:
+            hso: dict[str, Any] = {"hookEventName": "PreToolUse"}
+            if ask_reason:
+                hso["permissionDecision"] = "ask"
+                hso["permissionDecisionReason"] = out
+            else:
+                hso["additionalContext"] = out
+            try:
+                print(json.dumps({"hookSpecificOutput": hso}))
+            except Exception:
+                pass
     return exit_code
 
 
