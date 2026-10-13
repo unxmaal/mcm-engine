@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Changed
+- **`search` progressive disclosure (issue #119).** `search` and the
+  `report_error` auto-search now return a compact one-line summary per hit by
+  default — id, kind, title/topic, the one-line summary, and tags/category —
+  and omit the long body (knowledge `Detail` + refs, negative `Why`/`Fix`,
+  error root cause/fix). Bodies come from `get_entry("<type>", <id>)` on
+  demand; pass `detail="full"` to `search` for the pre-#119 inline behavior.
+  Motivation: hit bodies were the dominant source of per-session tool-output
+  tokens (measured ~4M tokens/week of `search` output, 79% from results over
+  2k), re-read from the prompt cache every later turn. Ranking, FTS matching,
+  and `include_archived` are unchanged; a once-per-response footer names how to
+  fetch a body.
+
 ## [3.11.1] — 2026-09-03
 
 ### Security
