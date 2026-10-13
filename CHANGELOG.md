@@ -7,6 +7,17 @@ versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Shared deployments resumed the wrong session (issue #116).**
+  `get_last_session` was unscoped — it returned the global-latest handoff — so a
+  store shared by multiple callers (one server, many clients) or one user across
+  projects would hand back a different context's handoff. `sessions` now carries
+  `principal` (the transport identity, stamped automatically at
+  `session_handoff`) and an optional `workspace` label (new `session_handoff`
+  arg); `get_last_session` filters by them with a NULL-scope (pre-migration /
+  unscoped) fallback, and `session_start` / `get_resume_context` pass the
+  in-flight principal. Additive schema v16→v17 (both adapters, guarded);
+  pre-existing rows are a clearly-labeled global fallback. Local /
+  unauthenticated use (no principal) keeps the original global-latest behavior.
 - **Text files opened without explicit `encoding=` (issue #123).** The YAML
   config writer (`cli.py`), config reader (`config.py`), and debug-log append
   (`db.py`) used the platform-default encoding (cp1252 on Windows,
