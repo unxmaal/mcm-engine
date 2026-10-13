@@ -257,6 +257,12 @@ class SessionRow:
     blockers: Optional[str] = None
     context_snapshot: Optional[str] = None
     created_at: Optional[datetime] = None
+    # issue #116: scoping keys so a shared store resumes the right session.
+    # `principal` is the transport identity stamped at handoff; `workspace` is
+    # an optional client-supplied label separating one principal's N projects.
+    # Pre-migration rows have both NULL (a global/unscoped fallback).
+    principal: Optional[str] = None
+    workspace: Optional[str] = None
 
 
 @dataclass
@@ -564,7 +570,8 @@ class StorageBackend(Protocol):
     # ---- Sessions + snapshots ----
     def insert_session(self, row: SessionRow) -> int: ...
     def get_last_session(
-        self, *, caller: Optional[str] = None
+        self, *, caller: Optional[str] = None,
+        principal: Optional[str] = None, workspace: Optional[str] = None,
     ) -> Optional[SessionRow]: ...
     def next_snapshot_seq(self, session_id: Optional[int]) -> int: ...
     def insert_snapshot(self, row: SnapshotRow) -> int: ...

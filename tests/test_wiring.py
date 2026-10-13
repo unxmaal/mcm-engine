@@ -78,7 +78,13 @@ def test_context_dataclass_has_four_adapter_slots():
     from mcm_engine.wiring import Context
 
     names = {f.name for f in fields(Context)}
-    assert names == {"storage", "counters", "search", "session"}
+    adapters = {"storage", "counters", "search", "session"}
+    assert adapters <= names, "the four adapter slots must stay present"
+    # Context carries exactly one non-adapter field: startup runtime state the
+    # server stamps and the tools read (issue #109). Any OTHER extra field is a
+    # design smell — Context wires adapters, not state — so this stays an
+    # enumerated allowlist, not a loosened check.
+    assert names - adapters == {"stale_index_warning"}
 
 
 # ---- build_context behavior ---------------------------------------------

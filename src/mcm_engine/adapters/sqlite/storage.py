@@ -173,6 +173,8 @@ def _session_from_row(r: sqlite3.Row) -> SessionRow:
         blockers=r["blockers"],
         context_snapshot=r["context_snapshot"],
         created_at=_parse_dt(r["created_at"]),
+        principal=_col(r, "principal"),
+        workspace=_col(r, "workspace"),
     )
 
 
@@ -790,27 +792,53 @@ class SqliteStorage:
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO sessions "
-                "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.status, row.current_task, row.findings_summary,
-                 row.next_steps, row.blockers, row.context_snapshot),
+                 row.next_steps, row.blockers, row.context_snapshot,
+                 row.principal, row.workspace),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO sessions "
-                "(status, current_task, findings_summary, next_steps, blockers, context_snapshot) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.status, row.current_task, row.findings_summary,
-                 row.next_steps, row.blockers, row.context_snapshot),
+                 row.next_steps, row.blockers, row.context_snapshot,
+                 row.principal, row.workspace),
             )
         self._db.commit()
         return cur.lastrowid
 
     def get_last_session(
-        self, *, caller: Optional[str] = None
+        self, *, caller: Optional[str] = None,
+        principal: Optional[str] = None, workspace: Optional[str] = None,
     ) -> Optional[SessionRow]:
+        # issue #116: with a scope key, prefer the latest row for THIS
+        # principal/workspace, falling back to a NULL-scope (pre-migration /
+        # unscoped) row — scoped sorts first, NULL last. With no scope key
+        # (local/unauthenticated), keep the original global-latest behavior.
+        if principal is None and workspace is None:
+            r = self._db.execute(
+                "SELECT * FROM sessions ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return _session_from_row(r) if r else None
+        conds, where_params, order, order_params = [], [], [], []
+        if principal is not None:
+            conds.append("(principal = ? OR principal IS NULL)")
+            where_params.append(principal)
+            order.append("(principal = ?) DESC")
+            order_params.append(principal)
+        if workspace is not None:
+            conds.append("(workspace = ? OR workspace IS NULL)")
+            where_params.append(workspace)
+            order.append("(workspace = ?) DESC")
+            order_params.append(workspace)
+        where = " AND ".join(conds)
+        order_sql = ", ".join(order + ["id DESC"])  # exact-scope match first, newest within
         r = self._db.execute(
-            "SELECT * FROM sessions ORDER BY id DESC LIMIT 1"
+            f"SELECT * FROM sessions WHERE {where} ORDER BY {order_sql} LIMIT 1",
+            (*where_params, *order_params),
         ).fetchone()
         return _session_from_row(r) if r else None
 

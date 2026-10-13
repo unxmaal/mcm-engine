@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 16
+CORE_VERSION = 17
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -78,7 +78,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     next_steps TEXT,
     blockers TEXT,
     context_snapshot TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    principal TEXT,
+    workspace TEXT
 );
 
 -- Per-session efficiency telemetry (v15). One row per Claude Code session,
@@ -751,6 +753,22 @@ def _migrate_v15_to_v16(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v16_to_v17(db: KnowledgeDB) -> None:
+    """v16 -> v17: scope the sessions table (issue #116). Adds
+    sessions.principal (transport identity, stamped at handoff) and
+    sessions.workspace (optional client label), so a shared store resumes the
+    right session instead of the global latest. Additive; existing rows default
+    NULL (a clearly-labeled global/unscoped fallback). Sessions is not
+    FTS-indexed, so nothing else is touched."""
+    if not _has_column(db, "sessions", "principal"):
+        db.execute_write("ALTER TABLE sessions ADD COLUMN principal TEXT")
+        log("Migration v16->v17: added sessions.principal")
+    if not _has_column(db, "sessions", "workspace"):
+        db.execute_write("ALTER TABLE sessions ADD COLUMN workspace TEXT")
+        log("Migration v16->v17: added sessions.workspace")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -768,6 +786,7 @@ _MIGRATIONS = [
     (13, 14, _migrate_v13_to_v14),
     (14, 15, _migrate_v14_to_v15),
     (15, 16, _migrate_v15_to_v16),
+    (16, 17, _migrate_v16_to_v17),
 ]
 
 
