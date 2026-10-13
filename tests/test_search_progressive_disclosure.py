@@ -99,16 +99,18 @@ def test_summary_is_materially_smaller_than_full(tools):
     assert len(summ) < 0.5 * len(full)
 
 
-def test_both_entry_points_default_to_summary(tmp_path):
+def test_entry_point_defaults_are_the_intended_split(tmp_path):
     # Gauntlet class 1 (one value, many places): the detail default lives in
-    # ~8 signatures. The two that are load-bearing are the entry points —
-    # the public `search` tool and `search_all`, which report_error calls.
-    # If they drift apart, report_error silently reverts to full bodies, which
-    # is the regression #119 exists to prevent. Pin both, asserted to agree.
+    # ~8 signatures. The two load-bearing ones are the entry points, and they
+    # are DELIBERATELY different: the public `search` tool defaults to summary
+    # (the #119 token win, high volume), while `search_all` (report_error's
+    # path) defaults to full — it fires once per error and exists to hand back
+    # the fix inline. Pin each so neither silently drifts.
     db = KnowledgeDB(str(tmp_path / "e.db"))
     migrate_core(db)
     mcp = _FakeMCP()
     search_all = register_search_tools(mcp, db, SessionTracker(NudgeConfig()), [], "proj")
     search_default = inspect.signature(mcp.tools["search"]).parameters["detail"].default
     search_all_default = inspect.signature(search_all).parameters["detail"].default
-    assert search_default == search_all_default == "summary"
+    assert search_default == "summary"
+    assert search_all_default == "full"

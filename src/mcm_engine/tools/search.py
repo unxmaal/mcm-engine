@@ -490,11 +490,14 @@ def register_search_tools(
     counters = ctx.counters
     search_backend = ctx.search
 
-    def search_all(query: str, limit: int = 10, detail: DetailLevel = "summary") -> str:
+    def search_all(query: str, limit: int = 10, detail: DetailLevel = "full") -> str:
         """Internal search function used by report_error. Applies quality
-        gate and project scope. Defaults to the compact summary (issue #119):
-        report_error returns candidate ids/titles, and the caller pulls the
-        matching fix body with get_entry("<type>", <id>)."""
+        gate and project scope. Defaults to detail="full" (unlike the public
+        search tool, which defaults to summary): report_error fires once per
+        error, is quality-gated to strong matches only, and exists to hand the
+        caller the fix inline — a summary there would add a get_entry
+        round-trip at the worst moment. The #119 token win targets the
+        high-volume search tool, not this low-volume triage path."""
         result = _search_all_scopes(
             search_backend, storage, counters, query, limit,
             plugin_search_scopes,
