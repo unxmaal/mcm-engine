@@ -198,17 +198,26 @@ class PostgresSearch:
             proj_clause = "AND (project = %s OR project IS NULL OR project = '')"
             proj_params = (project,)
 
+        # ts_headline highlights WHY the row matched (issue #135), over the
+        # table's text columns. 'StartSel/StopSel' empty so no <b> markup leaks
+        # into the snippet; the tool layer caps the length.
+        like_cols = _TABLES[etype]["like_columns"]
+        doc_expr = "concat_ws(' ', " + ", ".join(like_cols) + ")"
+        hl_opts = "StartSel=, StopSel=, MaxFragments=1, MaxWords=14, MinWords=4"
+
         # Try the strict tsvector path first (AND-match). This is the whole of
         # strict mode, and the precise-first step of natural mode.
         rows: list[dict[str, Any]] = []
         with self._conn.cursor() as cur:
             cur.execute(
                 f"SELECT id, pinned, "
-                f"  ts_rank_cd(tsv, plainto_tsquery('english', %s)) AS rank "
+                f"  ts_rank_cd(tsv, plainto_tsquery('english', %s)) AS rank, "
+                f"  ts_headline('english', {doc_expr}, "
+                f"              plainto_tsquery('english', %s), %s) AS snip "
                 f"FROM {table} "
                 f"WHERE tsv @@ plainto_tsquery('english', %s) {proj_clause} "
                 f"ORDER BY rank DESC LIMIT %s",
-                (query, query, *proj_params, limit),
+                (query, query, hl_opts, query, *proj_params, limit),
             )
             rows = cur.fetchall()
 
@@ -221,11 +230,13 @@ class PostgresSearch:
                 with self._conn.cursor() as cur:
                     cur.execute(
                         f"SELECT id, pinned, "
-                        f"  ts_rank_cd(tsv, to_tsquery('english', %s)) AS rank "
+                        f"  ts_rank_cd(tsv, to_tsquery('english', %s)) AS rank, "
+                        f"  ts_headline('english', {doc_expr}, "
+                        f"              to_tsquery('english', %s), %s) AS snip "
                         f"FROM {table} "
                         f"WHERE tsv @@ to_tsquery('english', %s) {proj_clause} "
                         f"ORDER BY rank DESC LIMIT %s",
-                        (or_text, or_text, *proj_params, limit),
+                        (or_text, or_text, hl_opts, or_text, *proj_params, limit),
                     )
                     rows = cur.fetchall()
 
@@ -238,7 +249,8 @@ class PostgresSearch:
             like_params = tuple(like_pattern for _ in like_cols)
             with self._conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT id, pinned, 0.5::float8 AS rank FROM {table} "
+                    f"SELECT id, pinned, 0.5::float8 AS rank, NULL::text AS snip "
+                    f"FROM {table} "
                     f"WHERE ({conditions}) {proj_clause} LIMIT %s",
                     (*like_params, *proj_params, limit),
                 )
@@ -256,6 +268,7 @@ class PostgresSearch:
                 is_stale=False,
                 counters_snapshot={},
                 row=None,
+                snippet=((r["snip"] or "").strip() or None),
             )
             for r in rows
         ]

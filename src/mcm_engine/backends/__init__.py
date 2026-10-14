@@ -342,6 +342,14 @@ class SearchHit:
     #: SearchBackend MAY return just the id+score pair and let the caller
     #: fetch via StorageBackend, or include the row to save a round trip.
     row: Optional[Any] = None
+    #: A short highlight of WHY this row matched — the matched passage the
+    #: backend already computes (FTS5 snippet(), Postgres ts_headline(),
+    #: OpenSearch highlight). Optional (issue #135): a backend MAY leave it
+    #: None and the caller renders exactly as before. Summary-mode rendering
+    #: shows it so a hit's relevance is legible without fetching the body,
+    #: which matters most under a semantic backend where the one-line summary
+    #: need not reveal what matched.
+    snippet: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

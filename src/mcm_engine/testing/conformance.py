@@ -530,6 +530,21 @@ class SearchConformance:
         search.reindex(EntityType.KNOWLEDGE)
         assert search.search("t")
 
+    def test_search_hit_carries_match_snippet(self, storage, search):
+        # Issue #135: a matching hit carries a short highlight of WHY it
+        # matched, so summary-mode relevance is legible without fetching the
+        # body. The field is optional on the dataclass, but every bundled
+        # adapter (FTS5 snippet / Postgres ts_headline / OpenSearch highlight)
+        # populates it on a real match.
+        storage.insert_knowledge(KnowledgeRow(
+            id=0, topic="A", summary="the distinctivetoken lives here",
+            kind="finding",
+        ))
+        hits = search.search("distinctivetoken")
+        assert hits
+        assert hits[0].snippet
+        assert "distinctivetoken" in hits[0].snippet.lower()
+
 
 # ---------------------------------------------------------------------------
 # SessionStore
