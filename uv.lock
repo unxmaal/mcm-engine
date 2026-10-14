@@ -442,7 +442,7 @@ wheels = [
 
 [[package]]
 name = "mcm-engine"
-version = "3.11.1"
+version = "3.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
