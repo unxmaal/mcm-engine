@@ -11,11 +11,13 @@ import inspect
 
 import pytest
 
+from mcm_engine.backends import ErrorRow
 from mcm_engine.db import KnowledgeDB
 from mcm_engine.schema import migrate_core
 from mcm_engine.tools.knowledge import register_knowledge_tools
 from mcm_engine.tools.search import register_search_tools
 from mcm_engine.tracker import NudgeConfig, SessionTracker
+from mcm_engine.wiring import coerce_context
 
 
 class _FakeMCP:
@@ -69,16 +71,40 @@ def test_default_is_summary(tools):
     assert "LONGBODYTOKEN" not in tools["search"]("Widget")
 
 
-def test_negative_summary_omits_why_and_fix(tools):
+def test_negative_summary_keeps_why_and_fix(tools):
+    # Issue #136: for a NEGATIVE the Why/Fix IS the payload, and the failure
+    # mode is asymmetric — hiding it lets an agent re-attempt the rejected
+    # approach, the exact thing the anti-pattern store exists to prevent. So,
+    # unlike knowledge (whose large body stays deferred), a negative keeps its
+    # (short) Why + Fix inline even in summary mode.
     tools["add_negative"](
         category="DB pooling", what_failed="shared a connection across threads",
         why_failed="WHYBODYTOKEN interleaved transactions",
         correct_approach="FIXBODYTOKEN one connection per thread")
     summ = tools["search"]("pooling", scope="negative", detail="summary")
     assert "DB pooling" in summ and "shared a connection" in summ
-    assert "WHYBODYTOKEN" not in summ and "FIXBODYTOKEN" not in summ
+    assert "WHYBODYTOKEN" in summ and "FIXBODYTOKEN" in summ
     full = tools["search"]("pooling", scope="negative", detail="full")
     assert "WHYBODYTOKEN" in full and "FIXBODYTOKEN" in full
+
+
+def test_error_summary_keeps_root_cause_and_fix(tmp_path):
+    # Issue #136: same asymmetry for an ERROR — root cause + fix are the signal
+    # and are short; keep them inline in summary so a known failure hands back
+    # its remedy without a second fetch. report_error() only logs the pattern,
+    # so seed a fully-populated error row directly (as the conformance suite
+    # does) to exercise rendering.
+    db = KnowledgeDB(str(tmp_path / "e.db"))
+    migrate_core(db)
+    ctx = coerce_context(db)
+    ctx.storage.insert_error(ErrorRow(
+        id=0, pattern="CONNREFUSED talking to postgres on boot",
+        root_cause="ROOTBODYTOKEN pool opened before the DB was ready",
+        fix="FIXBODYTOKEN retry with backoff on startup"))
+    mcp = _FakeMCP()
+    register_search_tools(mcp, ctx, SessionTracker(NudgeConfig()), [], "proj")
+    summ = mcp.tools["search"]("CONNREFUSED", scope="errors", detail="summary")
+    assert "ROOTBODYTOKEN" in summ and "FIXBODYTOKEN" in summ
 
 
 def test_summary_carries_body_fetch_hint_full_does_not(tools):
