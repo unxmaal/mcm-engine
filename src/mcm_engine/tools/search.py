@@ -7,6 +7,7 @@ UPDATE-after-SELECT pattern) move to CounterStore.increment.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Iterable, Literal, get_args
 
@@ -56,6 +57,24 @@ assert set(get_args(SearchScope)) == set(_SCOPE_MAP), "SearchScope drifted from 
 # search to a compact one-line-summary hit; callers pull a body on demand via
 # get_entry / read_rule, or pass detail="full" for the old behavior.
 DetailLevel = Literal["summary", "full"]
+
+# Match snippet (issue #135): the backend-supplied highlight of WHY a row
+# matched (FTS5 snippet / Postgres ts_headline / OpenSearch highlight) is shown
+# under a summary hit so relevance is legible without fetching the body — most
+# useful under a semantic backend, where the one-liner need not reveal the
+# match. Length-capped so it never re-introduces the #119 body-token cost.
+_SNIPPET_MAX = max(0, int(os.environ.get("MCM_SNIPPET_MAX", "160")))
+
+
+def _format_snippet(snippet: str | None) -> str:
+    """Render a capped, single-line match snippet, or '' when there is none or
+    the cap disables it. Collapses newlines so a hit stays one logical line."""
+    if not snippet or _SNIPPET_MAX <= 0:
+        return ""
+    text = " ".join(snippet.split())
+    if len(text) > _SNIPPET_MAX:
+        text = text[:_SNIPPET_MAX].rstrip() + "…"
+    return f"\n  Match: {text}" if text else ""
 
 
 def _body_hint(result: str, detail: DetailLevel) -> str:
@@ -386,6 +405,11 @@ def _scope_block(
         if result is None:
             continue
         composite, formatted = result
+        # Issue #135: in summary mode append the backend's match highlight so a
+        # hit's relevance is legible without fetching the body. detail="full"
+        # already carries the whole body, so no snippet there.
+        if detail == "summary":
+            formatted += _format_snippet(hit.snippet)
         scored.append((composite, formatted, hit.entity_id))
 
     scored.sort(key=lambda x: x[0], reverse=True)

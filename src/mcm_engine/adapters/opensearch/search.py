@@ -258,6 +258,18 @@ class OpenSearchSearch:
         body = {
             "size": limit,
             "query": {"bool": {"must": must, "filter": filter_clauses}},
+            # Match highlight = WHY the row matched (issue #135). Plain tags
+            # (no <em>) so the snippet is clean text; the tool layer caps it.
+            "highlight": {
+                "pre_tags": [""],
+                "post_tags": [""],
+                "fragment_size": 160,
+                "number_of_fragments": 1,
+                "fields": {
+                    "primary": {}, "secondary": {},
+                    "tertiary": {}, "quaternary": {},
+                },
+            },
         }
 
         try:
@@ -268,6 +280,11 @@ class OpenSearchSearch:
         hits = []
         for hit in response.get("hits", {}).get("hits", []):
             src = hit["_source"]
+            hl = hit.get("highlight") or {}
+            frags: list[str] = []
+            for f in ("primary", "secondary", "tertiary", "quaternary"):
+                frags.extend(hl.get(f, []))
+            snip = " ".join(frags).strip() or None
             hits.append(SearchHit(
                 entity_type=etype,
                 entity_id=int(src["id"]),
@@ -278,5 +295,6 @@ class OpenSearchSearch:
                 is_stale=False,
                 counters_snapshot={},
                 row=None,
+                snippet=snip,
             ))
         return hits

@@ -171,7 +171,10 @@ class SqliteSearch:
         for fts_q in fts_queries:
             try:
                 rows = self._db.execute(
-                    f"SELECT b.id AS id, b.pinned AS pinned, rank AS fts_rank "
+                    f"SELECT b.id AS id, b.pinned AS pinned, rank AS fts_rank, "
+                    # snippet() highlights WHY the row matched (issue #135);
+                    # column -1 = across all indexed columns, ~10-token window.
+                    f"snippet({fts_table}, -1, '', '', '…', 10) AS snip "
                     f"FROM {fts_table} f JOIN {base_table} b ON f.rowid = b.id "
                     f"WHERE {fts_table} MATCH ? {proj_clause} "
                     f"ORDER BY rank LIMIT ?",
@@ -200,7 +203,7 @@ class SqliteSearch:
                 proj_params_like = (project,)
 
             rows = self._db.execute(
-                f"SELECT id, pinned, NULL AS fts_rank FROM {base_table} "
+                f"SELECT id, pinned, NULL AS fts_rank, NULL AS snip FROM {base_table} "
                 f"WHERE ({where}) {proj_clause_like} LIMIT ?",
                 tuple(params) + proj_params_like + (limit,),
             ).fetchall()
@@ -211,6 +214,7 @@ class SqliteSearch:
             # FTS5 rank is negative-better → flip to higher-better; LIKE
             # has no rank, treat as a baseline 0.5.
             score = (-float(raw_rank)) if raw_rank is not None else 0.5
+            snip = r["snip"]
             hits.append(SearchHit(
                 entity_type=etype,
                 entity_id=r["id"],
@@ -219,5 +223,6 @@ class SqliteSearch:
                 is_stale=False,
                 counters_snapshot={},
                 row=None,
+                snippet=(snip.strip() or None) if snip else None,
             ))
         return hits

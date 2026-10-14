@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **`search` summary hits carry a match snippet (issue #135).** Progressive
+  disclosure (#119) assumes the one-line summary reveals why a hit matched,
+  which holds under lexical search but weakens under a semantic backend where a
+  hit can match on meaning the summary never shows. `SearchHit` now carries an
+  optional `snippet` populated from the backend's own highlight (SQLite FTS5
+  `snippet()`, Postgres `ts_headline()`, OpenSearch `highlight`), and summary
+  mode renders a capped `Match: …` line under each hit. Length is bounded by
+  `MCM_SNIPPET_MAX` (default 160, 0 disables) so it never re-introduces the
+  #119 body-token cost; `detail="full"` is unchanged, and a backend that
+  supplies no snippet renders exactly as before. Validated across all three
+  search adapters via a shared conformance test.
+
 ### Fixed
 - **`search` summary mode hid NEGATIVE/ERROR remedies (issue #136).** Since
   #119, a summary-mode hit for a negative showed only
