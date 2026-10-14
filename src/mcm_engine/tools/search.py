@@ -270,11 +270,15 @@ def _score_and_format_negative(
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[NEGATIVE #{row.id}]{pinned} {row.category}: {row.what_failed}"
-    if detail == "full":
-        if row.why_failed:
-            entry += f"\n  Why: {row.why_failed}"
-        if row.correct_approach:
-            entry += f"\n  Fix: {row.correct_approach}"
+    # Issue #136: a NEGATIVE's Why/Fix IS its payload and the failure mode is
+    # asymmetric — hiding it lets an agent re-attempt the rejected approach, the
+    # exact thing this store exists to prevent. Unlike a knowledge body (the
+    # large, deferred #119 token sink), these fields are short, so keep them
+    # inline even in summary mode.
+    if row.why_failed:
+        entry += f"\n  Why: {row.why_failed}"
+    if row.correct_approach:
+        entry += f"\n  Fix: {row.correct_approach}"
     return composite, entry
 
 
@@ -293,11 +297,13 @@ def _score_and_format_error(
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[ERROR #{row.id}]{pinned} {row.pattern}"
-    if detail == "full":
-        if row.root_cause:
-            entry += f"\n  Root cause: {row.root_cause}"
-        if row.fix:
-            entry += f"\n  Fix: {row.fix}"
+    # Issue #136: same asymmetry as NEGATIVE — a known error's root cause + fix
+    # are the signal and are short, so hand them back inline even in summary so
+    # a recurrence gets its remedy without a second fetch.
+    if row.root_cause:
+        entry += f"\n  Root cause: {row.root_cause}"
+    if row.fix:
+        entry += f"\n  Fix: {row.fix}"
     return composite, entry
 
 

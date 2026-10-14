@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **`search` summary mode hid NEGATIVE/ERROR remedies (issue #136).** Since
+  #119, a summary-mode hit for a negative showed only
+  `[NEGATIVE #id] category: what_failed` and an error only
+  `[ERROR #id] pattern`, deferring `Why`/`Fix` (and root cause/fix) to
+  `get_entry`. For these kinds the body *is* the payload and the failure is
+  asymmetric: hiding it lets an agent re-attempt the rejected approach or miss
+  the known fix, the exact thing the store exists to prevent (#122 had only
+  restored full bodies on the `report_error` auto-search path, not on a direct
+  `search`). `search` now keeps those short structured fields inline for
+  NEGATIVE and ERROR in summary mode; KNOWLEDGE bodies stay deferred (they were
+  the #119 token sink). Rendering is adapter-independent.
+
 ## [3.12.0] — 2026-10-13
 
 ### Added
