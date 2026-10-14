@@ -6,6 +6,8 @@ versioning.
 
 ## [Unreleased]
 
+## [3.13.0] — 2026-10-14
+
 ### Added
 - **`search` summary hits carry a match snippet (issue #135).** Progressive
   disclosure (#119) assumes the one-line summary reveals why a hit matched,
