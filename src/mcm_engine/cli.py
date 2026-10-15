@@ -310,6 +310,15 @@ def cmd_session_end(args):
     sys.exit(se_main())
 
 
+def cmd_pre_compact(args):
+    """Run the PreCompact hook. Reads a PreCompact event from stdin and saves a
+    boundary checkpoint via save_snapshot (remote MCP tool or local store)
+    before the compaction summary replaces working detail. Always exits 0 (a
+    checkpoint write must never block or delay a compaction)."""
+    from .hooks.pre_compact import main as pc_main
+    sys.exit(pc_main())
+
+
 def _collect_remote_spans(groups, *, strict: bool = True) -> list[dict]:
     """Client side of remote ingest (#72): extract rule-like spans locally from
     the already-walked ingester rows. Pure/corpus-free — only the spans that
@@ -1137,6 +1146,15 @@ def main():
              "records per-session efficiency telemetry, and always exits 0.",
     )
     se_parser.set_defaults(func=cmd_session_end)
+
+    # pre-compact (PreCompact checkpoint hook)
+    pc_parser = subparsers.add_parser(
+        "pre-compact",
+        help="PreCompact hook for Claude Code. Reads one event from stdin and "
+             "saves a boundary checkpoint before the compaction summary lands. "
+             "Always exits 0.",
+    )
+    pc_parser.set_defaults(func=cmd_pre_compact)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(

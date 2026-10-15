@@ -309,6 +309,7 @@ find_duplicate_rules / find_conflicting_rules   →   review   →   supersede_r
 | `mcm-engine hook` | The PreToolUse enforcement hook (reads one event on stdin). |
 | `mcm-engine session-start` | The SessionStart hook (prints resume context as `additionalContext`). |
 | `mcm-engine session-end` | The SessionEnd hook (records per-session efficiency telemetry; always exits 0). |
+| `mcm-engine pre-compact` | The PreCompact hook (checkpoints session state via `save_snapshot` before a compaction; always exits 0). |
 | `mcm-engine migrate --from DSN --to DSN` | Copy every row between backends, IDs preserved. |
 | `mcm-engine ingest SOURCE` | Import from an external corpus (e.g. a Markdown vault). |
 | `mcm-engine ingest SOURCE --remote` | Sift a **local** codebase against a **remote** KB over MCP — spans (not files) go to `sift_candidates`; no direct DB access. Add `--remote-loose` to also surface descriptive facts (architecture, "X does Y") that carry no normative marker. |
@@ -363,6 +364,32 @@ Add to `~/.claude/settings.json` or a project's `.claude/settings.local.json`:
   such as `add_rule` do not.
 - State: `<project>/.claude/mcp-enforcement-state.json`, keyed by session UUID, pruned
   after 30 days. Thresholds are constants in `src/mcm_engine/hooks/mcp_enforcement.py`.
+
+#### Wire the compaction hooks (optional)
+
+Long sessions compact often, and each summary drops detail. Two hooks make the save
+and restore automatic instead of relying on the agent to call `session_handoff`:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "mcm-engine pre-compact", "timeout": 5 }] }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "mcm-engine session-start", "timeout": 5 }] }
+    ]
+  }
+}
+```
+
+- **PreCompact** writes a boundary checkpoint via `save_snapshot` before the summary lands
+  (preserving any `/compact` instructions), to the configured server over HTTP or the local
+  store. Always exits 0 — a checkpoint never blocks a compaction.
+- **SessionStart** fires again with `source == "compact"` right after a compaction; the hook
+  then injects a recovery directive pointing the agent at `get_resume_context` and the
+  checkpoint, since PostCompact cannot inject context back to the model. (The same
+  `session-start` wiring covers normal startup/resume.)
 
 #### Wire the hook: opencode
 

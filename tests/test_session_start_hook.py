@@ -22,6 +22,32 @@ def test_injects_mcp_directive(monkeypatch, capsys):
     assert "MCP" in ctx
 
 
+def test_compaction_source_gets_a_recovery_directive(monkeypatch, capsys):
+    """source=='compact' is the one channel to steer a resumed agent (#145):
+    PostCompact cannot inject context. It gets a recovery-focused directive
+    pointing at the pre-compaction checkpoint, not the startup boilerplate."""
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
+        "hook_event_name": "SessionStart", "source": "compact", "cwd": "/tmp",
+    })))
+    rc = ss.main()
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "compacted" in ctx.lower()
+    assert "get_resume_context" in ctx
+    # Still MCP-only, never a db read.
+    assert "MCP" in ctx
+
+
+def test_non_compaction_source_keeps_the_startup_directive(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
+        "hook_event_name": "SessionStart", "source": "resume", "cwd": "/tmp",
+    })))
+    assert ss.main() == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "compacted" not in ctx.lower()
+    assert "session_start" in ctx
+
+
 def test_hook_never_opens_storage():
     """Regression for #58: the module must not reach into the wiring/storage
     layer at all — importing build_verified_context here is the bug."""
