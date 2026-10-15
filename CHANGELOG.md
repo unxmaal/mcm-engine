@@ -6,6 +6,45 @@ versioning.
 
 ## [Unreleased]
 
+## [3.14.0] — 2026-10-15
+
+### Added
+- **Auto-save/restore session state across compaction (issue #145).** A new
+  `pre_compact.py` hook and `mcm-engine pre-compact` subcommand snapshot session
+  state (via the remote MCP `save_snapshot`, or the local store as fallback)
+  before Claude Code compacts the transcript, preserving any `/compact`
+  instructions. `session_start.py` is now source-aware: on a
+  `source="compact"` start it emits a recovery directive so the restored
+  context is pulled back in. Fail-open throughout — a snapshot or transport
+  failure never blocks compaction.
+- **Guessed behavior-shaping constants are env-overridable (issue #149).** New
+  `tunables.py` (`env_float`/`env_int`) lets the hand-chosen, unvalidated
+  constants in `scoring.py`, `dedup.py`, `tools/search.py`, and
+  `ingest/rulesift.py` be overridden per deployment via `MCM_<AREA>_<CONSTANT>`
+  env vars (e.g. `MCM_SCORE_W_RELEVANCE`, `MCM_SEARCH_STALE_DAYS`) for
+  evidence-based sweeps. Defaults are byte-identical to before, so behavior is
+  unchanged unless an override is set. Structural MinHash params
+  (`NUM_PERM`/`LSH_BANDS`/`SHINGLE_N`) and the destructive-op archive-storm
+  guard are deliberately NOT wired — they are contracts/safety limits, not
+  knobs.
+
+### Fixed
+- **PreToolUse hook nudge fired every call past the threshold (issue #144).**
+  The consultation-gap reminder re-emitted on each built-in tool call once the
+  gap was open, burning tokens on repeats. It now fires once per threshold
+  crossing (`warn_emitted`/`gap_emitted` flags, re-reminding only every
+  `WARN_THRESHOLD` calls) and clears on an MCP-read compliance reset. Counters
+  are now per-agent (`session_id:agent_id` when a subagent id is present, else
+  the bare session id), so a subagent's edits no longer inflate the parent's
+  count.
+- **Hook nudges were invisible and the consultation gap never escalated
+  (issue #146).** Reconciled the never-merged `hooks/enforcement-thresholds`
+  work: the nudge now writes to the readable `hookSpecificOutput` stdout
+  channel (FINDING #98 — stderr+exit 0 was treated as silent approval, so no
+  nudge reached the agent), warns at 8 built-in calls without an MCP read,
+  and at 20 file edits returns `permissionDecision: "ask"` (human as escape
+  hatch) rather than hard-blocking a restricted-toolset subagent.
+
 ## [3.13.0] — 2026-10-14
 
 ### Added

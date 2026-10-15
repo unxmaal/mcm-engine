@@ -5,7 +5,7 @@ type: application
 # Chart version. Bump on chart changes independently of the app.
 version: 0.3.6
 # Tracks the mcm-engine image this chart defaults to.
-appVersion: "3.13.0"
+appVersion: "3.14.0"
 home: https://github.com/unxmaal/mcm-engine
 sources:
   - https://github.com/unxmaal/mcm-engine
