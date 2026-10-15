@@ -22,12 +22,17 @@ import re
 from collections import Counter
 from typing import Iterable
 
+from .tunables import env_float
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
+# Structural algorithm params (NOT env-overridable: NUM_PERM must stay divisible
+# by LSH_BANDS, and changing the shingle size invalidates stored signatures).
 NUM_PERM = 32          # MinHash signature length
 SHINGLE_N = 2          # word n-gram size (bigrams: order-aware but lenient)
 LSH_BANDS = 8          # NUM_PERM must be divisible by LSH_BANDS
-MIN_ENTROPY = 1.5      # Shannon entropy gate: skip trivially low-information text
+# Behavior gate (unvalidated default); env-overridable for sweeps (#149).
+MIN_ENTROPY = env_float("MCM_DEDUP_MIN_ENTROPY", 1.5)
 _MAX_HASH = (1 << 64) - 1
 
 
@@ -168,9 +173,11 @@ def find_near_duplicates(
 
 # --- Conflict detection (issue #32): topic-similar but body-divergent -------
 
-TOPIC_THRESHOLD = 0.5   # title+keywords similarity: "same subject"
-BODY_THRESHOLD = 0.4    # content similarity: at/below this the claims diverge
-SUBSUME_THRESHOLD = 0.8  # #33: fraction of one body's shingles contained in the other
+# Unvalidated defaults (FINDING #5 measured these produce false positives / miss
+# semantic conflicts); env-overridable for sweeps (#149).
+TOPIC_THRESHOLD = env_float("MCM_DEDUP_TOPIC_THRESHOLD", 0.5)
+BODY_THRESHOLD = env_float("MCM_DEDUP_BODY_THRESHOLD", 0.4)
+SUBSUME_THRESHOLD = env_float("MCM_DEDUP_SUBSUME_THRESHOLD", 0.8)
 
 
 def classify_conflict(body_a: str, body_b: str) -> str:

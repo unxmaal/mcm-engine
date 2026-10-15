@@ -33,6 +33,7 @@ from typing import Iterable, Optional
 
 from ..backends import KnowledgeRow
 from .. import dedup
+from ..tunables import env_float, env_int
 
 
 # --- Novelty bands ----------------------------------------------------------
@@ -45,12 +46,13 @@ class Band(str, Enum):
 
 # Thresholds mirror dedup.py's semantics: >=0.9 is the near-duplicate line it
 # already uses for rule merges; 0.5 is its "same subject" topic threshold.
-KNOWN_THRESHOLD = 0.9
-NOVEL_THRESHOLD = 0.5
+# Unvalidated defaults; env-overridable for sweeps (#149).
+KNOWN_THRESHOLD = env_float("MCM_RULESIFT_KNOWN_THRESHOLD", 0.9)
+NOVEL_THRESHOLD = env_float("MCM_RULESIFT_NOVEL_THRESHOLD", 0.5)
 
 # A span has to carry at least this many normalized tokens to be worth judging
 # (drops "# TODO", "# fixme", bare markers).
-MIN_TOKENS = 3
+MIN_TOKENS = env_int("MCM_RULESIFT_MIN_TOKENS", 3)
 
 
 def band_for(sim: float) -> Band:
@@ -149,7 +151,7 @@ def is_rule_like(text: str) -> bool:
 # A loose span needs more substance than the strict floor: the strict gate leans
 # on the normative marker for precision, so 3 tokens is fine there; the loose
 # gate has no marker to lean on, so it wants enough prose to be a real fact.
-MIN_SUBSTANCE_TOKENS = 6
+MIN_SUBSTANCE_TOKENS = env_int("MCM_RULESIFT_MIN_SUBSTANCE_TOKENS", 6)  # unvalidated; sweep via #149
 
 # Pure API-doc / navigation boilerplate — lines that are ONLY a section header
 # ("Args:", "Returns:", "See also"). A span made of nothing but these carries no
