@@ -32,30 +32,32 @@ import math
 from typing import Optional
 
 from .hierarchy import IMPORTANCE_MAX
+from .tunables import env_float
 
 # --- weights (on the NORMALIZED [0,1]/[-1,1] terms) -------------------------
 # Relevance must exceed the sum of the other non-pinned weights
 # (0.1+0.3+0.5+0.3 + importance 0.5 + scope 0.1 = 1.8) so a top-of-batch match
 # is never swamped by maxed-out counters or a high hierarchy tier.
-W_RELEVANCE = 2.0
-W_HIT = 0.1
-W_REINFORCEMENT = 0.3
-W_CORRECTNESS = 0.5
-W_RECENCY = 0.3
-PINNED_WEIGHT = 2.0
+# Defaults are hand-chosen (unvalidated); env-overridable for sweeps (#149).
+W_RELEVANCE = env_float("MCM_SCORE_W_RELEVANCE", 2.0)
+W_HIT = env_float("MCM_SCORE_W_HIT", 0.1)
+W_REINFORCEMENT = env_float("MCM_SCORE_W_REINFORCEMENT", 0.3)
+W_CORRECTNESS = env_float("MCM_SCORE_W_CORRECTNESS", 0.5)
+W_RECENCY = env_float("MCM_SCORE_W_RECENCY", 0.3)
+PINNED_WEIGHT = env_float("MCM_SCORE_PINNED_WEIGHT", 2.0)
 # Hierarchy (issue #64): importance is the dominant of the two — an invariant
 # (importance 2) universal rule gets +0.6, comparable to a strong correctness
 # signal, enough to reorder similar-relevance rules but not override a clearly
 # better text match. Rules-only: knowledge callers omit both -> zero effect.
-W_IMPORTANCE = 0.5
-W_SCOPE = 0.1
+W_IMPORTANCE = env_float("MCM_SCORE_W_IMPORTANCE", 0.5)
+W_SCOPE = env_float("MCM_SCORE_W_SCOPE", 0.1)
 
 # --- normalization tunables -------------------------------------------------
-HIT_SATURATION = 10.0          # hit_count == HIT_SATURATION -> 0.5 contribution
-REINFORCEMENT_SATURATION = 3.0  # reinforcement saturates faster (stronger per unit)
-CORRECTNESS_SCALE = 2.0        # net outcomes -> tanh(net/scale)
-RECENCY_WINDOW_DAYS = 30.0
-RECENCY_MAX_BONUS = 1.0
+HIT_SATURATION = env_float("MCM_SCORE_HIT_SATURATION", 10.0)
+REINFORCEMENT_SATURATION = env_float("MCM_SCORE_REINFORCEMENT_SATURATION", 3.0)
+CORRECTNESS_SCALE = env_float("MCM_SCORE_CORRECTNESS_SCALE", 2.0)
+RECENCY_WINDOW_DAYS = env_float("MCM_SCORE_RECENCY_WINDOW_DAYS", 30.0)
+RECENCY_MAX_BONUS = env_float("MCM_SCORE_RECENCY_MAX_BONUS", 1.0)
 
 
 def minmax_normalize(value: float, lo: float, hi: float) -> float:

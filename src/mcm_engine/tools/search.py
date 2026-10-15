@@ -24,15 +24,17 @@ from ..db import log
 from ..refs import format_refs
 from ..scoring import compose_rank, compose_rank_pinned_only, minmax_normalize
 from ..tracker import SessionTracker
+from ..tunables import env_float, env_int
 from ..wiring import Context, coerce_context
 
 # Quality gate: minimum normalized score (higher = better) for FTS results.
 # The v1 SQL used `rank <= -1.0` (FTS5 rank is negative-better). After our
 # higher-better normalization this becomes `score >= 1.0`.
-RANK_THRESHOLD = 1.0
+# Unvalidated default; env-overridable for sweeps (#149).
+RANK_THRESHOLD = env_float("MCM_SEARCH_RANK_THRESHOLD", 1.0)
 
-# Staleness window: same 90-day threshold as v1.
-STALE_DAYS = 90
+# Staleness window: same 90-day threshold as v1 (unvalidated); env-overridable (#149).
+STALE_DAYS = env_int("MCM_SEARCH_STALE_DAYS", 90)
 
 # Scope string → entity-type set. Used by the `scope=` parameter on the
 # public search tool. Unknown values fall back to all types (loud-failure
@@ -106,7 +108,7 @@ def _staleness_tag(age_days: float | None, last_hit_age_days: float | None, pinn
 # deprioritized (rank multiplier) so it sinks below live hits, but still
 # returned (the min_rank gate is on raw relevance, not this composite, so the
 # penalty only reorders — it never drops the row). Mirrors rules + knowledge.
-EXPIRED_PENALTY = 0.1
+EXPIRED_PENALTY = env_float("MCM_SEARCH_EXPIRED_PENALTY", 0.1)  # unvalidated; sweep via #149
 
 
 def _is_expired(valid_until: datetime | None) -> bool:
