@@ -681,6 +681,10 @@ def _drive_json(tmp_path, tool="Bash", n=1, session="jsonprobe"):
     import sys as _sys
     from unittest.mock import patch
 
+    # Return the last NON-EMPTY stdout payload seen across the n calls. Under
+    # once-per-crossing (issue #144) most calls after the crossing are silent,
+    # so the final call's payload is usually empty; what the model actually saw
+    # is the most recent non-empty one.
     out = None
     for _ in range(n):
         stdin = io.StringIO(_json.dumps({
@@ -692,7 +696,8 @@ def _drive_json(tmp_path, tool="Bash", n=1, session="jsonprobe"):
              patch.object(_sys, "stderr", stderr):
             rc = main()
         text = stdout.getvalue().strip()
-        out = _json.loads(text) if text else None
+        if text:
+            out = _json.loads(text)
     return rc, out
 
 
@@ -772,3 +777,105 @@ def test_the_thresholds_match_what_the_contract_advertises(tmp_path):
     and 6, and warn-at-3 fired twice inside one turn of read-only work."""
     assert WARN_THRESHOLD == 8
     assert BLOCK_THRESHOLD == 20
+
+
+# ---------------------------------------------------------------------------
+# Once per threshold crossing + per-agent counters (issue #144)
+# ---------------------------------------------------------------------------
+# Before this, once a streak passed WARN_THRESHOLD the full ~1 KB nudge was
+# re-attached to EVERY later built-in call until a reset tool ran — 3,457 times
+# in one measured session. And subagents share the parent's session_id, so a
+# fresh subagent inherited the parent's streak and was nudged for calls it never
+# made. The fix: full text once per crossing, throttled one-line reminders
+# after, and state keyed per agent.
+
+_FULL_NUDGE_MARK = "STOP. Project contract requires"
+_FULL_GAP_MARK = "CONSULTATION GAP recorded"
+
+
+def _drive_collect(tmp_path, tool="Bash", n=1, session="collect", agent_id=None):
+    """Drive main() n times and return the list of per-call stdout payloads
+    (None for a silent call), so a test can count what the model actually saw."""
+    import io
+    import json as _json
+    import sys as _sys
+    from unittest.mock import patch
+
+    payloads = []
+    for _ in range(n):
+        event = {"session_id": session, "tool_name": tool,
+                 "tool_input": {"command": "echo x"}, "cwd": str(tmp_path)}
+        if agent_id is not None:
+            event["agent_id"] = agent_id
+        stdin = io.StringIO(_json.dumps(event))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(_sys, "stdin", stdin), \
+             patch.object(_sys, "stdout", stdout), \
+             patch.object(_sys, "stderr", stderr):
+            main()
+        text = stdout.getvalue().strip()
+        payloads.append(_json.loads(text) if text else None)
+    return payloads
+
+
+def _ctx_of(payload):
+    if not payload:
+        return ""
+    hso = payload.get("hookSpecificOutput", {})
+    return hso.get("additionalContext") or hso.get("permissionDecisionReason") or ""
+
+
+def test_full_nudge_fires_once_per_crossing(tmp_path):
+    """A 40-call Bash streak yields exactly ONE full nudge, plus a bounded
+    handful of short reminders — not 33 copies of the full text."""
+    payloads = _drive_collect(tmp_path, tool="Bash", n=40, session="streak")
+    full = [p for p in payloads if _FULL_NUDGE_MARK in _ctx_of(p)]
+    spoken = [p for p in payloads if _ctx_of(p)]
+    assert len(full) == 1, f"full nudge should fire once, fired {len(full)}x"
+    # Everything else the model saw is a short reminder, and there are few.
+    full_len = len(_ctx_of(full[0]))
+    shorts = [p for p in spoken if _FULL_NUDGE_MARK not in _ctx_of(p)]
+    assert len(shorts) <= 5
+    assert all(len(_ctx_of(p)) < full_len for p in shorts)
+
+
+def test_a_compliance_read_rearms_the_full_nudge(tmp_path):
+    """After a look-first read resets the streak, the NEXT crossing must get the
+    full text again — otherwise the nudge is a once-per-session event."""
+    # First crossing.
+    first = _drive_collect(tmp_path, tool="Bash", n=WARN_THRESHOLD, session="rearm")
+    assert any(_FULL_NUDGE_MARK in _ctx_of(p) for p in first)
+    # Compliance read resets the streak.
+    _drive_collect(tmp_path, tool="mcp__mcm-engine__search", n=1, session="rearm")
+    # Second crossing after the reset.
+    second = _drive_collect(tmp_path, tool="Bash", n=WARN_THRESHOLD, session="rearm")
+    assert any(_FULL_NUDGE_MARK in _ctx_of(p) for p in second), \
+        "the full nudge must re-arm after a compliance reset"
+
+
+def test_a_subagent_starts_at_zero(tmp_path):
+    """A subagent shares the parent's session_id but carries its own agent_id.
+    Keying on agent_id means it does not inherit the parent's streak."""
+    # Parent drives well past the threshold under the bare session_id.
+    _drive_collect(tmp_path, tool="Bash", n=WARN_THRESHOLD + 5, session="shared")
+    # A subagent (same session_id, distinct agent_id) makes its first few calls.
+    sub = _drive_collect(tmp_path, tool="Bash", n=WARN_THRESHOLD - 1,
+                         session="shared", agent_id="sub-1")
+    assert all(p is None for p in sub), \
+        "subagent inherited the parent's nudge streak"
+    # And it still gets nudged once it crosses on its OWN count.
+    sub_cross = _drive_collect(tmp_path, tool="Bash", n=2,
+                               session="shared", agent_id="sub-1")
+    assert any(_FULL_NUDGE_MARK in _ctx_of(p) for p in sub_cross)
+
+
+def test_gap_reason_is_terse_after_the_first(tmp_path):
+    """The approval prompt still fires on every edit past the gap (that is the
+    gate), but the full ~1 KB reason is sent only once per crossing."""
+    payloads = _drive_collect(tmp_path, tool="Edit", n=BLOCK_THRESHOLD + 3,
+                              session="gapterse")
+    asks = [p for p in payloads
+            if p and p.get("hookSpecificOutput", {}).get("permissionDecision") == "ask"]
+    assert len(asks) >= 3, "every edit past the gap must still ask"
+    full_gap = [p for p in asks if _FULL_GAP_MARK in _ctx_of(p)]
+    assert len(full_gap) == 1, "the full gap reason fires once per crossing"
