@@ -45,22 +45,41 @@ RESUME_DIRECTIVE = (
     "the mcm-engine MCP server — do not read any local database or file for it."
 )
 
+# source=="compact" fires right after a compaction, whose summary has just
+# dropped detail (issue #145). PostCompact cannot inject context back to the
+# model, so this SessionStart is the one documented channel to steer the
+# resumed agent. The PreCompact hook wrote a boundary snapshot; point the agent
+# at it rather than trusting the summary alone.
+COMPACT_DIRECTIVE = (
+    "[mcm-engine] This session was just compacted — the summary above dropped "
+    "detail. Before acting on it, call `get_resume_context` (and `session_start`) "
+    "via the MCP to recover your last handoff, active tasks, pinned rules, and "
+    "the pre-compaction checkpoint the engine saved. Trust the knowledge base "
+    "over the summary where they differ; do not read any local database or file."
+)
+
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """Read (and discard) the SessionStart event, then inject the MCP directive.
-    Always exits 0 — see the module docstring's fail-open contract."""
+    """Read the SessionStart event and inject the MCP directive, tailored to the
+    event ``source`` (a compaction gets a recovery-focused directive, issue
+    #145). Always exits 0 — see the module docstring's fail-open contract."""
+    source = ""
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read()
+        if raw:
+            source = (json.loads(raw) or {}).get("source", "") or ""
     except Exception:
-        pass
+        source = ""
+
+    directive = COMPACT_DIRECTIVE if source == "compact" else RESUME_DIRECTIVE
 
     # issue #63: re-surface the positive voice exemplar at session start to
     # fight instruction decay, as a positive target rather than a denylist.
     try:
         from ..style import VOICE_EXEMPLAR
-        context = RESUME_DIRECTIVE + "\n\n" + VOICE_EXEMPLAR
+        context = directive + "\n\n" + VOICE_EXEMPLAR
     except Exception:
-        context = RESUME_DIRECTIVE
+        context = directive
 
     try:
         print(json.dumps({
