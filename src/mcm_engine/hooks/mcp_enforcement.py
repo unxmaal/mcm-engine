@@ -294,6 +294,29 @@ def _normalize_builtin_tool(tool_name: str) -> str | None:
     return lowered if lowered in COUNTED_BUILTIN_TOOLS else None
 
 
+def _agent_key(event: dict[str, Any]) -> str:
+    """State-file key for the agent this hook fired in (issue #144).
+
+    Subagents share the parent's ``session_id``, so counting per session_id
+    makes a subagent inherit the parent's nudge streak. ``agent_id`` is the
+    documented per-subagent identifier (present for a subagent / in-process
+    teammate, absent for the main agent), so compose ``session_id:agent_id``
+    when it is present and fall back to the bare session_id otherwise. The
+    fallback keeps the main agent's key — and every pre-#144 state file —
+    byte-identical to before.
+
+    NOTE: confirm ``agent_id`` actually appears on PreToolUse subagent events
+    against a real run; the field is documented but its PreToolUse presence was
+    unverified at implementation time. If it never appears, this safely degrades
+    to the old session-keyed behavior.
+    """
+    session_id = str(event.get("session_id", "default"))
+    agent_id = event.get("agent_id")
+    if agent_id:
+        return f"{session_id}:{agent_id}"
+    return session_id
+
+
 # ---------------------------------------------------------------------------
 # Decision
 # ---------------------------------------------------------------------------
@@ -314,6 +337,11 @@ def _decide(
         # the behavior the breaker wants to elicit, so it clears the streak.
         session_state["fixation_locus"] = None
         session_state["fixation_run"] = 0
+        # Clear the once-per-crossing nudge state so the NEXT streak gets a full
+        # nudge again (issue #144). Without this reset the full text would never
+        # reappear after the first crossing of the whole session.
+        session_state["warn_emitted"] = False
+        session_state["gap_emitted"] = False
         session_state["last_reset_at"] = time.time()
         return 0, ""
 
@@ -336,44 +364,71 @@ def _decide(
 
     if is_mutator and mutators >= BLOCK_THRESHOLD:
         # Fail-open (issue #19): this is a CONSULTATION GAP, not a block. The
-        # edit is ALWAYS allowed (return 0) — after this change the hook is
-        # accountability telemetry, not a gate. main() records a
-        # `consultation_gap` event. A hard block here dead-locks the agent
-        # exactly when the knowledge backend is unreachable (the one moment it
-        # cannot call a reset tool to clear the counter).
-        msg = (
-            "[mcm-engine] CONSULTATION GAP recorded — "
-            f"{mutators} file edits this session with no look-first MCP read. "
-            "The hook does NOT deny it — it asks the human to approve, which "
-            "is the escape hatch a restricted-tool subagent would otherwise "
-            "not have. The gap is logged to "
-            ".claude/mcp-enforcement-events.jsonl and counts against this "
-            "session's informed-vs-blind ratio. The knowledge base is "
-            "authoritative for project specifics, not your pretrained weights "
-            "— strongly recommended next: call a KB search before continuing. "
-            f"Reset tools: {', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
-        )
+        # edit is ALWAYS allowed (return 0) — the hook asks the human to approve
+        # (main() sets permissionDecision "ask") rather than denying, so a
+        # restricted-tool subagent is never stranded. main() records a
+        # `consultation_gap` event.
+        #
+        # Once per crossing (issue #144): the human still gets an approval
+        # prompt on EVERY edit over the threshold — that is the gate — but the
+        # full ~1 KB reason is injected only the first time. Later edits in the
+        # same streak carry a one-line reason, so the gate stays while the token
+        # cost does not repeat.
+        if not session_state.get("gap_emitted"):
+            session_state["gap_emitted"] = True
+            msg = (
+                "[mcm-engine] CONSULTATION GAP recorded — "
+                f"{mutators} file edits this session with no look-first MCP read. "
+                "The hook does NOT deny it — it asks the human to approve, which "
+                "is the escape hatch a restricted-tool subagent would otherwise "
+                "not have. The gap is logged to "
+                ".claude/mcp-enforcement-events.jsonl and counts against this "
+                "session's informed-vs-blind ratio. The knowledge base is "
+                "authoritative for project specifics, not your pretrained weights "
+                "— strongly recommended next: call a KB search before continuing. "
+                f"Reset tools: {', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
+            )
+        else:
+            msg = (
+                f"[mcm-engine] consultation gap: {mutators} edits, no look-first "
+                "MCP read. Approve to proceed; a `search` clears it."
+            )
         return 0, msg
 
     if total >= WARN_THRESHOLD:
-        msg = (
-            "[mcm-engine] STOP. Project contract requires a knowledge-base "
-            "search before further work.\n"
-            f"You have made {total} built-in tool calls "
-            f"({mutators} edits) this session with no look-first MCP read. "
-            "This is not a runway counter — it is a directive. The next "
-            "action should be the MCP knowledge `search` tool with a query matching "
-            "the topic at hand, NOT another Edit/Write/Bash. If the search "
-            "returns nothing relevant, say so explicitly in your reply and "
-            "then continue. Confidently asserting project-specific facts "
-            "from pretrained memory is the failure mode this hook exists to "
-            "catch.\n"
-            "\n"
-            f"At {BLOCK_THRESHOLD} edits this asks Eric to approve instead. "
-            f"Reset tools: "
-            f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
-        )
-        return 0, msg
+        # Once per crossing (issue #144): the full directive is injected the
+        # first time the streak crosses the threshold; after that, a short
+        # reminder every WARN_THRESHOLD further calls, and nothing in between.
+        # Before this fix the full ~1 KB text was re-attached to EVERY built-in
+        # call until a reset tool ran — 3,457 times in one measured session.
+        if not session_state.get("warn_emitted"):
+            session_state["warn_emitted"] = True
+            msg = (
+                "[mcm-engine] STOP. Project contract requires a knowledge-base "
+                "search before further work.\n"
+                f"You have made {total} built-in tool calls "
+                f"({mutators} edits) this session with no look-first MCP read. "
+                "This is not a runway counter — it is a directive. The next "
+                "action should be the MCP knowledge `search` tool with a query matching "
+                "the topic at hand, NOT another Edit/Write/Bash. If the search "
+                "returns nothing relevant, say so explicitly in your reply and "
+                "then continue. Confidently asserting project-specific facts "
+                "from pretrained memory is the failure mode this hook exists to "
+                "catch.\n"
+                "\n"
+                f"At {BLOCK_THRESHOLD} edits this asks Eric to approve instead. "
+                f"Reset tools: "
+                f"{', '.join(sorted(COMPLIANCE_TOOL_NAMES))}."
+            )
+            return 0, msg
+        # Already nudged this streak: a terse reminder on a throttle, else silent.
+        since_cross = total - WARN_THRESHOLD
+        if since_cross > 0 and since_cross % WARN_THRESHOLD == 0:
+            return 0, (
+                f"[mcm-engine] reminder: still no look-first MCP read "
+                f"({total} built-in calls). A `search` clears this."
+            )
+        return 0, ""
 
     return 0, ""
 
@@ -775,10 +830,19 @@ def main(argv: list[str] | None = None) -> int:
     cwd_raw = event.get("cwd", os.getcwd())
     cwd = Path(cwd_raw) if cwd_raw else Path.cwd()
 
+    # Per-agent counter key (issue #144). A subagent shares the parent's
+    # `session_id` (its transcript lives under the parent session dir), so
+    # keying state on session_id alone makes a freshly spawned subagent inherit
+    # the parent's nudge streak — nudges it never saw (KB FINDING #462/#490).
+    # `agent_id` is the documented per-subagent identifier and is absent for the
+    # main agent, so the composite key isolates subagents while leaving the main
+    # agent's key (and all prior behavior) unchanged.
+    state_key = _agent_key(event)
+
     sp = _state_path(cwd)
     state = _read_state(sp)
     _prune_stale(state, now=time.time())
-    s = state.setdefault(session_id, {
+    s = state.setdefault(state_key, {
         "builtin_calls": 0,
         "last_reset_at": time.time(),
         "first_seen_at": _now_iso(),
