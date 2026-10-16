@@ -6,6 +6,8 @@ versioning.
 
 ## [Unreleased]
 
+## [3.15.0] — 2026-10-16
+
 ### Added
 - **`sanitize_knowledge` maintenance tool + store-time guard (issue #142).** A
   batch of imported findings was stored with the entire XML-serialized entry
