@@ -413,6 +413,27 @@ before the model reasons, instead of waiting for the agent to look it up:
   result as `additionalContext`, and records the topic as covered in the shared hook state
   (`covered_topics` in `mcp-enforcement-state.json`). Always exits 0.
 
+#### Wire failure-triggered recall (optional)
+
+When a tool fails, this hook matches the error against known errors/fixes in the KB and
+injects the match, so a failure you have hit before surfaces its fix immediately:
+
+```json
+{
+  "hooks": {
+    "PostToolUseFailure": [
+      { "hooks": [{ "type": "command", "command": "mcm-engine post-tool-use-failure", "timeout": 2 }] }
+    ]
+  }
+}
+```
+
+- Builds a noise-normalized signature of the error (hex addresses, bare integers, absolute
+  paths stripped) and searches on the most distinctive token. Injects any match as
+  `additionalContext`.
+- A per-session dedup key suppresses re-lookup for the same failure, so a retry loop fires one
+  search, not one per attempt. User interrupts are skipped. Always exits 0 (fail-open).
+
 #### Wire the hook: opencode
 
 opencode uses a JS plugin, not `settings.json`. Copy

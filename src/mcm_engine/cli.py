@@ -328,6 +328,15 @@ def cmd_user_prompt_submit(args):
     sys.exit(ups_main())
 
 
+def cmd_post_tool_use_failure(args):
+    """Run the PostToolUseFailure hook (#158). Reads a PostToolUseFailure event
+    from stdin; matches the error against known errors/fixes and injects the
+    match as additionalContext, deduping repeated identical failures within a
+    session. Always exits 0 (a recall hook must never block)."""
+    from .hooks.post_tool_use_failure import main as ptuf_main
+    sys.exit(ptuf_main())
+
+
 def _collect_remote_spans(groups, *, strict: bool = True) -> list[dict]:
     """Client side of remote ingest (#72): extract rule-like spans locally from
     the already-walked ingester rows. Pure/corpus-free — only the spans that
@@ -1173,6 +1182,15 @@ def main():
              "injects the result as additionalContext. Always exits 0.",
     )
     ups_parser.set_defaults(func=cmd_user_prompt_submit)
+
+    # post-tool-use-failure (failure-triggered recall hook, #158)
+    ptuf_parser = subparsers.add_parser(
+        "post-tool-use-failure",
+        help="PostToolUseFailure hook for Claude Code. Reads one event from "
+             "stdin; matches the error against known errors/fixes and injects "
+             "the match as additionalContext, deduped per session. Always exits 0.",
+    )
+    ptuf_parser.set_defaults(func=cmd_post_tool_use_failure)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(
