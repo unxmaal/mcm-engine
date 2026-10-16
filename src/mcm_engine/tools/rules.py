@@ -25,7 +25,7 @@ from ..destructive import archive_would_storm
 from ..files.watcher import compute_content_hash
 from ..principal import resolve_actor
 from ..rules_links import build_wikilink_relations, extract_wikilinks
-from ..sanitize import scan_injection, wrap_untrusted
+from ..sanitize import scan_injection, strip_tool_call_fragments, wrap_untrusted
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -365,6 +365,7 @@ def register_rules_tools(
         label on the row. Carried, not interpreted."""
         tracker.record_call("add_rule", topic=title)
         tracker.record_store()
+        content = strip_tool_call_fragments(content)  # #142 guard
         who = resolve_actor(actor)
 
         existing = storage.find_rule_by_title(title)

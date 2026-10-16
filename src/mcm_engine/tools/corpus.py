@@ -18,6 +18,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, EntityTypeLiteral
+from ..sanitize import clean_summary_detail
 from ..tracker import SessionTracker
 from ..wiring import coerce_context
 
@@ -187,6 +188,59 @@ def register_corpus_tools(
             f"{'' if more else ' — likely last page'}"
         )
         return "\n\n".join(blocks) + "\n\n" + footer
+
+    @mcp.tool()
+    def sanitize_knowledge(dry_run: bool = True, limit: int = 0) -> str:
+        """Re-split knowledge summaries that leaked a serialized-entry blob
+        (issue #142) into a clean summary + detail.
+
+        A polluted summary carries the whole XML-serialized entry — real text
+        followed by stray `</summary>`, `<detail>…</detail>`, `<tags>`, `<kind>`
+        and `</invoke>` fragments — which ships the entire body in the "summary"
+        and defeats progressive-disclosure search. This keeps the clean prefix
+        as the summary and salvages the `<detail>` body into the detail field
+        when detail is empty.
+
+        dry_run: True (default) only reports what WOULD change; pass False to
+            update the rows in place via update_knowledge. DB is authoritative —
+            this writes through the storage layer, never a file.
+        limit: cap the number of rows UPDATED on the apply path (0 = no cap);
+            the scan always counts the whole corpus. Run dry first, spot-check
+            the ids with get_entry, then apply.
+        """
+        tracker.record_call("sanitize_knowledge")
+        scanned = 0
+        polluted: list[int] = []
+        applied: list[int] = []
+        for row in storage.iter_entries(EntityType.KNOWLEDGE):
+            scanned += 1
+            new_summary, new_detail, changed = clean_summary_detail(
+                row.summary, getattr(row, "detail", None)
+            )
+            if not changed:
+                continue
+            polluted.append(row.id)
+            if not dry_run and (limit <= 0 or len(applied) < limit):
+                storage.update_knowledge(
+                    row.id, summary=new_summary, detail=new_detail
+                )
+                applied.append(row.id)
+
+        verb = "updated" if not dry_run else "would clean"
+        ids = polluted if dry_run else applied
+        head = (
+            f"sanitize_knowledge: scanned {scanned} knowledge entries, "
+            f"{len(polluted)} polluted; {verb} {len(ids)}."
+        )
+        if not ids:
+            return head + (" Corpus clean." if not polluted else "")
+        shown = ", ".join(f"#{i}" for i in ids[:50])
+        more = f" (+{len(ids) - 50} more)" if len(ids) > 50 else ""
+        tail = (
+            "\nRun with dry_run=False to apply."
+            if dry_run else "\nVerify a few with get_entry('knowledge', <id>)."
+        )
+        return f"{head}\nids: {shown}{more}{tail}"
 
     @mcp.tool()
     def get_entry(

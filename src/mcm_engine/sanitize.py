@@ -45,3 +45,81 @@ def wrap_untrusted(content: str) -> str:
     as live instructions. The delimiters are structural (enforced here in
     retrieval code), not a prompt the model can be talked out of honoring."""
     return f"{_UNTRUSTED_HEADER}\n{content}\n{_UNTRUSTED_FOOTER}"
+
+
+# --- Serialized-entry leakage cleanup (issue #142) --------------------------
+
+# Structural field tags that serialize a stored entry; if any appears inside a
+# free-text field, the serialized blob leaked into that field.
+_FIELD_NAMES = (
+    "summary", "detail", "rationale", "references", "tags", "kind",
+    "project", "alternatives", "source_classification",
+)
+_FIELD_TAG_RE = re.compile(
+    r"</?(?:" + "|".join(_FIELD_NAMES) + r")\s*>", re.IGNORECASE
+)
+# Tool-call fragments captured at store time (the originating leak was a stray
+# closing invoke/parameter tag).
+_TOOLCALL_RE = re.compile(r"</?(?:invoke|parameter)\b[^>]*>", re.IGNORECASE)
+_DETAIL_RE = re.compile(r"<detail>(.*?)</detail>", re.IGNORECASE | re.DOTALL)
+_SUMMARY_INNER_RE = re.compile(
+    r"<summary>(.*?)</summary>", re.IGNORECASE | re.DOTALL
+)
+
+
+def _first_marker(text: str) -> int | None:
+    """Index of the earliest structural / tool-call marker, or None."""
+    starts = [
+        m.start()
+        for m in (_FIELD_TAG_RE.search(text), _TOOLCALL_RE.search(text))
+        if m is not None
+    ]
+    return min(starts) if starts else None
+
+
+def is_polluted(text: str | None) -> bool:
+    """True if ``text`` carries a leaked serialized-entry / tool-call fragment."""
+    return bool(text) and _first_marker(text) is not None
+
+
+def strip_tool_call_fragments(text: str | None) -> str:
+    """Remove stray ``<invoke>`` / ``<parameter>`` tool-call fragments from
+    free text (fields with no summary/detail structure, e.g. rule ``content``).
+    Leaves everything else intact."""
+    if not text:
+        return text or ""
+    return _TOOLCALL_RE.sub("", text).rstrip()
+
+
+def clean_summary_detail(
+    summary: str | None, detail: str | None
+) -> tuple[str | None, str | None, bool]:
+    """Re-split a polluted knowledge summary.
+
+    Returns ``(summary, detail, changed)``. When the summary carries a leaked
+    serialized blob, keep only the clean text before the first structural marker
+    as the summary, and salvage the ``<detail>…</detail>`` body into ``detail``
+    when ``detail`` is empty. A clean summary is returned unchanged.
+    """
+    if not summary:
+        return summary, detail, False
+    marker = _first_marker(summary)
+    if marker is None:
+        return summary, detail, False
+
+    clean = summary[:marker].rstrip()
+    if not clean:
+        # The blob began with a tag; recover the real summary from the
+        # <summary>…</summary> body if present.
+        inner = _SUMMARY_INNER_RE.search(summary)
+        if inner:
+            clean = strip_tool_call_fragments(inner.group(1).strip())
+
+    out_detail = detail
+    if not detail:
+        m = _DETAIL_RE.search(summary)
+        if m:
+            salvaged = strip_tool_call_fragments(m.group(1).strip())
+            out_detail = salvaged or None
+
+    return clean, out_detail, True

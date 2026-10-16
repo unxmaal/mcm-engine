@@ -21,6 +21,7 @@ from ..backends import (
     parse_valid_until,
 )
 from ..refs import dump_refs, validate_refs
+from ..sanitize import clean_summary_detail
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -100,6 +101,8 @@ def register_knowledge_tools(
         """
         tracker.record_call("add_knowledge", topic=topic)
         tracker.record_store()
+        # #142 guard: reject a serialized-entry blob leaking into summary/detail.
+        summary, detail, _ = clean_summary_detail(summary, detail)
         refs_provided = references is not None
         try:
             validated_refs = validate_refs(references) if refs_provided else None

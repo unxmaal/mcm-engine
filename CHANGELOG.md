@@ -6,6 +6,19 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **`sanitize_knowledge` maintenance tool + store-time guard (issue #142).** A
+  batch of imported findings was stored with the entire XML-serialized entry
+  pushed into the `summary` column (stray `</summary>`, `<detail>`, `<tags>`,
+  `</invoke>` fragments), shipping the whole body in the "summary" and
+  defeating the #119 progressive-disclosure saving. New `sanitize.py` helpers
+  (`is_polluted`, `clean_summary_detail`, `strip_tool_call_fragments`) re-split
+  a polluted summary into a clean summary + salvaged detail. `add_knowledge`
+  and `add_rule` now run that guard at store time so a malformed store can't
+  recur, and a new read-only-by-default `sanitize_knowledge(dry_run, limit)`
+  corpus tool cleans the already-polluted rows in place via `update_knowledge`
+  (DB authoritative, no file writes). Defaults are inert for clean content.
+
 ### Fixed
 - **`mcm-admin` container always reported unhealthy (issue #153).** Two
   independent reasons the admin healthcheck could never pass: the image's baked
