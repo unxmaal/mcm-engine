@@ -364,6 +364,14 @@ Add to `~/.claude/settings.json` or a project's `.claude/settings.local.json`:
   such as `add_rule` do not.
 - State: `<project>/.claude/mcp-enforcement-state.json`, keyed by session UUID, pruned
   after 30 days. Thresholds are constants in `src/mcm_engine/hooks/mcp_enforcement.py`.
+- **Risk-based coverage gate** (the real trigger; the count above is kept as a net): before a
+  *consequential* op — a file mutation, or a deploy/destructive shell command — whose topic
+  has no resident coverage this session, the hook searches on that topic and injects the
+  result as `additionalContext`, then allows. Routine bash and already-covered topics pass
+  silently; coverage is also established by the agent's own `search`/`report_error` calls and
+  reset at a compaction boundary. Deterministic classifier only (no LLM). Set
+  `MCM_COVERAGE_GATE=0` to disable. The interval net records an `interval_only_warn` event
+  whenever it fires on a non-consequential op, to measure whether it still earns its keep.
 
 #### Wire the compaction hooks (optional)
 

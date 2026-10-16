@@ -86,6 +86,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from . import coverage
+
 
 # These are the numbers the project contract has always advertised. The code
 # had drifted to 3 and 6, which is far too tight to act on: warn-at-3 fired
@@ -320,6 +322,170 @@ def _agent_key(event: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Decision
 # ---------------------------------------------------------------------------
+
+
+# --- #159 risk-based coverage gate -----------------------------------------
+#
+# The fixed-8 WARN / 20-edit consultation-gap above is a BLUNT proxy: elapsed
+# calls, not retrieval necessity. It is retained as a net (and instrumented, so
+# #160 can judge whether it still earns its keep), but the real trigger is this:
+# before a CONSEQUENTIAL op (a file mutation, or a deploy/destructive command)
+# whose topic has no RESIDENT coverage this session, look first. The hook does
+# the lookup itself and injects the result, then allows — never a hard block
+# (RULE #61). A typo fix and an EKS cluster upgrade have different memory
+# requirements, so routine bash and already-covered topics pass silently.
+#
+# No LLM classifier (DECISION #39: model-agnostic behind a gateway; the hook is
+# on the critical path). Deterministic only; env MCM_COVERAGE_GATE=0 disables.
+
+COVERAGE_GATE_LIMIT = 2
+COVERAGE_GATE_TIMEOUT_S = 1.0
+
+# Deploy / config / destructive shell commands. Biased toward recall: a false
+# positive costs one extra bounded search; a false negative just falls back to
+# the fixed-8 net. Read-only inspection (ls, cat, grep, git status) does not
+# match.
+_CONSEQUENTIAL_BASH_RE = re.compile(
+    r"""(?xi)
+    \brm\s+-\w*[rf]                                   |
+    \bgit\s+push\b[^\n]*(?:--force|\s-f\b)            |
+    \bgit\s+reset\s+--hard\b                          |
+    \bgit\s+clean\s+-\w*f                             |
+    \b(?:kubectl|oc)\s+(?:delete|apply|drain|cordon|scale|rollout) |
+    \beksctl\s+(?:delete|create|upgrade|scale)        |
+    \bhelm\s+(?:install|upgrade|uninstall|rollback|delete)        |
+    \b(?:terraform|tofu)\s+(?:apply|destroy|import)   |
+    \bdocker(?:\s+compose)?\s+(?:down|rm|prune)       |
+    \b(?:systemctl|service)\b[^\n]*\b(?:stop|restart|disable)     |
+    \bdrop\s+(?:table|database)\b                     |
+    \b(?:mkfs|fdisk|truncate)\b                       |
+    \bdd\s+if=
+    """
+)
+
+_CMD_HEAD_RE = re.compile(r"\s*([A-Za-z][\w.\-]*)")
+
+
+def _file_topic(path: str) -> str:
+    """A file mutation's coverage topic: the basename without extension."""
+    if not path:
+        return ""
+    base = os.path.basename(str(path))
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    return stem.lower().strip()
+
+
+def _consequential_op(tool_name: str, event: dict[str, Any]) -> tuple[bool, str]:
+    """(is_consequential, topic) for the pending op. File mutators are always
+    consequential (topic = file stem); bash is consequential only when it
+    matches a deploy/destructive pattern (topic = the command head); everything
+    else is not."""
+    normalized = _normalize_builtin_tool(tool_name)
+    if normalized in BLOCKING_BUILTIN_TOOLS:
+        ti = event.get("tool_input") or {}
+        path = ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or ""
+        return True, _file_topic(path)
+    if normalized == "bash":
+        ti = event.get("tool_input") or {}
+        cmd = ti.get("command") or ""
+        if _CONSEQUENTIAL_BASH_RE.search(cmd):
+            m = _CMD_HEAD_RE.match(cmd)
+            return True, (m.group(1).lower() if m else "")
+        return False, ""
+    return False, ""
+
+
+def _gate_http_search(query: str, cwd: Path) -> str:
+    try:
+        url, headers = _mcp_http_endpoint(cwd)
+        if not url:
+            return ""
+        return mcp_http_call_tool(
+            url, "search",
+            {"query": query, "scope": "all", "limit": COVERAGE_GATE_LIMIT, "detail": "summary"},
+            headers=headers, timeout=COVERAGE_GATE_TIMEOUT_S,
+        )
+    except Exception:
+        return ""
+
+
+def _observe_search_coverage(
+    tool_name: str, event: dict[str, Any], s: dict[str, Any], *, now: float
+) -> None:
+    """When the agent itself calls search / report_error, record the query topic
+    as covered, so the gate does not re-prompt for something just looked up."""
+    try:
+        m = _CLAUDE_MCP_TOOL_RE.match(tool_name)
+        suffix = m.group(2) if m else tool_name
+        if suffix not in ("search", "report_error"):
+            return
+        ti = event.get("tool_input") or {}
+        topic = ti.get("query") or ti.get("error_text") or ""
+        if topic:
+            coverage.record_topic(s, topic, now=now)
+    except Exception:
+        pass
+
+
+def _coverage_gate(
+    tool_name: str,
+    event: dict[str, Any],
+    s: dict[str, Any],
+    cwd: Path,
+    *,
+    now: float,
+    search=None,
+) -> Optional[str]:
+    """Risk-based look-first (#159). On a consequential op whose topic has no
+    resident coverage, perform the lookup, record coverage, and return an
+    injection string. Returns None when the gate does not apply or finds
+    nothing. Env MCM_COVERAGE_GATE=0 disables it. Fail-open throughout."""
+    if os.environ.get("MCM_COVERAGE_GATE", "1") == "0":
+        return None
+    try:
+        consequential, topic = _consequential_op(tool_name, event)
+    except Exception:
+        return None
+    if not consequential or not topic:
+        return None
+    try:
+        if coverage.is_covered(s, topic, now=now, require_resident=True):
+            return None
+    except Exception:
+        return None
+
+    retriever = search or _gate_http_search
+    try:
+        result = retriever(topic, cwd)
+    except Exception:
+        result = ""
+    try:
+        coverage.record_topic(s, topic, now=now)
+    except Exception:
+        pass
+
+    if not result:
+        return None
+    return (
+        f"[mcm-engine] consequential op on '{topic}' with no look-first read "
+        f"this session; auto-retrieved (verify before relying on it):\n{result}"
+    )
+
+
+def stamp_compaction_boundary(event: dict[str, Any]) -> None:
+    """Mark hook-side coverage non-resident at a compaction boundary (#159), so
+    the coverage gate re-prompts for a topic whose retrieved bodies the
+    compaction summary dropped. Called by the PreCompact and compaction
+    SessionStart hooks (separate processes). Fail-open."""
+    try:
+        cwd_raw = event.get("cwd") or os.getcwd()
+        sp = _state_path(Path(cwd_raw))
+        state = _read_state(sp)
+        entry = state.setdefault(_agent_key(event), {"last_reset_at": time.time()})
+        coverage.note_compaction(entry)
+        _write_state(sp, state)
+    except Exception:
+        pass
 
 
 def _decide(
@@ -851,6 +1017,37 @@ def main(argv: list[str] | None = None) -> int:
 
     exit_code, message = _decide(tool_name, s)
 
+    # #159 risk-based coverage gate. Record coverage from the agent's own
+    # look-first calls, then — on a consequential op with no resident coverage —
+    # do the lookup and inject it. Mutates `s` (coverage), so it runs before
+    # _write_state. Fail-open: any error yields no gate message.
+    now_gate = time.time()
+    try:
+        _observe_search_coverage(tool_name, event, s, now=now_gate)
+    except Exception:
+        pass
+    try:
+        gate_msg = _coverage_gate(tool_name, event, s, cwd, now=now_gate)
+    except Exception:
+        gate_msg = None
+    try:
+        consequential_op, _ = _consequential_op(tool_name, event)
+    except Exception:
+        consequential_op = False
+
+    # #159 instrumentation: the fixed-8 interval is kept as a net; count how
+    # often it warns on a NON-consequential op — a catch the risk gate would not
+    # have made. Must be bumped BEFORE _write_state so it persists. ("Useful"
+    # needs outcome data, which is #160; this is the honest proxy.)
+    _norm_tool = _normalize_builtin_tool(tool_name)
+    _at_gap_now = (
+        _norm_tool in BLOCKING_BUILTIN_TOOLS
+        and s.get("mutator_calls", 0) >= BLOCK_THRESHOLD
+    )
+    interval_only = bool(message) and not _at_gap_now and not consequential_op
+    if interval_only:
+        s["interval_only_warns"] = s.get("interval_only_warns", 0) + 1
+
     # Fixation breaker (advisory). Mutates `s` (fixation run counters) so it must
     # run before _write_state. Fail-open: any error yields no advisory and never
     # affects the exit code.
@@ -899,6 +1096,25 @@ def main(argv: list[str] | None = None) -> int:
             "builtin_calls": s.get("builtin_calls", 0),
             "mutator_calls": s.get("mutator_calls", 0),
         })
+
+    # #159 instrumentation: log the interval-only catch (counter already bumped
+    # before the state write above) so #160 can judge whether the net still
+    # earns its keep.
+    if interval_only:
+        _append_event(_events_path(cwd), {
+            "ts": time.time(),
+            "session_id": session_id,
+            "tool": tool_name,
+            "action": "interval_only_warn",
+            "count": s.get("interval_only_warns", 0),
+        })
+    if gate_msg:
+        _append_event(_events_path(cwd), {
+            "ts": time.time(),
+            "session_id": session_id,
+            "tool": tool_name,
+            "action": "coverage_gate",
+        })
     if fixation:
         _append_event(_events_path(cwd), {
             "ts": time.time(),
@@ -930,6 +1146,8 @@ def main(argv: list[str] | None = None) -> int:
         out = f"{out}\n{fixation}" if out else fixation
     if ambient:
         out = f"{out}\n{ambient}" if out else ambient
+    if gate_msg:
+        out = f"{out}\n{gate_msg}" if out else gate_msg
     if out:
         # THE MODEL ONLY SEES STDERR ON EXIT 2. This hook is deliberately
         # fail-open (issue #19) and never returns 2, so for years every nudge

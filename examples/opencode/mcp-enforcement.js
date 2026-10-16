@@ -25,6 +25,12 @@
 //     The Python hook recognizes that format too. No translation needed.
 //   - For warnings (allow but message the user), stderr is written to
 //     console.warn so it surfaces in the opencode log without blocking.
+//   - tool_input carries the tool arguments, which the risk-based coverage gate
+//     (#159) needs to classify an op (file path / shell command). opencode's
+//     arg field and its key names (e.g. filePath vs file_path) are not verified
+//     here; if they do not match what the Python hook reads, the gate simply
+//     stays quiet and the fixed-8 net still applies. Verify against the live
+//     opencode tool schema to light up the gate for opencode clients.
 
 export const MCMEnforcement = async ({ directory }) => {
   return {
@@ -33,6 +39,7 @@ export const MCMEnforcement = async ({ directory }) => {
         tool_name: input.tool,
         session_id: input.sessionID,
         cwd: directory,
+        tool_input: input.args ?? input.parameters ?? input.input ?? {},
       });
 
       const proc = Bun.spawn(["mcm-engine", "hook"], {
