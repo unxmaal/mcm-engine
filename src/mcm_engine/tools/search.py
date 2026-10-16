@@ -376,6 +376,7 @@ def _scope_block(
     bump_counters: bool,
     include_archived: bool = False,
     detail: DetailLevel = "summary",
+    ids_out: list | None = None,
 ) -> list[str]:
     """Search one entity scope and return formatted result strings."""
     # Pull more than `limit` so the threshold filter still has options to
@@ -417,6 +418,9 @@ def _scope_block(
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:limit]
 
+    if ids_out is not None:
+        ids_out.extend((etype.name, eid) for _, _, eid in top)
+
     if bump_counters and etype in (EntityType.KNOWLEDGE, EntityType.RULE):
         # Hit-count tracking is best-effort telemetry. Under write-lock
         # contention (concurrent writer, WAL checkpoint) counters.increment's
@@ -451,6 +455,7 @@ def _search_all_scopes(
     entity_types: frozenset[EntityType] = frozenset(EntityType),
     include_archived: bool = False,
     detail: DetailLevel = "summary",
+    ids_out: list | None = None,
 ) -> str:
     results: list[str] = []
 
@@ -463,21 +468,21 @@ def _search_all_scopes(
             EntityType.KNOWLEDGE, search_backend, storage, counters,
             query=query, limit=limit, project=project,
             min_rank=gate, bump_counters=True,
-            include_archived=include_archived, detail=detail,
+            include_archived=include_archived, detail=detail, ids_out=ids_out,
         ))
 
     if EntityType.NEGATIVE in entity_types:
         results.extend(_scope_block(
             EntityType.NEGATIVE, search_backend, storage, counters,
             query=query, limit=limit, project=project,
-            min_rank=gate, bump_counters=False, detail=detail,
+            min_rank=gate, bump_counters=False, detail=detail, ids_out=ids_out,
         ))
 
     if EntityType.ERROR in entity_types:
         results.extend(_scope_block(
             EntityType.ERROR, search_backend, storage, counters,
             query=query, limit=limit, project=project,
-            min_rank=gate, bump_counters=False, detail=detail,
+            min_rank=gate, bump_counters=False, detail=detail, ids_out=ids_out,
         ))
 
     if EntityType.RULE in entity_types:
@@ -486,7 +491,7 @@ def _search_all_scopes(
             EntityType.RULE, search_backend, storage, counters,
             query=query, limit=limit, project="",
             min_rank=gate, bump_counters=True,
-            include_archived=include_archived, detail=detail,
+            include_archived=include_archived, detail=detail, ids_out=ids_out,
         ))
 
     # Plugin search scopes route through the SearchBackend (MCM2-07).
@@ -522,7 +527,12 @@ def register_search_tools(
     counters = ctx.counters
     search_backend = ctx.search
 
-    def search_all(query: str, limit: int = 10, detail: DetailLevel = "full") -> str:
+    def search_all(
+        query: str,
+        limit: int = 10,
+        detail: DetailLevel = "full",
+        ids_out: list | None = None,
+    ) -> str:
         """Internal search function used by report_error. Applies quality
         gate and project scope. Defaults to detail="full" (unlike the public
         search tool, which defaults to summary): report_error fires once per
@@ -534,6 +544,7 @@ def register_search_tools(
             search_backend, storage, counters, query, limit,
             plugin_search_scopes,
             min_rank=RANK_THRESHOLD, project=project_name, detail=detail,
+            ids_out=ids_out,
         )
         return _body_hint(result, detail)
 
@@ -571,6 +582,7 @@ def register_search_tools(
         tracker.record_call("search", topic=query)
         entity_types = _SCOPE_MAP.get(scope, _SCOPE_MAP["all"])
         # Explicit search: no quality gate.
+        ids: list = []
         result = _search_all_scopes(
             search_backend, storage, counters, query, limit,
             plugin_search_scopes,
@@ -578,7 +590,10 @@ def register_search_tools(
             entity_types=entity_types,
             include_archived=include_archived,
             detail=detail,
+            ids_out=ids,
         )
+        # issue #156: record topic coverage (resident=true) for this session.
+        tracker.record_coverage(query, query, ids)
         # issue #109: if the startup file->DB sync failed, the index may be
         # behind the files — warn at the point of use (a "no results" here may
         # be the staleness, not a genuine absence).

@@ -229,7 +229,11 @@ def register_knowledge_tools(
         keywords = _extract_keywords(error_text)
         if keywords:
             query = " ".join(keywords[:5])
-            search_results = search_all_fn(query, limit=5)
+            ids: list = []
+            search_results = search_all_fn(query, limit=5, ids_out=ids)
+            # issue #156: the auto-search establishes coverage for this error's
+            # topic; topic is the error signature, query the derived keywords.
+            tracker.record_coverage(error_text[:50], query, ids)
             if search_results:
                 parts.append("\n--- Matching knowledge ---")
                 parts.append(search_results)

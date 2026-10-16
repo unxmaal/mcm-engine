@@ -104,6 +104,14 @@ class SessionTracker:
         # Every tool called at least once this session — used by the
         # session-end gate to surface what was never touched.
         self.called_this_session: set[str] = set()
+        # Per-session, per-topic retrieval coverage ledger (issue #156). Keyed
+        # by the same lowercased/stripped topic key as topic_freq. Each entry:
+        # {topic, query, result_ids, searched_at, resident}. `resident` is
+        # distinct from `searched_at`: a topic stays covered across the session
+        # but its retrieved bodies stop being resident at a compaction boundary
+        # (reconciled to False on save_snapshot compaction and on session_start),
+        # so coverage never silently masks the anti-amnesia case it exists for.
+        self.coverage: dict[str, dict] = {}
 
     def record_call(self, tool_name: str, topic: str | None = None) -> None:
         """Record a tool invocation. Call this at the start of every tool.
@@ -192,6 +200,49 @@ class SessionTracker:
         """Record that knowledge was stored. Resets the store reminder counter."""
         self.last_store_turn = self.turn_count
 
+    def record_coverage(
+        self,
+        topic: str,
+        query: str,
+        result_ids=None,
+        *,
+        resident: bool = True,
+    ) -> None:
+        """Record that `topic` was retrieved this session (issue #156).
+
+        Called from search and report_error's auto-search. Overwrites any prior
+        entry for the same topic key so searched_at/resident reflect the latest
+        retrieval. No-op for an empty topic."""
+        key = (topic or "").lower().strip()
+        if not key:
+            return
+        self.coverage[key] = {
+            "topic": key,
+            "query": query,
+            "result_ids": list(result_ids or []),
+            "searched_at": time.time(),
+            "resident": resident,
+        }
+
+    def reconcile_coverage(self, *, resident: bool = False) -> None:
+        """Flip the resident flag on every coverage entry (issue #156).
+
+        Called at the compaction boundary (save_snapshot compaction and
+        session_start). Marks prior coverage non-resident: the topics were still
+        searched, but their retrieved bodies are no longer in context."""
+        for entry in self.coverage.values():
+            entry["resident"] = resident
+
+    def is_covered(self, topic: str, *, require_resident: bool = True) -> bool:
+        """True if `topic` was retrieved this session (issue #156).
+
+        require_resident (default True): a topic whose bodies were compacted out
+        does not count as covered. Enforcement is not wired to this yet (#159)."""
+        entry = self.coverage.get((topic or "").lower().strip())
+        if entry is None:
+            return False
+        return bool(entry["resident"]) if require_resident else True
+
     def reset_all(self) -> None:
         """Reset all counters. Called on session_handoff."""
         self.turn_count = 0
@@ -205,6 +256,7 @@ class SessionTracker:
         for t in self.calls_since:
             self.calls_since[t] = 0
         self.called_this_session.clear()
+        self.coverage.clear()
 
     def elapsed_seconds(self) -> int:
         """Seconds since session start."""
@@ -403,6 +455,15 @@ class ScopedTracker:
 
     def record_store(self, *args, **kwargs):
         return self._current().record_store(*args, **kwargs)
+
+    def record_coverage(self, *args, **kwargs):
+        return self._current().record_coverage(*args, **kwargs)
+
+    def reconcile_coverage(self, *args, **kwargs):
+        return self._current().reconcile_coverage(*args, **kwargs)
+
+    def is_covered(self, *args, **kwargs):
+        return self._current().is_covered(*args, **kwargs)
 
     def get_nudge(self, *args, **kwargs):
         return self._current().get_nudge(*args, **kwargs)

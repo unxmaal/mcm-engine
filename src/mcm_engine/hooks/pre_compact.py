@@ -58,7 +58,9 @@ def _build_arguments(trigger: str, custom_instructions: str) -> dict[str, Any]:
     """save_snapshot kwargs for the compaction boundary. Only the fields the
     hook can actually know are populated; the rest the tool defaults to empty."""
     progress = f"Auto-checkpoint before {trigger or 'auto'} compaction."
-    args: dict[str, Any] = {"progress": progress}
+    # compaction=True marks this as the compaction boundary so the server
+    # reconciles retrieval coverage to non-resident (issue #156).
+    args: dict[str, Any] = {"progress": progress, "compaction": True}
     # A manual /compact may carry the user's stated focus; keep it.
     if custom_instructions:
         args["open_questions"] = custom_instructions
