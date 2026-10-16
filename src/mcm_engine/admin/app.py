@@ -5,6 +5,7 @@ framework dependency: the admin container stays small and the only imports are
 stdlib + the shared ``mcm_engine`` storage library.
 
 Routes:
+  GET  /healthz, /readyz                  -> {"status": "ok"} liveness (DB-free)
   GET  /                                  -> the grid UI (static HTML)
   GET  /api/rules?include_archived&min_importance&limit -> rules_payload JSON
   POST /api/rules/<id>/metadata  (JSON)   -> apply_metadata
@@ -59,6 +60,9 @@ def make_handler(storage, *, index_html: str | None = None, graph_html: str | No
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path in ("/healthz", "/readyz"):
+                self._json(200, {"status": "ok"})
+                return
             if parsed.path in ("/", "/index.html"):
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return

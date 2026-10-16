@@ -111,6 +111,16 @@ def test_post_metadata_unknown_rule_returns_404(server):
     assert status == 404
 
 
+def test_healthz_and_readyz_return_ok(server):
+    """Issue #153: the admin app must serve /healthz (and /readyz) so the
+    container healthcheck can pass — the admin process listens on its own port
+    and the baked image healthcheck probes /healthz."""
+    for path in ("/healthz", "/readyz"):
+        status, ctype, body = _get(server["base"] + path)
+        assert status == 200 and "application/json" in ctype
+        assert json.loads(body) == {"status": "ok"}
+
+
 def test_unknown_path_404(server):
     try:
         _get(server["base"] + "/nope")

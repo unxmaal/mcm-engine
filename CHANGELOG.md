@@ -6,6 +6,17 @@ versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **`mcm-admin` container always reported unhealthy (issue #153).** Two
+  independent reasons the admin healthcheck could never pass: the image's baked
+  `HEALTHCHECK` probes `${MCM_PORT}` (8080) but the admin UI listens on 8090,
+  and the admin app had no `/healthz` route. The admin app now serves
+  `/healthz` and `/readyz` (`{"status": "ok"}`, DB-free), and the example
+  compose gives the admin service a healthcheck override targeting 8090. The
+  admin UI was always functional; this only corrects the misleading `docker ps`
+  status. Redeploys that run the admin container should mirror the compose
+  healthcheck override (no DB change).
+
 ## [3.14.0] — 2026-10-15
 
 ### Added
