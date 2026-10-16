@@ -120,6 +120,10 @@ def register_session_tools(
         """Initialize a session. Returns recent knowledge count, last handoff,
         pinned items, and plugin context."""
         tracker.record_call("session_start")
+        # issue #156: a session_start after a compaction rebuilds context from a
+        # summary, so prior retrieved bodies are no longer resident. Mark all
+        # coverage non-resident; a fresh session has none, so this is a no-op.
+        tracker.reconcile_coverage(resident=False)
         parts: list[str] = []
 
         # Recent knowledge count (last 7 days).
@@ -363,10 +367,17 @@ def register_session_tools(
         next_steps: str = "",
         active_files: str = "",
         key_decisions: str = "",
+        compaction: bool = False,
     ) -> str:
-        """Save a numbered mid-session checkpoint."""
+        """Save a numbered mid-session checkpoint.
+
+        compaction: set by the PreCompact hook. When true, this snapshot marks
+        the compaction boundary, so coverage is reconciled non-resident (#156).
+        A routine mid-session checkpoint leaves residency untouched."""
         tracker.record_call("save_snapshot")
         tracker.last_checkpoint_turn = tracker.turn_count
+        if compaction:
+            tracker.reconcile_coverage(resident=False)
 
         last_session = storage.get_last_session(principal=get_transport_principal())
         session_id = last_session.id if last_session else None
