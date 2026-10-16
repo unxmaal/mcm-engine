@@ -102,6 +102,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = _build_arguments(trigger, custom_instructions)
 
+    # Mark hook-side coverage non-resident at the boundary (#159); fail-open.
+    try:
+        from .mcp_enforcement import stamp_compaction_boundary
+        stamp_compaction_boundary(event)
+    except Exception:
+        pass
+
     try:
         url, headers = _mcp_http_endpoint(cwd)
         if url:

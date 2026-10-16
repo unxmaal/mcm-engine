@@ -64,12 +64,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     event ``source`` (a compaction gets a recovery-focused directive, issue
     #145). Always exits 0 — see the module docstring's fail-open contract."""
     source = ""
+    event: dict = {}
     try:
         raw = sys.stdin.read()
         if raw:
-            source = (json.loads(raw) or {}).get("source", "") or ""
+            event = json.loads(raw) or {}
+            source = event.get("source", "") or ""
     except Exception:
         source = ""
+
+    if source == "compact":
+        # The compaction summary dropped working detail, so prior hook-side
+        # coverage is no longer resident (#159). Stamp the boundary; fail-open.
+        try:
+            from .mcp_enforcement import stamp_compaction_boundary
+            stamp_compaction_boundary(event)
+        except Exception:
+            pass
 
     directive = COMPACT_DIRECTIVE if source == "compact" else RESUME_DIRECTIVE
 
