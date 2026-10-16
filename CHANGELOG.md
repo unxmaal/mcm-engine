@@ -6,6 +6,41 @@ versioning.
 
 ## [Unreleased]
 
+## [3.16.0] — 2026-10-16
+
+### Added
+- **Retrieval scheduling: a layered, coverage-aware policy replaces the fixed
+  call-count trigger (issue #137, children #156–#160).** The fixed "search every
+  N built-in calls" trigger manufactured searches the task didn't need while
+  giving no coverage for the case that matters — an agent about to act on a
+  topic it has never retrieved. Five layers:
+  - **#156** a server-owned, per-FastMCP-session, per-topic coverage ledger on
+    `SessionTracker` (`record_coverage`/`reconcile_coverage`/`is_covered`), with
+    a `resident` flag distinct from `searched_at` that flips non-resident at the
+    compaction boundary (`session_start`, `save_snapshot(compaction=True)`), so
+    coverage of a topic whose bodies were summarized out does not mask the
+    anti-amnesia case.
+  - **#157** a `UserPromptSubmit` hook (`mcm-engine user-prompt-submit`): a
+    deterministic classifier flags history-referencing prompts and injects an
+    auto-retrieved result as `additionalContext` before the model reasons;
+    non-historical prompts are a fast no-op.
+  - **#158** a `PostToolUseFailure` hook (`mcm-engine post-tool-use-failure`):
+    matches a failure's noise-normalized signature against known errors/fixes
+    and injects the match, with a per-session dedup key so a retry loop fires
+    one search, not one per attempt.
+  - **#159** a risk-based coverage gate on `PreToolUse`: before a consequential
+    op (file mutation, or a deploy/destructive command) whose topic has no
+    resident coverage, the hook looks first and injects, then allows. The
+    fixed-8 interval is retained as an instrumented net (`MCM_COVERAGE_GATE=0`
+    disables the gate).
+  - **#160** a `mcm-engine replay-eval` harness that scores candidate
+    retrieval-trigger policies by asymmetric false-negative/false-positive cost
+    over Claude Code transcript traces, plus a live-paired-eval plan (absorbs
+    the #149 evidence-based retune).
+  All layers are fail-open and use no LLM. The hooks coordinate coverage in the
+  shared enforcement state file (they cannot address the in-process ledger);
+  new hook events are wired manually (README). No schema migration.
+
 ## [3.15.0] — 2026-10-16
 
 ### Added
