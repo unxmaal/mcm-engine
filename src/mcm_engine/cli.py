@@ -319,6 +319,15 @@ def cmd_pre_compact(args):
     sys.exit(pc_main())
 
 
+def cmd_user_prompt_submit(args):
+    """Run the UserPromptSubmit hook (#157). Reads a UserPromptSubmit event from
+    stdin; when the prompt references history, searches the KB and injects the
+    result as additionalContext, recording the topic as covered. Always exits 0
+    (a retrieval hook must never block a prompt)."""
+    from .hooks.user_prompt_submit import main as ups_main
+    sys.exit(ups_main())
+
+
 def _collect_remote_spans(groups, *, strict: bool = True) -> list[dict]:
     """Client side of remote ingest (#72): extract rule-like spans locally from
     the already-walked ingester rows. Pure/corpus-free — only the spans that
@@ -1155,6 +1164,15 @@ def main():
              "Always exits 0.",
     )
     pc_parser.set_defaults(func=cmd_pre_compact)
+
+    # user-prompt-submit (task-aware retrieval + inject hook, #157)
+    ups_parser = subparsers.add_parser(
+        "user-prompt-submit",
+        help="UserPromptSubmit hook for Claude Code. Reads one event from "
+             "stdin; when the prompt references history, searches the KB and "
+             "injects the result as additionalContext. Always exits 0.",
+    )
+    ups_parser.set_defaults(func=cmd_user_prompt_submit)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(
