@@ -391,6 +391,28 @@ and restore automatic instead of relying on the agent to call `session_handoff`:
   checkpoint, since PostCompact cannot inject context back to the model. (The same
   `session-start` wiring covers normal startup/resume.)
 
+#### Wire task-aware retrieval (optional)
+
+When a new prompt references prior work, this hook searches the KB and injects the result
+before the model reasons, instead of waiting for the agent to look it up:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "mcm-engine user-prompt-submit", "timeout": 2 }] }
+    ]
+  }
+}
+```
+
+- A deterministic classifier (no LLM, so no gateway round-trip on the critical path) flags
+  prompts that reference prior decisions, prior failures, preferences, or ongoing work; a
+  non-historical prompt is a fast no-op.
+- On a match it searches the configured server over HTTP (bounded, fail-open) and injects the
+  result as `additionalContext`, and records the topic as covered in the shared hook state
+  (`covered_topics` in `mcp-enforcement-state.json`). Always exits 0.
+
 #### Wire the hook: opencode
 
 opencode uses a JS plugin, not `settings.json`. Copy
