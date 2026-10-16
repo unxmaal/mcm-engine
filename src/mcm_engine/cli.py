@@ -337,6 +337,37 @@ def cmd_post_tool_use_failure(args):
     sys.exit(ptuf_main())
 
 
+def cmd_replay_eval(args):
+    """Replay Claude Code transcripts through candidate retrieval-trigger
+    policies and print a weighted FN/FP report (issue #160)."""
+    import json as _json
+    from .eval.replay import default_policies, evaluate
+    from .eval.trace_transcript import load_transcript
+
+    trace = []
+    for path in args.transcript:
+        trace.extend(load_transcript(path))
+    if not trace:
+        print(_json.dumps({"error": "no tool-call events parsed", "events": 0}))
+        return
+
+    scores = evaluate(
+        trace, default_policies(),
+        fn_weight=args.fn_weight, fp_weight=args.fp_weight,
+        failure_multiplier=args.failure_multiplier,
+    )
+    report = {
+        "events": len(trace),
+        "consequential": sum(1 for e in trace if e.consequential),
+        "lookups": sum(1 for e in trace if e.looked_up),
+        "failures": sum(1 for e in trace if e.led_to_failure),
+        "fn_weight": args.fn_weight,
+        "policies": [s.as_dict() for s in scores],
+        "best_by_weighted_cost": min(scores, key=lambda s: s.weighted_cost).name,
+    }
+    print(_json.dumps(report, indent=2))
+
+
 def _collect_remote_spans(groups, *, strict: bool = True) -> list[dict]:
     """Client side of remote ingest (#72): extract rule-like spans locally from
     the already-walked ingester rows. Pure/corpus-free — only the spans that
@@ -1191,6 +1222,24 @@ def main():
              "the match as additionalContext, deduped per session. Always exits 0.",
     )
     ptuf_parser.set_defaults(func=cmd_post_tool_use_failure)
+
+    # replay-eval (offline trigger-policy evaluation, #160)
+    re_parser = subparsers.add_parser(
+        "replay-eval",
+        help="Replay Claude Code transcript(s) through candidate retrieval-"
+             "trigger policies and report weighted FN/FP. Replay scores the "
+             "trigger decision only; see the live-paired-eval plan (issue #160).",
+    )
+    re_parser.add_argument("transcript", nargs="+",
+                           help="Path(s) to Claude Code transcript JSONL file(s).")
+    re_parser.add_argument("--fn-weight", type=float, default=5.0,
+                           help="False-negative weight (default 5.0).")
+    re_parser.add_argument("--fp-weight", type=float, default=1.0,
+                           help="False-positive weight (default 1.0).")
+    re_parser.add_argument("--failure-multiplier", type=float, default=2.0,
+                           help="Extra FN weight when the miss preceded a failure "
+                                "(default 2.0).")
+    re_parser.set_defaults(func=cmd_replay_eval)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(
