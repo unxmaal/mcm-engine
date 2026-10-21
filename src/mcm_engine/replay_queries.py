@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -32,6 +33,7 @@ class ReplayQuery:
     args: dict
     source: str
     seq: int
+    recorded_bytes: int = -1   # bytes of the tool_result the client received; -1 = not in the transcript
 
 
 def _tool_suffix(name: str) -> str:
@@ -39,9 +41,43 @@ def _tool_suffix(name: str) -> str:
     return m.group(2) if m else (name or "")
 
 
+def _result_bytes(block: dict) -> int:
+    c = block.get("content")
+    if isinstance(c, list):
+        c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
+    return len(str(c or "").encode("utf-8"))
+
+
+_HIT_HEAD = re.compile(r"^\[(KNOWLEDGE|NEGATIVE|ERROR|RULE)\b")
+_SECTION = re.compile(r"^(\(|---|===)")
+
+
+def kind_bytes(text: str) -> dict[str, int]:
+    """Rendered bytes per hit kind. A hit block starts with ``[KIND`` and runs
+    to the next hit or section line (footer, divider); a multi-paragraph field
+    therefore stays with its hit. Everything else counts as other."""
+    out: dict[str, int] = {}
+    current = "other"
+    for line in text.split("\n"):
+        m = _HIT_HEAD.match(line)
+        if m:
+            current = m.group(1).lower()
+        elif _SECTION.match(line):
+            current = "other"
+        out[current] = out.get(current, 0) + len(line.encode("utf-8")) + 1
+    return out
+
+
+def wire_bytes(text: str) -> int:
+    """Bytes of a tool result as the client receives it: the compact JSON
+    envelope the MCP layer wraps every result in (#199)."""
+    return len(json.dumps({"result": text}, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
 def extract_queries(paths: Iterable[str | Path]) -> list[ReplayQuery]:
-    """Every replayable tool_use across the transcripts, in file order.
-    Unparseable lines are skipped, never raised."""
+    """Every replayable tool_use across the transcripts, in file order, each
+    paired with the byte size of its recorded tool_result when the transcript
+    holds one. Unparseable lines are skipped, never raised."""
     out: list[ReplayQuery] = []
     for path in paths:
         try:
@@ -49,6 +85,7 @@ def extract_queries(paths: Iterable[str | Path]) -> list[ReplayQuery]:
         except OSError:
             continue
         seq = 0
+        pending: dict[str, ReplayQuery] = {}
         for line in text.splitlines():
             line = line.strip()
             if not line:
@@ -60,14 +97,23 @@ def extract_queries(paths: Iterable[str | Path]) -> list[ReplayQuery]:
             if not isinstance(rec, dict):
                 continue
             for block in _content_blocks(rec):
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    q = pending.pop(str(block.get("tool_use_id")), None)
+                    if q is not None:
+                        q.recorded_bytes = _result_bytes(block)
+                    continue
+                if block.get("type") != "tool_use":
                     continue
                 suffix = _tool_suffix(block.get("name", "") or "")
                 if suffix not in REPLAYED:
                     continue
                 args = block.get("input") if isinstance(block.get("input"), dict) else {}
-                out.append(ReplayQuery(tool=suffix, args=dict(args),
-                                       source=Path(path).name, seq=seq))
+                q = ReplayQuery(tool=suffix, args=dict(args), source=Path(path).name, seq=seq)
+                out.append(q)
+                if block.get("id"):
+                    pending[str(block["id"])] = q
                 seq += 1
     return out
 
@@ -162,6 +208,11 @@ class QueryResult:
     ungated_jaccard: float = 1.0   # report_error only: agreement with the gate off
     legacy_ids: list = field(default_factory=list)
     unified_ids: list = field(default_factory=list)
+    recorded_bytes: int = -1       # search/report_error: what the client got at the time
+    legacy_bytes: int = -1         # search/report_error: wire bytes of the replayed result
+    unified_bytes: int = -1
+    legacy_kind_bytes: dict = field(default_factory=dict)   # rendered bytes per hit kind
+    unified_kind_bytes: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -169,6 +220,7 @@ class ReplayReport:
     store: str
     counts: dict = field(default_factory=dict)
     agreement: dict = field(default_factory=dict)
+    sizes: dict = field(default_factory=dict)
     disagreements: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -226,7 +278,10 @@ def replay(ctx: Context, queries: list[ReplayQuery], *, store: str = "",
                     q.tool, q.args, q.source, q.seq, agree=(j >= jaccard_threshold),
                     jaccard=j, prefix=p, text_identical=same_text,
                     top5=topk_jaccard(l_ids, u_ids), gate_flip=flip, ungated_jaccard=uj,
-                    legacy_ids=l_ids, unified_ids=u_ids))
+                    legacy_ids=l_ids, unified_ids=u_ids,
+                    recorded_bytes=q.recorded_bytes,
+                    legacy_bytes=wire_bytes(l_text), unified_bytes=wire_bytes(u_text),
+                    legacy_kind_bytes=kind_bytes(l_text), unified_kind_bytes=kind_bytes(u_text)))
             else:
                 _with_model("legacy")
                 l_row = _point_read(ctx, q)
@@ -254,8 +309,41 @@ def replay(ctx: Context, queries: list[ReplayQuery], *, store: str = "",
                 agg["gate_flips"] = sum(r.gate_flip for r in rs)
                 agg["mean_ungated_jaccard"] = sum(r.ungated_jaccard for r in rs) / len(rs)
         report.agreement[tool] = agg
+        if tool in ("search", "report_error"):
+            report.sizes[tool] = size_stats(rs)
     report.disagreements = [asdict(r) for r in results if not r.agree]
     return report
+
+
+def _quantiles(values: list[int]) -> dict[str, float]:
+    if not values:
+        return {"n": 0, "total": 0, "median": 0.0, "p90": 0.0}
+    v = sorted(values)
+    n = len(v)
+    return {"n": n, "total": sum(v),
+            "median": float(v[(n - 1) // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2),
+            "p90": float(v[min(n - 1, int(0.9 * (n - 1) + 0.5))])}
+
+
+def size_stats(rs: list[QueryResult]) -> dict:
+    """Bytes per response, replayed under both read paths, against what the
+    transcript recorded (#199). The ratios are over the paired queries only,
+    so a transcript without results gives sizes but no ratio."""
+    out = {"legacy": _quantiles([r.legacy_bytes for r in rs]),
+           "unified": _quantiles([r.unified_bytes for r in rs])}
+    for side in ("legacy", "unified"):
+        totals: dict[str, int] = {}
+        for r in rs:
+            for k, v in getattr(r, f"{side}_kind_bytes").items():
+                totals[k] = totals.get(k, 0) + v
+        out[side]["by_kind"] = dict(sorted(totals.items(), key=lambda kv: -kv[1]))
+    paired = [r for r in rs if r.recorded_bytes >= 0]
+    out["recorded"] = _quantiles([r.recorded_bytes for r in paired])
+    rec_total = out["recorded"]["total"]
+    if rec_total:
+        out["legacy_ratio"] = sum(r.legacy_bytes for r in paired) / rec_total
+        out["unified_ratio"] = sum(r.unified_bytes for r in paired) / rec_total
+    return out
 
 
 # ---- store resolution ---------------------------------------------------------------
@@ -307,4 +395,15 @@ def format_report(report: ReplayReport) -> str:
                           for k, v in agg.items() if k != "agree")
         lines.append(f"  {tool:13s} n={n:<5d} agree={agg['agree']:.3f}  {extra}")
     lines.append(f"  disagreements: {len(report.disagreements)}")
+    for tool, s in report.sizes.items():
+        lines.append(f"  bytes/{tool}:")
+        for side in ("recorded", "legacy", "unified"):
+            q = s[side]
+            ratio = s.get(f"{side}_ratio")
+            tail = f"  x{ratio:.2f} of recorded" if ratio is not None else ""
+            lines.append(f"    {side:9s} n={q['n']:<5d} total={q['total'] / 1024:9.1f}KB "
+                         f"median={q['median']:8.0f} p90={q['p90']:8.0f}{tail}")
+            if q.get("by_kind"):
+                lines.append("              " + "  ".join(
+                    f"{k}={v / 1024:.0f}KB" for k, v in q["by_kind"].items()))
     return "\n".join(lines)
