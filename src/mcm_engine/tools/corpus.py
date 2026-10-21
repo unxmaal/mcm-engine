@@ -18,7 +18,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, EntityTypeLiteral
-from ..sanitize import clean_summary_detail
+from ..sanitize import clean_error, clean_negative, clean_summary_detail
 from ..tracker import SessionTracker
 from ..wiring import coerce_context
 
@@ -129,6 +129,67 @@ def _render_entry(etype: EntityType, row, fields: tuple[str, ...]) -> str:
     return "\n".join(parts)
 
 
+# Entity types the corpus sanitizer can repair, in a stable sweep order.
+_SANITIZABLE: tuple[EntityType, ...] = (
+    EntityType.KNOWLEDGE, EntityType.NEGATIVE, EntityType.ERROR,
+)
+
+
+def _sanitize_plan(etype: EntityType, row) -> dict | None:
+    """Return the field updates needed to de-pollute ``row`` (issue #170,
+    follow-on to #142), or None when the row is already clean. Each entity type
+    leaked a serialized blob into a different headline column; the matching
+    cleaner re-splits it into the proper columns."""
+    if etype is EntityType.KNOWLEDGE:
+        summary, detail, changed = clean_summary_detail(
+            row.summary, getattr(row, "detail", None)
+        )
+        return {"summary": summary, "detail": detail} if changed else None
+    if etype is EntityType.NEGATIVE:
+        wf, why, fix, changed = clean_negative(
+            row.what_failed, getattr(row, "why_failed", None),
+            getattr(row, "correct_approach", None),
+        )
+        return ({"what_failed": wf, "why_failed": why, "correct_approach": fix}
+                if changed else None)
+    if etype is EntityType.ERROR:
+        pat, ctx, rc, fix, changed = clean_error(
+            row.pattern, getattr(row, "context", None),
+            getattr(row, "root_cause", None), getattr(row, "fix", None),
+        )
+        return ({"pattern": pat, "context": ctx, "root_cause": rc, "fix": fix}
+                if changed else None)
+    return None
+
+
+def _apply_sanitize(storage, etype: EntityType, entry_id: int, fields: dict) -> None:
+    """Write the de-polluted fields back through the typed update method."""
+    if etype is EntityType.KNOWLEDGE:
+        storage.update_knowledge(entry_id, **fields)
+    elif etype is EntityType.NEGATIVE:
+        storage.update_negative(entry_id, **fields)
+    elif etype is EntityType.ERROR:
+        storage.update_error(entry_id, **fields)
+
+
+def _sanitize_table(storage, etype: EntityType, dry_run: bool, limit: int) -> dict:
+    """Scan one entity table; re-split polluted rows when ``dry_run`` is False.
+    Returns {scanned, polluted:[ids], applied:[ids]}."""
+    scanned = 0
+    polluted: list[int] = []
+    applied: list[int] = []
+    for row in storage.iter_entries(etype):
+        scanned += 1
+        fields = _sanitize_plan(etype, row)
+        if fields is None:
+            continue
+        polluted.append(row.id)
+        if not dry_run and (limit <= 0 or len(applied) < limit):
+            _apply_sanitize(storage, etype, row.id, fields)
+            applied.append(row.id)
+    return {"scanned": scanned, "polluted": polluted, "applied": applied}
+
+
 def register_corpus_tools(
     mcp: FastMCP,
     ctx_or_db,
@@ -189,58 +250,88 @@ def register_corpus_tools(
         )
         return "\n\n".join(blocks) + "\n\n" + footer
 
-    @mcp.tool()
-    def sanitize_knowledge(dry_run: bool = True, limit: int = 0) -> str:
-        """Re-split knowledge summaries that leaked a serialized-entry blob
-        (issue #142) into a clean summary + detail.
-
-        A polluted summary carries the whole XML-serialized entry — real text
-        followed by stray `</summary>`, `<detail>…</detail>`, `<tags>`, `<kind>`
-        and `</invoke>` fragments — which ships the entire body in the "summary"
-        and defeats progressive-disclosure search. This keeps the clean prefix
-        as the summary and salvages the `<detail>` body into the detail field
-        when detail is empty.
-
-        dry_run: True (default) only reports what WOULD change; pass False to
-            update the rows in place via update_knowledge. DB is authoritative —
-            this writes through the storage layer, never a file.
-        limit: cap the number of rows UPDATED on the apply path (0 = no cap);
-            the scan always counts the whole corpus. Run dry first, spot-check
-            the ids with get_entry, then apply.
-        """
-        tracker.record_call("sanitize_knowledge")
-        scanned = 0
-        polluted: list[int] = []
-        applied: list[int] = []
-        for row in storage.iter_entries(EntityType.KNOWLEDGE):
-            scanned += 1
-            new_summary, new_detail, changed = clean_summary_detail(
-                row.summary, getattr(row, "detail", None)
-            )
-            if not changed:
-                continue
-            polluted.append(row.id)
-            if not dry_run and (limit <= 0 or len(applied) < limit):
-                storage.update_knowledge(
-                    row.id, summary=new_summary, detail=new_detail
-                )
-                applied.append(row.id)
-
+    def _format_table_result(
+        label: str, res: dict, dry_run: bool, example_type: str,
+    ) -> str:
         verb = "updated" if not dry_run else "would clean"
-        ids = polluted if dry_run else applied
+        ids = res["polluted"] if dry_run else res["applied"]
         head = (
-            f"sanitize_knowledge: scanned {scanned} knowledge entries, "
-            f"{len(polluted)} polluted; {verb} {len(ids)}."
+            f"{label}: scanned {res['scanned']} {label} entries, "
+            f"{len(res['polluted'])} polluted; {verb} {len(ids)}."
         )
         if not ids:
-            return head + (" Corpus clean." if not polluted else "")
+            return head + (" Corpus clean." if not res["polluted"] else "")
         shown = ", ".join(f"#{i}" for i in ids[:50])
         more = f" (+{len(ids) - 50} more)" if len(ids) > 50 else ""
         tail = (
             "\nRun with dry_run=False to apply."
-            if dry_run else "\nVerify a few with get_entry('knowledge', <id>)."
+            if dry_run else f"\nVerify a few with get_entry('{example_type}', <id>)."
         )
         return f"{head}\nids: {shown}{more}{tail}"
+
+    @mcp.tool()
+    def sanitize_corpus(
+        entity_type: str = "all",
+        dry_run: bool = True,
+        limit: int = 0,
+    ) -> str:
+        """Re-split entries that leaked a serialized-entry blob into a headline
+        column (issue #170, follow-on to #142), across knowledge, negative, and
+        error tables.
+
+        The same leak that put a whole XML-serialized entry in a knowledge
+        `summary` also crammed one into a NEGATIVE's `what_failed` and an ERROR's
+        `pattern` — real text, then a stray `</what_failed>`/`<parameter …>`/
+        `</invoke>` tail — shipping the entire body inline on every summary hit
+        (NEGATIVE/ERROR Why/Fix stay inline per #136) and defeating progressive
+        disclosure. Each cleaner keeps the clean prefix as the headline and
+        salvages the sibling fields from the serialized blocks into their proper
+        columns, only when those columns are empty.
+
+        entity_type: "all" (default), or one of knowledge, negative, error.
+        dry_run: True (default) only reports what WOULD change; False updates the
+            rows in place via the typed storage update methods. DB is
+            authoritative — writes go through the storage layer, never a file.
+        limit: cap the rows UPDATED PER TABLE on the apply path (0 = no cap); the
+            scan always counts the whole corpus. Run dry first, spot-check ids
+            with get_entry, then apply.
+        """
+        tracker.record_call("sanitize_corpus")
+        if entity_type == "all":
+            etypes = _SANITIZABLE
+        else:
+            try:
+                et = EntityType(entity_type)
+            except ValueError:
+                return (f"sanitize_corpus: unknown entity_type {entity_type!r}; "
+                        "use all, knowledge, negative, or error.")
+            if et not in _SANITIZABLE:
+                return f"sanitize_corpus: {entity_type!r} is not sanitizable."
+            etypes = (et,)
+
+        blocks = []
+        total_polluted = 0
+        for et in etypes:
+            res = _sanitize_table(storage, et, dry_run, limit)
+            total_polluted += len(res["polluted"])
+            blocks.append(_format_table_result(et.value, res, dry_run, et.value))
+        header = (
+            f"sanitize_corpus ({'dry run' if dry_run else 'applied'}): "
+            f"{total_polluted} polluted across {len(etypes)} table(s).\n"
+        )
+        return header + "\n\n".join(blocks)
+
+    @mcp.tool()
+    def sanitize_knowledge(dry_run: bool = True, limit: int = 0) -> str:
+        """Knowledge-only alias of sanitize_corpus (issue #142). Prefer
+        sanitize_corpus, which also sweeps the negative and error tables.
+
+        Re-splits knowledge summaries that leaked a serialized-entry blob into a
+        clean summary + detail. dry_run True (default) reports only; False writes
+        through update_knowledge. limit caps rows updated (0 = no cap)."""
+        tracker.record_call("sanitize_knowledge")
+        res = _sanitize_table(storage, EntityType.KNOWLEDGE, dry_run, limit)
+        return _format_table_result("knowledge", res, dry_run, "knowledge")
 
     @mcp.tool()
     def get_entry(

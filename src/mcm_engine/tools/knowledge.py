@@ -21,7 +21,7 @@ from ..backends import (
     parse_valid_until,
 )
 from ..refs import dump_refs, validate_refs
-from ..sanitize import clean_summary_detail
+from ..sanitize import clean_error, clean_negative, clean_summary_detail
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -184,6 +184,11 @@ def register_knowledge_tools(
         label. Carried, not interpreted."""
         tracker.record_call("add_negative", topic=category)
         tracker.record_store()
+        # #170 guard: a serialized-entry blob leaking into what_failed is split
+        # back into its proper columns at write time so it can never re-enter.
+        what_failed, why_failed, correct_approach, _ = clean_negative(
+            what_failed, why_failed, correct_approach
+        )
         storage.insert_negative(NegativeRow(
             id=0,
             category=category,
@@ -215,10 +220,18 @@ def register_knowledge_tools(
         tracker.record_call("report_error", topic=error_text[:50])
         tracker.record_store()
 
+        # #170 guard: split a serialized-entry blob leaking into the error
+        # pattern back into its proper columns at write time. Keep the original
+        # error_text for keyword extraction / coverage below.
+        pattern, ctx, root_cause, fix, _ = clean_error(
+            error_text, context or None, None, None
+        )
         storage.insert_error(ErrorRow(
             id=0,
-            pattern=error_text,
-            context=context or None,
+            pattern=pattern,
+            context=ctx,
+            root_cause=root_cause,
+            fix=fix,
             tags=tags or None,
             project=project or project_name,
             source_classification=source_classification or None,

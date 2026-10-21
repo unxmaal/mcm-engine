@@ -123,3 +123,103 @@ def clean_summary_detail(
             out_detail = salvaged or None
 
     return clean, out_detail, True
+
+
+# --- NEGATIVE / ERROR serialized-blob cleanup (issue #170) ------------------
+#
+# Same leak as #142, different shape. Where a knowledge summary got the whole
+# serialized entry, a NEGATIVE/ERROR had its entire serialized entry crammed
+# into the headline column (what_failed / pattern): the real text, then a
+# </what_failed> (or </error_text>) close, then <parameter name="X">…</parameter>
+# blocks for the sibling fields, trailing <parameter name="project">/<tags> and
+# </invoke>. clean_summary_detail is summary/detail-specific; these re-split the
+# multi-field shape back into its proper columns.
+
+# A serialized <parameter name="X">BODY — body runs to the next </parameter>,
+# the next <parameter>, a closing </invoke>, or end of string.
+_PARAM_RE = re.compile(
+    r'<parameter\s+name="([^"]+)">(.*?)(?=</parameter>|<parameter\b|</invoke>|\Z)',
+    re.IGNORECASE | re.DOTALL,
+)
+# Closing tags of a serialized field headline — the real column names plus the
+# serialized aliases actually seen (errors serialize their headline as
+# <error_text>).
+_HEADLINE_CLOSE_RE = re.compile(
+    r"</(?:what_failed|why_failed|correct_approach|pattern|context|"
+    r"root_cause|fix|error_text|summary|detail)\s*>",
+    re.IGNORECASE,
+)
+
+
+def _parse_params(text: str) -> dict[str, str]:
+    """Map {field_name: body} from serialized <parameter> blocks, tool-call
+    fragments stripped from each body. First occurrence wins."""
+    out: dict[str, str] = {}
+    for m in _PARAM_RE.finditer(text):
+        name = m.group(1).lower()
+        if name not in out:
+            out[name] = strip_tool_call_fragments(m.group(2).strip())
+    return out
+
+
+def _clean_headline(text: str) -> str:
+    """The clean headline value: everything before the earliest serialized
+    marker (a <parameter>/<invoke> fragment or a headline close tag)."""
+    cuts = [
+        m.start()
+        for m in (_TOOLCALL_RE.search(text), _HEADLINE_CLOSE_RE.search(text))
+        if m is not None
+    ]
+    cut = min(cuts) if cuts else len(text)
+    return text[:cut].rstrip()
+
+
+def _blob_polluted(text: str | None) -> bool:
+    """True if a headline column carries a leaked serialized blob / fragment."""
+    return bool(text) and (
+        _TOOLCALL_RE.search(text) is not None
+        or _HEADLINE_CLOSE_RE.search(text) is not None
+    )
+
+
+def clean_negative(
+    what_failed: str | None,
+    why_failed: str | None,
+    correct_approach: str | None,
+) -> tuple[str | None, str | None, str | None, bool]:
+    """Re-split a NEGATIVE whose serialized blob leaked into ``what_failed``.
+
+    Returns ``(what_failed, why_failed, correct_approach, changed)``. Keeps the
+    clean prefix as what_failed and salvages the sibling fields from the
+    serialized <parameter> blocks only when the real column is empty, so a
+    legitimately-populated column is never overwritten.
+    """
+    if not _blob_polluted(what_failed):
+        return what_failed, why_failed, correct_approach, False
+    params = _parse_params(what_failed)
+    clean_wf = _clean_headline(what_failed)
+    out_why = why_failed or params.get("why_failed") or None
+    out_fix = correct_approach or params.get("correct_approach") or None
+    return clean_wf, out_why, out_fix, True
+
+
+def clean_error(
+    pattern: str | None,
+    context: str | None,
+    root_cause: str | None,
+    fix: str | None,
+) -> tuple[str | None, str | None, str | None, str | None, bool]:
+    """Re-split an ERROR whose serialized blob leaked into ``pattern``.
+
+    Returns ``(pattern, context, root_cause, fix, changed)``. Same policy as
+    clean_negative: clean prefix stays as pattern, siblings salvaged only into
+    empty columns.
+    """
+    if not _blob_polluted(pattern):
+        return pattern, context, root_cause, fix, False
+    params = _parse_params(pattern)
+    clean_pat = _clean_headline(pattern)
+    out_ctx = context or params.get("context") or None
+    out_rc = root_cause or params.get("root_cause") or None
+    out_fix = fix or params.get("fix") or None
+    return clean_pat, out_ctx, out_rc, out_fix, True

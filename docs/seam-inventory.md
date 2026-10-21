@@ -425,9 +425,11 @@ method shapes (preliminary — Phase 0 will refine):
 
 **Negative knowledge:**
 - `insert_negative(NegativeRow) -> int`
+- `update_negative(id, **fields) -> None`  (#170 sanitize re-split)
 
 **Errors:**
 - `insert_error(ErrorRow) -> int`
+- `update_error(id, **fields) -> None`  (#170 sanitize re-split)
 
 **Rules:**
 - `find_rule_by_title(title) -> Row | None`
