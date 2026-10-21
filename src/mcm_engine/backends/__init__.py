@@ -839,6 +839,20 @@ class SearchBackend(Protocol):
         caller: Optional[str] = None,
     ) -> list[SearchHit]: ...
 
+    def search_entries(
+        self,
+        query: str,
+        *,
+        kinds: Optional[set[str]] = None,
+        limit: int = 10,
+        project: Optional[str] = None,
+        caller: Optional[str] = None,
+    ) -> list[SearchHit]:
+        """Unified-model search (issue #181): one query over the ``entries``
+        index, filtered to ``kinds`` (entry kind strings; None = all). Same
+        SearchHit shape and score contract as ``search``."""
+        ...
+
     def reindex(self, entity_type: Optional[EntityType] = None) -> None:
         """Rebuild the search index from the current StorageBackend
         state. Required when the durable store has changed outside the

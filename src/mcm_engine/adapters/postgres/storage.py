@@ -14,6 +14,7 @@ from datetime import timezone as _timezone
 from ...backends import Entry
 from ...entries import (
     arg_ids as _arg_ids,
+    facets_text as _facets_text,
     backfill as _backfill_entries,
     mirrored as _mirrored,
     needs_backfill as _needs_backfill,
@@ -606,10 +607,12 @@ _DDL_STATEMENTS: list[str] = [
         updated_at           TIMESTAMPTZ DEFAULT now(),
         source_classification TEXT,
         facets_json          TEXT,
+        facets_text          TEXT,
         tsv  tsvector GENERATED ALWAYS AS (
             setweight(to_tsvector('english', coalesce(title, '')),   'A') ||
             setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
             setweight(to_tsvector('english', coalesce(body, '')),    'C') ||
+            setweight(to_tsvector('english', coalesce(facets_text, '')), 'C') ||
             setweight(to_tsvector('english', coalesce(tags, '')),    'D')
         ) STORED,
         PRIMARY KEY (kind, id)
@@ -626,6 +629,27 @@ _DDL_STATEMENTS: list[str] = [
                    AND is_nullable = 'NO') THEN
             ALTER TABLE entries ALTER COLUMN created_at DROP NOT NULL;
             ALTER TABLE entries ALTER COLUMN updated_at DROP NOT NULL;
+        END IF;
+    END$$
+    """,
+    # #181: facets_text joins the unified index (why/fix, root cause, rule
+    # category, knowledge kind) so it covers what the legacy per-table indexes
+    # covered. A generated column cannot be altered in place: drop + re-add;
+    # the GIN index is recreated just below. Catalog read afterwards.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'entries' AND column_name = 'facets_text') THEN
+            ALTER TABLE entries ADD COLUMN facets_text TEXT;
+            ALTER TABLE entries DROP COLUMN tsv;
+            ALTER TABLE entries ADD COLUMN tsv tsvector GENERATED ALWAYS AS (
+                setweight(to_tsvector('english', coalesce(title, '')),   'A') ||
+                setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
+                setweight(to_tsvector('english', coalesce(body, '')),    'C') ||
+                setweight(to_tsvector('english', coalesce(facets_text, '')), 'C') ||
+                setweight(to_tsvector('english', coalesce(tags, '')),    'D')
+            ) STORED;
         END IF;
     END$$
     """,
@@ -687,7 +711,7 @@ _ENTRY_UPDATABLE = frozenset({
     "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
     "superseded_by", "valid_until", "hit_count", "last_hit_at",
     "reinforcement_count", "source_classification", "facets", "facets_json",
-    "created_at", "updated_at",
+    "created_at", "updated_at", "facets_text",
 })
 
 
@@ -974,10 +998,27 @@ class PostgresStorage:
         # Issue #179 expand step: populate entries from the legacy tables once,
         # verified row by row; a mismatch raises and the server refuses to
         # start (the legacy tables are untouched either way).
+        self._backfill_facets_text()
         if _needs_backfill(self):
             self.backfill_entries()
         else:
             _reconcile(self)
+
+    def _backfill_facets_text(self) -> None:
+        # #181: rows written before facets_text existed get the derived column once.
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT kind, id, subkind, facets_json FROM entries WHERE facets_text IS NULL")
+            rows = cur.fetchall()
+            for r in rows:
+                try:
+                    facets = _json.loads(r["facets_json"]) if r["facets_json"] else {}
+                except ValueError:
+                    facets = {}
+                cur.execute(
+                    "UPDATE entries SET facets_text = %s WHERE kind = %s AND id = %s",
+                    (_facets_text(r["subkind"], facets), r["kind"], r["id"]),
+                )
+        self._commit()
 
     def truncate_all(self) -> None:
         """Test-only convenience: wipe every owned table and reset
@@ -1184,14 +1225,15 @@ class PostgresStorage:
                 "INSERT INTO entries (kind, id, subkind, title, summary, body, tags, "
                 "project, pinned, status, superseded_by, valid_until, hit_count, "
                 "last_hit_at, reinforcement_count, created_at, updated_at, "
-                "source_classification, facets_json) VALUES "
+                "source_classification, facets_json, facets_text) VALUES "
                 "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s)" + conflict,
+                "%s, %s, %s, %s, %s)" + conflict,
                 (entry.kind, eid, entry.subkind, entry.title, entry.summary, entry.body,
                  entry.tags, entry.project, bool(entry.pinned), entry.status or "active",
                  entry.superseded_by, entry.valid_until, entry.hit_count or 0,
                  entry.last_hit_at, entry.reinforcement_count or 0, created, updated,
-                 entry.source_classification, _dump_facets(entry.facets)),
+                 entry.source_classification, _dump_facets(entry.facets),
+                 _facets_text(entry.subkind, entry.facets)),
             )
             inserted = cur.rowcount
         self._commit()
@@ -1203,6 +1245,13 @@ class PostgresStorage:
         bad = set(fields) - _ENTRY_UPDATABLE
         if bad:
             raise ValueError(f"unknown entry fields: {sorted(bad)}")
+        if "facets" in fields or "subkind" in fields:
+            cur = None
+            if "facets" not in fields or "subkind" not in fields:
+                cur = self.find_entry(kind, entry_id)
+            facets = fields["facets"] if "facets" in fields else (cur.facets if cur else {})
+            subkind = fields["subkind"] if "subkind" in fields else (cur.subkind if cur else None)
+            fields["facets_text"] = _facets_text(subkind, facets)
         if "facets" in fields:
             fields["facets_json"] = _dump_facets(fields.pop("facets"))
         stamp = "" if "updated_at" in fields else ", updated_at = now()"

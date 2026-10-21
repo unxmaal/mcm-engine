@@ -23,6 +23,7 @@ from ..hierarchy import KindLiteral, ScopeLiteral
 from ..db import log
 from ..destructive import archive_would_storm
 from ..files.watcher import compute_content_hash
+from ..policies import promote_body, read_entry
 from ..principal import resolve_actor
 from ..rules_links import build_wikilink_relations, extract_wikilinks
 from ..sanitize import scan_injection, strip_tool_call_fragments, wrap_untrusted
@@ -746,41 +747,16 @@ def register_rules_tools(
                 tracker,
             )
 
-        row = storage.find_by_id(etype, source_id)
-        if row is None:
+        e = read_entry(storage, etype, source_id)
+        if e is None:
             label = source_type.capitalize() if source_type != "negative" else "Negative knowledge"
             return _with_nudge(f"{label} entry {source_id} not found.", tracker)
 
-        if etype is EntityType.KNOWLEDGE:
-            content = row.summary
-            if row.detail:
-                content += f"\n\n{row.detail}"
-            if not keywords:
-                keywords = row.tags or row.topic
-        elif etype is EntityType.NEGATIVE:
-            content = f"**What failed:** {row.what_failed}"
-            if row.why_failed:
-                content += f"\n\n**Why:** {row.why_failed}"
-            if row.correct_approach:
-                content += f"\n\n## Fix\n\n{row.correct_approach}"
-            if not keywords:
-                keywords = row.category
-            if not category:
-                category = row.category
-        elif etype is EntityType.ERROR:
-            content = f"**Error:** {row.pattern}"
-            if row.context:
-                content += f"\n\n**Context:** {row.context}"
-            if row.root_cause:
-                content += f"\n\n**Root cause:** {row.root_cause}"
-            if row.fix:
-                content += f"\n\n## Fix\n\n{row.fix}"
-            if not keywords:
-                keywords = row.pattern[:100]
-        else:
-            return _with_nudge(
-                f"Cannot promote source_type '{source_type}' to a rule.", tracker,
-            )
+        content, default_keywords, default_category = promote_body(e)
+        if not keywords:
+            keywords = default_keywords
+        if not category and default_category:
+            category = default_category
 
         result = add_rule(
             title=title,

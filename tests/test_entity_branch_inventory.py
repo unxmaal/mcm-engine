@@ -30,17 +30,14 @@ POLICY_MODULES = frozenset({"policies.py"})
 
 # file -> (pinned count, classification note)
 EXPECTED_DISPATCH_SITES: dict[str, tuple[int, str]] = {
-    "tools/search.py":              (8, "incidental x4 formatter dispatch; essential x1 hit-count kinds; essential x3 rule-only related spreading"),
+    "tools/search.py":              (6, "legacy path: incidental x4 formatter dispatch; essential x2 rule-only related spreading (hit-count / spreading kinds moved to policies.py in #181)"),
     "adapters/sqlite/storage.py":   (8, "incidental: hydrate-by-type in list + find_by_id"),
     "adapters/postgres/storage.py": (8, "incidental: hydrate-by-type in list + find_by_id"),
-    "tools/relations.py":           (4, "incidental: label by type"),
-    "tools/rules.py":               (3, "incidental: promote_to_rule projection by type"),
     "testing/conformance.py":       (3, "test: hit.entity_type assertions"),
     "admin/service.py":             (2, "essential: rule-graph relation filter"),
     "corpus_snapshot.py":           (7, "incidental: #177 parse/project by type (sanctioned legacy-shape tool, retired with the legacy tables)"),
-    "tools/corpus.py":              (6, "incidental: #170 sanitize plan/apply by type (collapses into the unified text-field map)"),
 }
-EXPECTED_TOTAL = 49  # #180: migrate.py's copy-by-type collapsed into entries.insert_legacy
+EXPECTED_TOTAL = 34  # #180 migrate.py -> insert_legacy; #181 relations/rules/corpus -> policies.py + tables
 
 
 def _count(path: Path) -> int:

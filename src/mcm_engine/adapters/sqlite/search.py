@@ -22,6 +22,7 @@ from ...backends import (
     SearchHit,
 )
 from ...db import KnowledgeDB, build_fts_queries, build_like_patterns, sanitize_fts
+from ...entries import KINDS
 
 # Per-entity FTS table mapping. The adapter knows the SQLite-specific
 # FTS5 virtual-table layout; the abstract score (higher = better) lives
@@ -87,12 +88,76 @@ class SqliteSearch:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
+    def search_entries(
+        self,
+        query: str,
+        *,
+        kinds: Optional[set[str]] = None,
+        limit: int = 10,
+        project: Optional[str] = None,
+        caller: Optional[str] = None,
+    ) -> list[SearchHit]:
+        """Issue #181: one FTS5 query over entries_fts, kind-filtered."""
+        targets = sorted(kinds) if kinds else list(KINDS)
+        ph = ", ".join("?" * len(targets))
+        proj_clause = ""
+        proj_params: tuple = ()
+        if project is not None:
+            proj_clause = "AND (e.project = ? OR e.project IS NULL OR e.project = '')"
+            proj_params = (project,)
+        rows: list[sqlite3.Row] = []
+        for fts_q in build_fts_queries(query):
+            try:
+                rows = self._db.execute(
+                    "SELECT e.kind AS kind, e.id AS id, e.pinned AS pinned, rank AS fts_rank, "
+                    "snippet(entries_fts, -1, '', '', '…', 10) AS snip "
+                    "FROM entries_fts f JOIN entries e ON f.rowid = e.rowid "
+                    f"WHERE entries_fts MATCH ? AND e.kind IN ({ph}) {proj_clause} "
+                    "ORDER BY rank LIMIT ?",
+                    (fts_q, *targets, *proj_params, limit),
+                ).fetchall()
+                if rows:
+                    break
+            except sqlite3.OperationalError:
+                continue
+        like_patterns = build_like_patterns(query)
+        if not rows and like_patterns:
+            like_cols = ("title", "summary", "body", "tags", "facets_text")
+            clauses: list[str] = []
+            params: list[Any] = []
+            for pat in like_patterns:
+                clauses.append("(" + " OR ".join(f"e.{c} LIKE ?" for c in like_cols) + ")")
+                params.extend([pat] * len(like_cols))
+            rows = self._db.execute(
+                "SELECT e.kind AS kind, e.id AS id, e.pinned AS pinned, NULL AS fts_rank, "
+                f"NULL AS snip FROM entries e WHERE ({' OR '.join(clauses)}) "
+                f"AND e.kind IN ({ph}) {proj_clause} LIMIT ?",
+                (*params, *targets, *proj_params, limit),
+            ).fetchall()
+        hits: list[SearchHit] = []
+        for r in rows:
+            raw_rank = r["fts_rank"]
+            snip = r["snip"]
+            hits.append(SearchHit(
+                entity_type=EntityType(r["kind"]),
+                entity_id=r["id"],
+                score=(-float(raw_rank)) if raw_rank is not None else 0.5,
+                is_pinned=bool(r["pinned"]),
+                is_stale=False,
+                counters_snapshot={},
+                row=None,
+                snippet=(snip.strip() or None) if snip else None,
+            ))
+        return hits
+
     def reindex(self, entity_type: Optional[EntityType] = None) -> None:
         """Rebuild the FTS5 indexes from the content tables."""
         targets = {entity_type} if entity_type else set(EntityType)
         for et in targets:
             fts = _FTS[et]["fts_table"]
             self._db.execute_write(f"INSERT INTO {fts}({fts}) VALUES('rebuild')")
+        if entity_type is None:
+            self._db.execute_write("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
         self._db.commit()
 
     def search_plugin(

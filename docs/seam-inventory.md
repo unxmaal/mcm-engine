@@ -844,3 +844,32 @@ a store tampered with while the server was down is repaired at the next boot.
   connection; /v1/claims now borrows through `storage.transaction()`.
 - `migrate.py`: the copy-by-type chain became one `entries.insert_legacy`; the
   destination adapter's mirror fills its `entries` as a side effect.
+
+## Addendum — unified read path (issue #181, 4.0 program #176)
+
+`MCM_ENTRY_MODEL=legacy|unified` (default legacy) selects the read path at
+call time (`policies.entry_model`). `policies.py` is the only module that
+branches on kind; the unified search formatter (`_score_and_format_entry`)
+reads `entries` and consults it for visibility, rank terms and the hit text.
+
+- `schema.py`: 69 → 71. v18→v19 adds `entries.facets_text` (the facet fields
+  the legacy per-table indexes covered: negative why/fix, error context/root
+  cause/fix, rule category, knowledge kind), recreates `entries_fts` with a
+  `facets` column and rebuilds it (two `executescript` sites).
+- `adapters/sqlite/storage.py`: 85 → 87; `adapters/postgres/storage.py`:
+  86 → 88. `ensure_schema` fills `facets_text` once for rows written before
+  the column existed (SELECT + UPDATE). `insert_entry` / `update_entry`
+  derive it from `subkind` + `facets` on every write (existing sites).
+  Postgres: `facets_text` joins the `tsv` generated column via a guarded
+  drop/re-add DO block (DDL literal, no new site).
+- `adapters/sqlite/search.py`: 5 → 8. `search_entries` (FTS5 over
+  `entries_fts` + LIKE fallback, kind-filtered) and the `entries_fts` rebuild
+  in `reindex`.
+- `adapters/postgres/search.py`: 5 → 8. `search_entries` with the same
+  strict → natural → ILIKE ladder over `entries`; `reindex` covers
+  `idx_entries_tsv` through the existing loop.
+- `adapters/opensearch/search.py`: `search_entries` delegates to the
+  kind-filtered `search` (its indexes re-sync from storage per query).
+- `tools/search.py`, `tools/relations.py`, `tools/rules.py`,
+  `tools/corpus.py`: 0 SQL; dispatch moved to `policies.py` or to tables
+  (branch inventory 49 → 34).

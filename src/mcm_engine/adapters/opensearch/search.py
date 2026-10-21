@@ -206,6 +206,20 @@ class OpenSearchSearch:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
+    def search_entries(
+        self,
+        query: str,
+        *,
+        kinds: Optional[set[str]] = None,
+        limit: int = 10,
+        project: Optional[str] = None,
+        caller: Optional[str] = None,
+    ) -> list[SearchHit]:
+        """Issue #181: the per-kind indexes are re-synced from storage on
+        every search, so the unified query is the kind-filtered search."""
+        targets = {EntityType(k) for k in kinds} if kinds else None
+        return self.search(query, entity_types=targets, limit=limit, project=project)
+
     def search_plugin(
         self,
         scope: Any,

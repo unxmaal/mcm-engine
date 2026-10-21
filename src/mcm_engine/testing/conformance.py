@@ -666,6 +666,25 @@ class SearchConformance:
 # ---------------------------------------------------------------------------
 
 
+    def test_search_entries_covers_facet_text_by_kind(self, storage, search):
+        # #181: the unified index must cover what the legacy per-table indexes
+        # covered (negative why, error root cause, rule category, knowledge kind).
+        n = storage.insert_negative(NegativeRow(id=0, category="c", what_failed="w",
+                                                why_failed="quokka in the why"))
+        e = storage.insert_error(ErrorRow(id=0, pattern="p", root_cause="wombat root"))
+        r = storage.insert_rule(RuleRow(id=0, title="t", keywords="k", content="b",
+                                        category="numbat"))
+        k = storage.insert_knowledge(KnowledgeRow(id=0, topic="platypus topic", summary="s",
+                                                  kind="finding"))
+        def ids(hits):
+            return [(h.entity_type, h.entity_id) for h in hits]
+        assert ids(search.search_entries("quokka", kinds={"negative"})) == [(EntityType.NEGATIVE, n)]
+        assert ids(search.search_entries("wombat")) == [(EntityType.ERROR, e)]
+        assert ids(search.search_entries("numbat", kinds={"rule"})) == [(EntityType.RULE, r)]
+        assert ids(search.search_entries("platypus", kinds={"knowledge"})) == [(EntityType.KNOWLEDGE, k)]
+        assert search.search_entries("platypus", kinds={"rule"}) == []
+
+
 class SessionConformance:
     """Conformance for any SessionStore implementation.
 

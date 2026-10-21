@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from typing import Callable
 
 from mcp.server.fastmcp import FastMCP
 
@@ -135,41 +136,34 @@ _SANITIZABLE: tuple[EntityType, ...] = (
 )
 
 
+# Per-kind cleaner (issue #170): the fields it reads and rewrites, in order,
+# and the function. Keys are disjoint, so this is a projection, not a policy.
+_SANITIZERS: dict[EntityType, tuple[tuple[str, ...], Callable]] = {
+    EntityType.KNOWLEDGE: (("summary", "detail"), clean_summary_detail),
+    EntityType.NEGATIVE: (("what_failed", "why_failed", "correct_approach"), clean_negative),
+    EntityType.ERROR: (("pattern", "context", "root_cause", "fix"), clean_error),
+}
+_UPDATERS: dict[EntityType, str] = {
+    EntityType.KNOWLEDGE: "update_knowledge",
+    EntityType.NEGATIVE: "update_negative",
+    EntityType.ERROR: "update_error",
+}
+
+
 def _sanitize_plan(etype: EntityType, row) -> dict | None:
     """Return the field updates needed to de-pollute ``row`` (issue #170,
-    follow-on to #142), or None when the row is already clean. Each entity type
-    leaked a serialized blob into a different headline column; the matching
-    cleaner re-splits it into the proper columns."""
-    if etype is EntityType.KNOWLEDGE:
-        summary, detail, changed = clean_summary_detail(
-            row.summary, getattr(row, "detail", None)
-        )
-        return {"summary": summary, "detail": detail} if changed else None
-    if etype is EntityType.NEGATIVE:
-        wf, why, fix, changed = clean_negative(
-            row.what_failed, getattr(row, "why_failed", None),
-            getattr(row, "correct_approach", None),
-        )
-        return ({"what_failed": wf, "why_failed": why, "correct_approach": fix}
-                if changed else None)
-    if etype is EntityType.ERROR:
-        pat, ctx, rc, fix, changed = clean_error(
-            row.pattern, getattr(row, "context", None),
-            getattr(row, "root_cause", None), getattr(row, "fix", None),
-        )
-        return ({"pattern": pat, "context": ctx, "root_cause": rc, "fix": fix}
-                if changed else None)
-    return None
+    follow-on to #142), or None when the row is already clean."""
+    spec = _SANITIZERS.get(etype)
+    if spec is None:
+        return None
+    fields, cleaner = spec
+    *values, changed = cleaner(*(getattr(row, f, None) for f in fields))
+    return dict(zip(fields, values)) if changed else None
 
 
 def _apply_sanitize(storage, etype: EntityType, entry_id: int, fields: dict) -> None:
     """Write the de-polluted fields back through the typed update method."""
-    if etype is EntityType.KNOWLEDGE:
-        storage.update_knowledge(entry_id, **fields)
-    elif etype is EntityType.NEGATIVE:
-        storage.update_negative(entry_id, **fields)
-    elif etype is EntityType.ERROR:
-        storage.update_error(entry_id, **fields)
+    getattr(storage, _UPDATERS[etype])(entry_id, **fields)
 
 
 def _sanitize_table(storage, etype: EntityType, dry_run: bool, limit: int) -> dict:

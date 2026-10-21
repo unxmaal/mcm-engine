@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 18
+CORE_VERSION = 19
 
 # Unified entries (issue #179, 4.0 program #176): additive expand-step tables
 # beside the four legacy tables. One row per (kind, id); facets_json carries
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS entries (
     updated_at TEXT DEFAULT (datetime('now')),
     source_classification TEXT,
     facets_json TEXT,
+    facets_text TEXT,
     PRIMARY KEY (kind, id)
 );
 
@@ -39,27 +40,27 @@ CREATE TABLE IF NOT EXISTS entry_ids (
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-    kind UNINDEXED, title, summary, body, tags,
+    kind UNINDEXED, title, summary, body, tags, facets_text,
     content='entries',
     content_rowid='rowid',
     tokenize='porter unicode61'
 );
 
 CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-    INSERT INTO entries_fts(rowid, kind, title, summary, body, tags)
-    VALUES (new.rowid, new.kind, new.title, new.summary, new.body, new.tags);
+    INSERT INTO entries_fts(rowid, kind, title, summary, body, tags, facets_text)
+    VALUES (new.rowid, new.kind, new.title, new.summary, new.body, new.tags, new.facets_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-    INSERT INTO entries_fts(entries_fts, rowid, kind, title, summary, body, tags)
-    VALUES ('delete', old.rowid, old.kind, old.title, old.summary, old.body, old.tags);
+    INSERT INTO entries_fts(entries_fts, rowid, kind, title, summary, body, tags, facets_text)
+    VALUES ('delete', old.rowid, old.kind, old.title, old.summary, old.body, old.tags, old.facets_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
-    INSERT INTO entries_fts(entries_fts, rowid, kind, title, summary, body, tags)
-    VALUES ('delete', old.rowid, old.kind, old.title, old.summary, old.body, old.tags);
-    INSERT INTO entries_fts(rowid, kind, title, summary, body, tags)
-    VALUES (new.rowid, new.kind, new.title, new.summary, new.body, new.tags);
+    INSERT INTO entries_fts(entries_fts, rowid, kind, title, summary, body, tags, facets_text)
+    VALUES ('delete', old.rowid, old.kind, old.title, old.summary, old.body, old.tags, old.facets_text);
+    INSERT INTO entries_fts(rowid, kind, title, summary, body, tags, facets_text)
+    VALUES (new.rowid, new.kind, new.title, new.summary, new.body, new.tags, new.facets_text);
 END;
 """
 
@@ -838,6 +839,25 @@ def _migrate_v17_to_v18(db: KnowledgeDB) -> None:
     log("Migration v17->v18: created entries, entry_ids, entries_fts")
 
 
+def _migrate_v18_to_v19(db: KnowledgeDB) -> None:
+    """v18 -> v19: entries.facets_text (issue #181) so the unified index covers
+    the facet fields the legacy per-table indexes covered. The FTS table and
+    its triggers are recreated with the extra column and rebuilt; the adapter
+    fills facets_text for existing rows at ensure_schema."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(entries)").fetchall()}
+    add = "ALTER TABLE entries ADD COLUMN facets_text TEXT;" if "facets_text" not in cols else ""
+    db.executescript(f"""
+        {add}
+        DROP TRIGGER IF EXISTS entries_ai;
+        DROP TRIGGER IF EXISTS entries_ad;
+        DROP TRIGGER IF EXISTS entries_au;
+        DROP TABLE IF EXISTS entries_fts;
+    """)
+    db.executescript(ENTRIES_SCHEMA + "INSERT INTO entries_fts(entries_fts) VALUES('rebuild');")
+    db.commit()
+    log("Migration v18->v19: entries.facets_text + entries_fts rebuilt")
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -857,6 +877,7 @@ _MIGRATIONS = [
     (15, 16, _migrate_v15_to_v16),
     (16, 17, _migrate_v16_to_v17),
     (17, 18, _migrate_v17_to_v18),
+    (18, 19, _migrate_v18_to_v19),
 ]
 
 
