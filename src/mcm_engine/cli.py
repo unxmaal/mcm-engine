@@ -337,6 +337,37 @@ def cmd_post_tool_use_failure(args):
     sys.exit(ptuf_main())
 
 
+def cmd_corpus_snapshot(args):
+    """Snapshot the live corpus through MCP scroll_entries into a local SQLite
+    (issue #177). Endpoint from MCM_MCP_URL / .mcp.json, like the hooks."""
+    import json as _json
+    from pathlib import Path as _Path
+    from .corpus_snapshot import snapshot
+    from .hooks.mcp_enforcement import _mcp_http_endpoint, mcp_http_call_tool
+
+    url, headers = _mcp_http_endpoint(_Path.cwd())
+    if not url:
+        print(_json.dumps({"error": "no MCP HTTP endpoint (set MCM_MCP_URL or .mcp.json)"}))
+        sys.exit(2)
+
+    def call(name, arguments):
+        return mcp_http_call_tool(url, name, arguments, headers=headers,
+                                  timeout=args.timeout)
+
+    report = snapshot(call, args.out, page=args.page)
+    print(_json.dumps({"out": args.out, "url": url, **report.as_dict()}, indent=2))
+
+
+def cmd_corpus_census(args):
+    """Census a corpus SQLite (issue #177): what the tables actually hold."""
+    from .adapters.sqlite.storage import SqliteStorage
+    from .corpus_snapshot import census, format_census
+
+    storage = SqliteStorage(db_path=args.db)
+    storage.ensure_schema()
+    print(format_census(census(storage)))
+
+
 def cmd_replay_eval(args):
     """Replay Claude Code transcripts through candidate retrieval-trigger
     policies and print a weighted FN/FP report (issue #160)."""
@@ -1240,6 +1271,28 @@ def main():
                            help="Extra FN weight when the miss preceded a failure "
                                 "(default 2.0).")
     re_parser.set_defaults(func=cmd_replay_eval)
+
+    # corpus-snapshot / corpus-census (4.0 program, #177)
+    cs_parser = subparsers.add_parser(
+        "corpus-snapshot",
+        help="Walk every entity type through the MCP scroll_entries tool over "
+             "HTTP and write the rows into a local SQLite (core schema, ids "
+             "preserved) for census and migration rehearsal.",
+    )
+    cs_parser.add_argument("--out", required=True, help="SQLite path to create.")
+    cs_parser.add_argument("--page", type=int, default=100,
+                           help="scroll_entries page size (default 100).")
+    cs_parser.add_argument("--timeout", type=float, default=30.0,
+                           help="Per-call HTTP timeout seconds (default 30).")
+    cs_parser.set_defaults(func=cmd_corpus_snapshot)
+
+    cc_parser = subparsers.add_parser(
+        "corpus-census",
+        help="Per-table/column null rates, length percentiles, pollution rate "
+             "and lossless-fit check over a corpus SQLite (JSON report).",
+    )
+    cc_parser.add_argument("db", help="SQLite path (from corpus-snapshot or a dev store).")
+    cc_parser.set_defaults(func=cmd_corpus_census)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(
