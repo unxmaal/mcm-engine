@@ -34,14 +34,13 @@ EXPECTED_DISPATCH_SITES: dict[str, tuple[int, str]] = {
     "adapters/sqlite/storage.py":   (8, "incidental: hydrate-by-type in list + find_by_id"),
     "adapters/postgres/storage.py": (8, "incidental: hydrate-by-type in list + find_by_id"),
     "tools/relations.py":           (4, "incidental: label by type"),
-    "migrate.py":                   (4, "incidental: copy-by-type insert"),
     "tools/rules.py":               (3, "incidental: promote_to_rule projection by type"),
     "testing/conformance.py":       (3, "test: hit.entity_type assertions"),
     "admin/service.py":             (2, "essential: rule-graph relation filter"),
     "corpus_snapshot.py":           (7, "incidental: #177 parse/project by type (sanctioned legacy-shape tool, retired with the legacy tables)"),
     "tools/corpus.py":              (6, "incidental: #170 sanitize plan/apply by type (collapses into the unified text-field map)"),
 }
-EXPECTED_TOTAL = 53
+EXPECTED_TOTAL = 49  # #180: migrate.py's copy-by-type collapsed into entries.insert_legacy
 
 
 def _count(path: Path) -> int:

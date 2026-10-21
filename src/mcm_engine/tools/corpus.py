@@ -431,6 +431,13 @@ def register_corpus_tools(
                     else:
                         cur.execute(f"DELETE FROM {table} WHERE id = %s", (entry_id,))
                         verb = "Hard-deleted"
+                # #180 mirror: the raw writes above bypass the adapter's own
+                # mirror, so re-project (rule) or drop (others) the entries row.
+                from ..entries import mirror_entry
+                if etype == "rule":
+                    mirror_entry(storage, EntityType.RULE, entry_id)
+                else:
+                    storage.delete_entry(etype, entry_id)
         except Exception as e:
             return _with_nudge(
                 f"recall_entry failed: {type(e).__name__}: {e}", tracker,

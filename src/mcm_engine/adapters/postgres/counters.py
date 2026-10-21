@@ -106,6 +106,22 @@ class PostgresCounters:
                     f"UPDATE {table} SET {col} = {col} + %s WHERE id = %s",
                     (by, entity_id),
                 )
+            # #180 dual-write: copy the legacy value through to entries in the
+            # same transaction.
+            if col in ("correct_count", "incorrect_count"):
+                cur.execute(
+                    "UPDATE entries e SET facets_json = jsonb_set("
+                    "COALESCE(e.facets_json, '{}')::jsonb, %s, "
+                    f"to_jsonb(t.{col}))::text FROM {table} t "
+                    "WHERE t.id = %s AND e.kind = %s AND e.id = t.id",
+                    ([col], entity_id, entity_type.value),
+                )
+            else:
+                cur.execute(
+                    f"UPDATE entries e SET {col} = t.{col} FROM {table} t "
+                    "WHERE t.id = %s AND e.kind = %s AND e.id = t.id",
+                    (entity_id, entity_type.value),
+                )
         self._conn.commit()
 
     def get(self, entity_type: EntityType, entity_id: int) -> dict[str, Any]:

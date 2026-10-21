@@ -20,7 +20,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .backends import EntityType, StorageBackend
+from .entries import insert_legacy
 
+_REPORT_FIELD: dict[str, str] = {
+    "knowledge": "knowledge", "negative": "negative", "error": "errors", "rule": "rules",
+}
 
 _ENTITY_ORDER: tuple[EntityType, ...] = (
     # Order matters when foreign keys are enforced — independent tables
@@ -117,21 +121,13 @@ def migrate(
 
     report = MigrationReport()
 
-    # Entity-typed rows (the four pin-able tables).
+    # Entity-typed rows (the four pin-able tables). The adapter's dual-write
+    # mirror (#180) populates the destination's `entries` as a side effect.
     for et in _ENTITY_ORDER:
+        field = _REPORT_FIELD[et.value]
         for row in source.iter_entries(et):
-            if et is EntityType.KNOWLEDGE:
-                dest.insert_knowledge(row)
-                report.knowledge += 1
-            elif et is EntityType.NEGATIVE:
-                dest.insert_negative(row)
-                report.negative += 1
-            elif et is EntityType.ERROR:
-                dest.insert_error(row)
-                report.errors += 1
-            elif et is EntityType.RULE:
-                dest.insert_rule(row)
-                report.rules += 1
+            insert_legacy(dest, et, row)
+            setattr(report, field, getattr(report, field) + 1)
 
     # Sessions before snapshots (FK).
     for row in source.iter_sessions():

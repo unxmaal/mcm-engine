@@ -823,3 +823,24 @@ low-volume table; a scan under a single-row LIMIT is cheap).
   guarded `DO $$ ... $$` ALTER block for existing deployments — DDL string
   literals, no new `.execute` site.
 - `tools/session.py`: unchanged (0 SQL). Stamps/reads via the storage methods.
+
+## Addendum — dual-write mirror (issue #180, 4.0 program #176)
+
+Every legacy mutation now re-projects the touched rows into `entries` inside
+the same transaction. The mirror is `entries.mirror_entry` (re-read the legacy
+row via `find_by_id`, then `insert_entry` / `update_entry` / `delete_entry`),
+applied by the `entries.mirrored` decorator on the 17 mutation methods of each
+storage adapter. It is method composition, so the adapters gain no new SQL
+sites. `ensure_schema` runs `entries.reconcile` after the one-time backfill, so
+a store tampered with while the server was down is repaired at the next boot.
+
+- `adapters/sqlite/counters.py`: 4 → 6. `increment` copies the legacy value
+  through to `entries` (one `json_set` branch for the rule outcome counts that
+  live in `facets_json`, one column branch for the rest).
+- `adapters/postgres/counters.py`: 5 → 7. Same two branches (`jsonb_set`).
+- `tools/knowledge.py` (kb_recall), `tools/corpus.py` (recall_entry),
+  `transport.py` (/v1/claims): unchanged counts. The raw writes gain an
+  adjacent mirror call (`delete_entry` / `mirror_entry`) on the same borrowed
+  connection; /v1/claims now borrows through `storage.transaction()`.
+- `migrate.py`: the copy-by-type chain became one `entries.insert_legacy`; the
+  destination adapter's mirror fills its `entries` as a side effect.

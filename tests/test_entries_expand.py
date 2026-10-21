@@ -75,11 +75,15 @@ def store(tmp_path):
 
 
 def _seed_legacy(s: SqliteStorage) -> None:
+    """Legacy rows with no entries mirror: what a pre-4.0 store looks like.
+    The dual-write (#180) mirrors every insert, so the mirror is stripped."""
     s.insert_knowledge(KnowledgeRow(id=0, topic="t1", summary="s1", detail="d1", tags="x"))
     s.insert_knowledge(KnowledgeRow(id=0, topic="t2", summary="s2"))
     s.insert_negative(NegativeRow(id=0, category="c", what_failed="w", why_failed="y"))
     s.insert_error(ErrorRow(id=0, pattern="p", context="c"))
     s.insert_rule(RuleRow(id=0, title="r", keywords="k", content="body", description="d"))
+    for e in list(s.iter_entries_unified()):
+        s.delete_entry(e.kind, e.id)
 
 
 def test_fresh_store_has_entries_schema_and_nothing_to_backfill(store):
@@ -110,7 +114,6 @@ def test_ensure_schema_runs_the_backfill_on_an_existing_store(tmp_path):
     s = SqliteStorage(db_path=str(tmp_path / "k.db"))
     s.ensure_schema()
     _seed_legacy(s)
-    s.delete_entry("knowledge", 1)  # no-op: nothing unified yet
     assert needs_backfill(s)
     s2 = SqliteStorage(db_path=str(tmp_path / "k.db"))
     s2.ensure_schema()  # boots like the server: backfill + verify

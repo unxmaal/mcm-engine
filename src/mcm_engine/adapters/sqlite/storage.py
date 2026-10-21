@@ -10,7 +10,14 @@ import json as _json
 from datetime import timezone as _timezone
 
 from ...backends import Entry
-from ...entries import backfill as _backfill_entries, needs_backfill as _needs_backfill
+from ...entries import (
+    arg_ids as _arg_ids,
+    backfill as _backfill_entries,
+    mirrored as _mirrored,
+    needs_backfill as _needs_backfill,
+    reconcile as _reconcile,
+    returned_id as _returned_id,
+)
 
 import sqlite3
 from contextlib import contextmanager
@@ -64,6 +71,7 @@ _ENTRY_UPDATABLE = frozenset({
     "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
     "superseded_by", "valid_until", "hit_count", "last_hit_at",
     "reinforcement_count", "source_classification", "facets", "facets_json",
+    "created_at", "updated_at",
 })
 
 
@@ -307,6 +315,8 @@ class SqliteStorage:
         # verified row by row; a mismatch raises (legacy tables untouched).
         if _needs_backfill(self):
             self.backfill_entries()
+        else:
+            _reconcile(self)
 
     # ---- Transactions ----
 
@@ -377,6 +387,7 @@ class SqliteStorage:
         ).fetchall()
         return [_knowledge_from_row(r) for r in rows]
 
+    @_mirrored(EntityType.KNOWLEDGE, _returned_id)
     def insert_knowledge(self, row: KnowledgeRow) -> int:
         # valid_until is a TEXT column; bind ISO text (never a datetime object —
         # sqlite3's datetime adapter is deprecated in 3.12).
@@ -402,6 +413,7 @@ class SqliteStorage:
         self._db.commit()
         return cur.lastrowid
 
+    @_mirrored(EntityType.KNOWLEDGE, _arg_ids("knowledge_id"))
     def update_knowledge(self, knowledge_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -422,6 +434,7 @@ class SqliteStorage:
         )
         self._db.commit()
 
+    @_mirrored(EntityType.KNOWLEDGE, _arg_ids("old_id", "new_id"))
     def supersede_knowledge(self, old_id: int, new_id: int) -> None:
         """Soft-expire a knowledge finding (issue #111): mark superseded and
         point at its replacement, rather than deleting. It drops out of default
@@ -433,6 +446,7 @@ class SqliteStorage:
         )
         self._db.commit()
 
+    @_mirrored(EntityType.KNOWLEDGE, _arg_ids("knowledge_id"))
     def unsupersede_knowledge(self, knowledge_id: int) -> None:
         """Clear a knowledge finding's superseded state (issue #111): status
         back to active, superseded_by cleared. The inverse of
@@ -446,6 +460,7 @@ class SqliteStorage:
 
     # ---- Negative ----
 
+    @_mirrored(EntityType.NEGATIVE, _returned_id)
     def insert_negative(self, row: NegativeRow) -> int:
         if row.id:
             cur = self._db.execute_write(
@@ -468,6 +483,7 @@ class SqliteStorage:
         self._db.commit()
         return cur.lastrowid
 
+    @_mirrored(EntityType.NEGATIVE, _arg_ids("negative_id"))
     def update_negative(self, negative_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -485,6 +501,7 @@ class SqliteStorage:
 
     # ---- Errors ----
 
+    @_mirrored(EntityType.ERROR, _returned_id)
     def insert_error(self, row: ErrorRow) -> int:
         if row.id:
             cur = self._db.execute_write(
@@ -503,6 +520,7 @@ class SqliteStorage:
         self._db.commit()
         return cur.lastrowid
 
+    @_mirrored(EntityType.ERROR, _arg_ids("error_id"))
     def update_error(self, error_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -551,13 +569,14 @@ class SqliteStorage:
             raise ValueError(f"unknown entry fields: {sorted(bad)}")
         if "facets" in fields:
             fields["facets_json"] = _dump_facets(fields.pop("facets"))
+        stamp = "" if "updated_at" in fields else ", updated_at = datetime('now')"
         cols = ", ".join(f"{k} = ?" for k in fields)
         values = tuple(
             (1 if v else 0) if k == "pinned" else _iso(v) if isinstance(v, datetime) else v
             for k, v in fields.items()
         ) + (kind, entry_id)
         self._db.execute_write(
-            f"UPDATE entries SET {cols}, updated_at = datetime('now') "
+            f"UPDATE entries SET {cols}{stamp} "
             f"WHERE kind = ? AND id = ?", values,
         )
         self._db.commit()
@@ -673,6 +692,7 @@ class SqliteStorage:
         ).fetchone()
         return _rule_from_row(r) if r else None
 
+    @_mirrored(EntityType.RULE, _returned_id)
     def insert_rule(self, row: RuleRow) -> int:
         if row.id:
             cur = self._db.execute_write(
@@ -697,6 +717,7 @@ class SqliteStorage:
         self._db.commit()
         return cur.lastrowid
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def update_rule(self, rule_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -746,6 +767,7 @@ class SqliteStorage:
         rows = self._db.execute(sql, tuple(params)).fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def set_rule_metadata(
         self, rule_id: int, *,
         importance: Optional[int] = None,
@@ -792,6 +814,7 @@ class SqliteStorage:
         ).fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def soft_delete_rule(self, rule_id: int) -> None:
         self._db.execute_write(
             "UPDATE rules SET archived = 1, archived_at = datetime('now'), "
@@ -800,6 +823,7 @@ class SqliteStorage:
         )
         self._db.commit()
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def restore_rule(self, rule_id: int) -> None:
         self._db.execute_write(
             "UPDATE rules SET archived = 0, archived_at = NULL, "
@@ -808,6 +832,7 @@ class SqliteStorage:
         )
         self._db.commit()
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def record_outcome(
         self, rule_id: int, actor: str, passed: bool, *, count: bool = True
     ) -> None:
@@ -862,6 +887,7 @@ class SqliteStorage:
         ).fetchall()
         return [(r["actor"], bool(r["passed"])) for r in rows]
 
+    @_mirrored(EntityType.RULE, _arg_ids("old_id", "new_id"))
     def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
         """Soft-supersede a rule (issue #21): mark superseded rather than
         deleting, so it drops out of default retrieval but stays inspectable."""
@@ -877,6 +903,7 @@ class SqliteStorage:
                 (old_id, "superseded", actor or "nobody", f"superseded_by:{new_id}"),
             )
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def unsupersede_rule(self, rule_id: int, actor: str) -> None:
         """Clear a rule's superseded state (issue #100): status back to active,
         superseded_by/valid_until cleared, emit an audited event. Atomic."""
@@ -1146,6 +1173,7 @@ class SqliteStorage:
 
     # ---- Cross-entity (enum-driven) ----
 
+    @_mirrored(None, _arg_ids("entity_id"))
     def set_pinned(self, entity_type: EntityType, entity_id: int, value: bool) -> None:
         table = _ENTITY_TABLE[entity_type]
         self._db.execute_write(
