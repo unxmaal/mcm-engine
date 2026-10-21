@@ -67,6 +67,29 @@ DetailLevel = Literal["summary", "full"]
 # match. Length-capped so it never re-introduces the #119 body-token cost.
 _SNIPPET_MAX = max(0, int(os.environ.get("MCM_SNIPPET_MAX", "160")))
 
+# Issue #171: in summary mode the inline NEGATIVE Why/Fix and ERROR
+# root_cause/fix (kept inline since #136) are the remaining body-token sink —
+# several paragraphs each. Cap each field to a few hundred chars with a
+# get_entry pointer; detail="full" stays uncapped. 0 disables the cap.
+_INLINE_FIELD_MAX = max(0, int(os.environ.get("MCM_INLINE_FIELD_MAX", "320")))
+
+# Issue #171: NEGATIVE/ERROR hits inline their body even in summary mode, so a
+# generic single-token match crowds the response with costly hits (a KNOWLEDGE/
+# RULE summary line is one cheap line; a NEGATIVE/ERROR is a capped paragraph).
+# Bound how many of each surface in the multi-scope "all" summary path. The
+# per-scope `limit` still governs scoped (scope="negative") and detail="full"
+# queries. 0 disables (fall back to `limit`).
+_NEG_ERR_SUMMARY_CAP = max(0, int(os.environ.get("MCM_NEG_ERR_SUMMARY_CAP", "3")))
+
+
+def _cap_inline_field(text: str, detail: DetailLevel, entity: str, eid: int) -> str:
+    """Truncate an inline NEGATIVE/ERROR body field in summary mode, with a
+    get_entry pointer, so the asymmetric #136 inline never re-introduces the
+    #119 body-token cost. detail="full" and a disabled cap pass through."""
+    if detail != "summary" or _INLINE_FIELD_MAX <= 0 or len(text) <= _INLINE_FIELD_MAX:
+        return text
+    return text[:_INLINE_FIELD_MAX].rstrip() + f"… (get_entry('{entity}', {eid}) for full)"
+
 
 def _format_snippet(snippet: str | None) -> str:
     """Render a capped, single-line match snippet, or '' when there is none or
@@ -293,13 +316,13 @@ def _score_and_format_negative(
     entry = f"[NEGATIVE #{row.id}]{pinned} {row.category}: {row.what_failed}"
     # Issue #136: a NEGATIVE's Why/Fix IS its payload and the failure mode is
     # asymmetric — hiding it lets an agent re-attempt the rejected approach, the
-    # exact thing this store exists to prevent. Unlike a knowledge body (the
-    # large, deferred #119 token sink), these fields are short, so keep them
-    # inline even in summary mode.
+    # exact thing this store exists to prevent. Keep it inline even in summary,
+    # but cap each field (issue #171) so a paragraph-long body no longer ships
+    # whole on every hit.
     if row.why_failed:
-        entry += f"\n  Why: {row.why_failed}"
+        entry += f"\n  Why: {_cap_inline_field(row.why_failed, detail, 'negative', row.id)}"
     if row.correct_approach:
-        entry += f"\n  Fix: {row.correct_approach}"
+        entry += f"\n  Fix: {_cap_inline_field(row.correct_approach, detail, 'negative', row.id)}"
     return composite, entry
 
 
@@ -319,12 +342,11 @@ def _score_and_format_error(
     pinned = _pinned_tag(hit.is_pinned)
     entry = f"[ERROR #{row.id}]{pinned} {row.pattern}"
     # Issue #136: same asymmetry as NEGATIVE — a known error's root cause + fix
-    # are the signal and are short, so hand them back inline even in summary so
-    # a recurrence gets its remedy without a second fetch.
+    # are the signal, so hand them back inline even in summary; capped per #171.
     if row.root_cause:
-        entry += f"\n  Root cause: {row.root_cause}"
+        entry += f"\n  Root cause: {_cap_inline_field(row.root_cause, detail, 'error', row.id)}"
     if row.fix:
-        entry += f"\n  Fix: {row.fix}"
+        entry += f"\n  Fix: {_cap_inline_field(row.fix, detail, 'error', row.id)}"
     return composite, entry
 
 
@@ -463,6 +485,16 @@ def _search_all_scopes(
     # to disable).
     gate = min_rank if min_rank > 0 else 0.0
 
+    # Issue #171: NEGATIVE/ERROR inline their (capped) body even in summary, so
+    # bound how many surface in the multi-scope "all" summary path — the top few
+    # by rank are what a recurrence needs; a generic single-token match should
+    # not crowd out cheap KNOWLEDGE/RULE one-liners. Scoped queries
+    # (scope="negative") and detail="full" keep the caller's `limit`.
+    multi_scope = len(entity_types) > 1
+    neg_err_limit = limit
+    if detail == "summary" and multi_scope and _NEG_ERR_SUMMARY_CAP > 0:
+        neg_err_limit = min(limit, _NEG_ERR_SUMMARY_CAP)
+
     if EntityType.KNOWLEDGE in entity_types:
         results.extend(_scope_block(
             EntityType.KNOWLEDGE, search_backend, storage, counters,
@@ -474,14 +506,14 @@ def _search_all_scopes(
     if EntityType.NEGATIVE in entity_types:
         results.extend(_scope_block(
             EntityType.NEGATIVE, search_backend, storage, counters,
-            query=query, limit=limit, project=project,
+            query=query, limit=neg_err_limit, project=project,
             min_rank=gate, bump_counters=False, detail=detail, ids_out=ids_out,
         ))
 
     if EntityType.ERROR in entity_types:
         results.extend(_scope_block(
             EntityType.ERROR, search_backend, storage, counters,
-            query=query, limit=limit, project=project,
+            query=query, limit=neg_err_limit, project=project,
             min_rank=gate, bump_counters=False, detail=detail, ids_out=ids_out,
         ))
 

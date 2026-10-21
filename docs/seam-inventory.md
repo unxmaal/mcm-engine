@@ -425,9 +425,11 @@ method shapes (preliminary — Phase 0 will refine):
 
 **Negative knowledge:**
 - `insert_negative(NegativeRow) -> int`
+- `update_negative(id, **fields) -> None`  (#170 sanitize re-split)
 
 **Errors:**
 - `insert_error(ErrorRow) -> int`
+- `update_error(id, **fields) -> None`  (#170 sanitize re-split)
 
 **Unified entries (#179, 4.0 expand step; both adapters):**
 - `insert_entry(Entry, if_absent=False) -> int | None`

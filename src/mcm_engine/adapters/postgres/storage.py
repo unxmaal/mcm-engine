@@ -1096,6 +1096,22 @@ class PostgresStorage:
         self._commit()
         return new_id
 
+    def update_negative(self, negative_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        allowed = {"category", "what_failed", "why_failed", "correct_approach",
+                   "severity", "project"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unknown negative fields: {sorted(bad)}")
+        cols = ", ".join(f"{k} = %s" for k in fields)
+        values = tuple(fields.values()) + (negative_id,)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE negative_knowledge SET {cols} WHERE id = %s", values,
+            )
+        self._commit()
+
     # ---- Errors ----
 
     def insert_error(self, row: ErrorRow) -> int:
@@ -1119,6 +1135,19 @@ class PostgresStorage:
             new_id = cur.fetchone()["id"]
         self._commit()
         return new_id
+
+    def update_error(self, error_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        allowed = {"pattern", "context", "root_cause", "fix", "tags", "project"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unknown error fields: {sorted(bad)}")
+        cols = ", ".join(f"{k} = %s" for k in fields)
+        values = tuple(fields.values()) + (error_id,)
+        with self._conn.cursor() as cur:
+            cur.execute(f"UPDATE errors SET {cols} WHERE id = %s", values)
+        self._commit()
 
     # ---- Unified entries (issue #179) ----
 

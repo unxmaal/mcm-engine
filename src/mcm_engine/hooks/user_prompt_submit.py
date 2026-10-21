@@ -43,6 +43,36 @@ from .mcp_enforcement import (
 SEARCH_TIMEOUT_S = 1.0
 SEARCH_LIMIT = 3
 
+# Issue #172: a hard ceiling on the injected additionalContext. Even with the
+# per-hit caps (#171), a prompt naming several identifiers can pull enough to
+# bloat the turn (observed 11-12 KB injections, larger than CLAUDE.md, which
+# Claude Code persisted as "Output too large"). Truncate at a hit boundary and
+# point at the live tool. 0 disables.
+INJECT_MAX_BYTES = max(0, int(os.environ.get("MCM_INJECT_MAX_BYTES", "2048")))
+
+
+def _truncate_injection(result: str, query: str) -> str:
+    """Bound the injected search result to INJECT_MAX_BYTES, cutting at a hit
+    boundary (hits are joined by a blank line) so a hit is never shown half,
+    and appending a pointer to the live tool."""
+    if INJECT_MAX_BYTES <= 0 or len(result.encode("utf-8")) <= INJECT_MAX_BYTES:
+        return result
+    pointer = f"\n\n(truncated — run search('{query}') for the rest)"
+    budget = max(0, INJECT_MAX_BYTES - len(pointer.encode("utf-8")))
+    hits = result.split("\n\n")
+    kept: list[str] = []
+    used = 0
+    for hit in hits:
+        add = len(hit.encode("utf-8")) + (2 if kept else 0)
+        if used + add > budget:
+            break
+        kept.append(hit)
+        used += add
+    if not kept:
+        # A single hit already blows the budget: hard-cut its bytes.
+        kept = [result.encode("utf-8")[:budget].decode("utf-8", "ignore")]
+    return "\n\n".join(kept) + pointer
+
 # Phrases that signal the prompt leans on something from before this turn:
 # prior decisions, prior failures, established preferences, or ongoing work.
 # Matched on word boundaries (so "still" does not fire inside "distill").
@@ -142,6 +172,35 @@ def _record_coverage(event: dict, query: str, cwd: Path) -> None:
         pass
 
 
+def _claim_injection(event: dict, query: str, cwd: Path) -> bool:
+    """Issue #172 dedup: return True if this query was already INJECTED earlier
+    in the session (so the caller skips a repeat injection), else mark it as
+    injected and return False. Tracked separately from coverage, which records
+    even an empty retrieval — this marks only material actually shown to the
+    model. Fail-open: on any error, allow the injection (return False)."""
+    key = (query or "").lower().strip()
+    if not key:
+        return False
+    try:
+        now = time.time()
+        sp = _state_path(cwd)
+        state = _read_state(sp)
+        entry = state.setdefault(_agent_key(event), {"last_reset_at": now})
+        injected = entry.setdefault("injected_topics", {})
+        # Drop stale marks so the map does not grow without bound.
+        for k in [k for k, ts in injected.items()
+                  if now - ts > coverage.COVERAGE_TTL_SECONDS]:
+            del injected[k]
+        seen = injected.get(key)
+        if seen is not None and now - seen <= coverage.COVERAGE_TTL_SECONDS:
+            return True
+        injected[key] = now
+        _write_state(sp, state)
+        return False
+    except Exception:
+        return False
+
+
 def main(
     argv: Optional[list[str]] = None,
     *,
@@ -174,6 +233,13 @@ def main(
     if not result:
         return 0
 
+    # Issue #172: inject a given topic's material at most once per session — a
+    # generic NEGATIVE should reach the model once, not on every later prompt
+    # that happens to name the same identifier.
+    if _claim_injection(event, query, cwd):
+        return 0
+
+    result = _truncate_injection(result, query)
     context = (
         f"[mcm-engine] This request references prior work; auto-retrieved for "
         f"'{query}' (verify relevance before relying on it):\n{result}"
