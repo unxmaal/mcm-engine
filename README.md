@@ -638,7 +638,14 @@ ls -la mcm-pre-4.0.dump
 ```
 
 The file should be a few megabytes. Keep it until you are satisfied with 4.0.
-To restore it later: `docker compose exec -T postgres pg_restore -U mcm -d mcm --clean < mcm-pre-4.0.dump`.
+To restore it later, stop the two app containers first so nothing is writing, then
+load the dump and start them again:
+
+```bash
+docker compose stop mcm-engine mcm-admin
+docker compose exec -T postgres pg_restore -U mcm -d mcm --clean --if-exists < mcm-pre-4.0.dump
+docker compose up -d
+```
 
 **Step 2. Point the compose file at 4.0.0.** Edit `docker-compose.yml` and change
 the `image:` line of both the `mcm-engine` and the `mcm-admin` service from the
@@ -681,10 +688,22 @@ It prints JSON like this and exits 0:
 {
   "store": "postgresql://mcm:...@postgres:5432/mcm",
   "counts": {
-    "knowledge": {"legacy": 624, "entries": 624},
-    "negative":  {"legacy": 31,  "entries": 31},
-    "error":     {"legacy": 609, "entries": 609},
-    "rule":      {"legacy": 924, "entries": 924}
+    "knowledge": {
+      "legacy": 624,
+      "entries": 624
+    },
+    "negative": {
+      "legacy": 31,
+      "entries": 31
+    },
+    "error": {
+      "legacy": 609,
+      "entries": 609
+    },
+    "rule": {
+      "legacy": 924,
+      "entries": 924
+    }
   },
   "divergence": []
 }
