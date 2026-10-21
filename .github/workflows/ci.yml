@@ -27,9 +27,17 @@ concurrency:
 
 jobs:
   embedded:
-    name: Embedded conformance (SQLite + InMemorySession)
+    name: Embedded conformance (SQLite + InMemorySession)${{ matrix.entry_model == 'unified' && ' [unified]' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # #181: the whole suite runs under both read paths, each on a fresh runner
+    # (the PreToolUse hook tests leave project-root markers under /tmp).
+    strategy:
+      fail-fast: false
+      matrix:
+        entry_model: [legacy, unified]
+    env:
+      MCM_ENTRY_MODEL: ${{ matrix.entry_model }}
     steps:
       - uses: actions/checkout@v5
 
@@ -45,19 +53,6 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run embedded-only test suite
-        run: |
-          uv run python -m pytest \
-            --ignore=tests/test_adapter_postgres_storage.py \
-            --ignore=tests/test_adapter_postgres_counters.py \
-            --ignore=tests/test_adapter_postgres_search.py \
-            --ignore=tests/test_adapter_redis_counters.py \
-            --ignore=tests/test_adapter_opensearch_search.py \
-            --ignore=tests/test_orthogonal_wiring.py \
-            -v
-
-      - name: Run embedded-only test suite (MCM_ENTRY_MODEL=unified, #181)
-        env:
-          MCM_ENTRY_MODEL: unified
         run: |
           uv run python -m pytest \
             --ignore=tests/test_adapter_postgres_storage.py \
@@ -105,9 +100,15 @@ jobs:
           fi
 
   cross-adapter:
-    name: Cross-adapter conformance (postgres + redis + opensearch)
+    name: Cross-adapter conformance (postgres + redis + opensearch)${{ matrix.entry_model == 'unified' && ' [unified]' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        entry_model: [legacy, unified]
+    env:
+      MCM_ENTRY_MODEL: ${{ matrix.entry_model }}
     # Always on push to main + nightly + tags; on PRs only when the adapter /
     # schema / backend / conformance surface changed (issue #130). PRs that
     # don't touch it stay on the fast embedded suite above.
@@ -182,14 +183,6 @@ jobs:
           MCM_TEST_POSTGRES_DSN: postgresql://mcm:mcm@127.0.0.1:55432/mcm_test
           MCM_TEST_REDIS_URL: redis://127.0.0.1:56379/0
           MCM_TEST_OPENSEARCH_URL: http://127.0.0.1:59200
-        run: uv run python -m pytest -v
-
-      - name: Run full conformance against the matrix (MCM_ENTRY_MODEL=unified, #181)
-        env:
-          MCM_TEST_POSTGRES_DSN: postgresql://mcm:mcm@127.0.0.1:55432/mcm_test
-          MCM_TEST_REDIS_URL: redis://127.0.0.1:56379/0
-          MCM_TEST_OPENSEARCH_URL: http://127.0.0.1:59200
-          MCM_ENTRY_MODEL: unified
         run: uv run python -m pytest -v
 
   tofu-test:
