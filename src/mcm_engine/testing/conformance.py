@@ -660,6 +660,18 @@ class SearchConformance:
         assert hits[0].snippet
         assert "distinctivetoken" in hits[0].snippet.lower()
 
+    def test_snippet_markers_are_empty(self, storage, search):
+        # #197: the highlight markers must be empty on every backend, so a
+        # matched term reads as written (`dual-write`), never `,dual,-,write,`.
+        storage.insert_knowledge(KnowledgeRow(
+            id=0, topic="A", summary="the dual-write mirror kept up", kind="finding",
+        ))
+        for hits in (search.search("dual"),
+                     search.search_entries("dual", kinds={"knowledge"}, limit=5)):
+            assert hits and hits[0].snippet
+            assert "dual-write" in hits[0].snippet
+            assert ",dual," not in hits[0].snippet
+
 
 # ---------------------------------------------------------------------------
 # SessionStore
