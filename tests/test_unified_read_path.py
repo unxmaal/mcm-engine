@@ -201,7 +201,13 @@ def test_formatters_agree_per_kind(env, detail):
         project = "p1" if etype in (EntityType.KNOWLEDGE, EntityType.NEGATIVE) and eid != ids["k2"] else ""
         unified = search_mod._score_and_format_entry(
             hit, s, counters, project, 0.7, include_archived, detail)
-        assert unified == legacy(hit), f"{etype.value} #{eid}"
+        expected = legacy(hit)
+        assert (unified is None) == (expected is None), f"{etype.value} #{eid}"
+        if expected is not None:
+            # the recency term reads now() per call, so the composite can
+            # differ in the last bits; the text must be byte-identical
+            assert unified[1] == expected[1], f"{etype.value} #{eid}"
+            assert unified[0] == pytest.approx(expected[0], rel=1e-6), f"{etype.value} #{eid}"
     # recalled is withheld by both even with include_archived
     assert search_mod._score_and_format_entry(
         SearchHit(entity_type=EntityType.RULE, entity_id=ids["r3"], score=1.0),
