@@ -605,31 +605,142 @@ Verify after upgrading:
 
 ### 4.0: the unified entries model and the cutover runbook
 
-4.0.0 is an expand-only release: it adds an `entries` table beside the four
-legacy tables, keeps them in lockstep on every write, and reads from the legacy
-tables unless `MCM_ENTRY_MODEL=unified` is set. Nothing a client calls changes.
+**What changed in 4.0, in plain terms.** Until now every stored thing lived in one
+of four database tables: `knowledge`, `negative_knowledge`, `errors`, `rules`.
+4.0 adds a fifth table, `entries`, that holds a copy of every row from those
+four, all in one shape. The four old tables ("legacy") are still the source of
+truth: every write goes to them first and is copied into `entries` in the same
+transaction. The server can answer reads from either side, chosen by one
+environment variable:
 
-1. **Insurance.** `docker compose exec -T postgres pg_dump -U mcm -d mcm -Fc > mcm-pre-4.0.dump`
-   (SQLite: copy the `.db`).
-2. **Deploy 4.0.0** with `MCM_ENTRY_MODEL` unset or `legacy` (the compose and
-   Helm defaults). First boot backfills `entries` from the legacy tables and
-   verifies every row; on a mismatch the server refuses to start and the legacy
-   tables are untouched (redeploy 3.16.x, nothing to undo).
-3. **Verify.** `mcm-engine corpus-verify-entries --store "$DSN"` prints the
-   per-kind legacy vs `entries` counts and exits 1 on any differing row. On
-   Postgres do not look for a `_mcm_versions` row: counts and content are the
-   check. Equivalent SQL: `select kind, count(*) from entries group by kind;`
-   against `select count(*) from knowledge` and the other three.
-4. **Soak on legacy.** Normal sessions. Every write mirrors into `entries`;
-   each restart reconciles. Re-run step 3 whenever you like.
-5. **Flip.** Set `MCM_ENTRY_MODEL=unified`, restart, run the same sessions.
-   `session_start`, `search`, `get_entry` should read the same; the measured
-   difference on the reference corpus is rank-tail churn only (see the
-   CHANGELOG). To compare on your own history:
-   `mcm-engine replay-queries ~/.claude/projects/<proj>/*.jsonl --store "$DSN" --query-mode natural`.
-6. **Back out** at any point by unsetting the flag and restarting. Nothing moved.
+- `MCM_ENTRY_MODEL=legacy` (the default, and what you get if the variable is
+  unset): reads come from the four old tables, exactly as 3.16 did.
+- `MCM_ENTRY_MODEL=unified`: reads come from `entries`.
 
-4.1 flips the default to `unified`; 5.0 drops the legacy tables one cycle later.
+Nothing a client calls changes: every tool name, argument and id works the same
+under both settings. Switching is an environment change and a restart; no data
+moves. The copy into `entries` happens once, automatically, the first time 4.0
+starts against an existing database ("the backfill"), and 4.0 checks that copy
+row by row before it will serve. If the check fails the server does not start
+and the four old tables are untouched.
+
+The steps below assume the Docker Compose deployment from
+`examples/docker-compose.yml`: a `postgres` service (database `mcm`, user `mcm`),
+an `mcm-engine` service and an `mcm-admin` service, with `POSTGRES_PASSWORD` in
+a `.env` file next to the compose file. Run everything on the host that runs
+Compose, in the directory that holds `docker-compose.yml`.
+
+**Step 1. Take a database backup.**
+
+```bash
+docker compose exec -T postgres pg_dump -U mcm -d mcm -Fc > mcm-pre-4.0.dump
+ls -la mcm-pre-4.0.dump
+```
+
+The file should be a few megabytes. Keep it until you are satisfied with 4.0.
+To restore it later: `docker compose exec -T postgres pg_restore -U mcm -d mcm --clean < mcm-pre-4.0.dump`.
+
+**Step 2. Point the compose file at 4.0.0.** Edit `docker-compose.yml` and change
+the `image:` line of both the `mcm-engine` and the `mcm-admin` service from the
+version you run now to `ghcr.io/unxmaal/mcm-engine:4.0.0`. Do not add
+`MCM_ENTRY_MODEL` yet; leaving it out means `legacy`.
+
+**Step 3. Start 4.0.0.**
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+Both `mcm-engine` and `mcm-admin` should show `Up` within a minute. The first
+start runs the backfill; on a database of a few thousand rows it takes well
+under a second, so there is nothing to wait for.
+
+If `mcm-engine` instead shows `Restarting`, the row-by-row check refused to
+serve. Read why with:
+
+```bash
+docker compose logs --tail 50 mcm-engine
+```
+
+The reason starts with `EntriesBackfillError`. Go back to the old version by
+changing the two `image:` lines back and running `docker compose up -d`; the
+database was not changed. Open an issue with the log line.
+
+**Step 4. Confirm the copy is complete.** This runs the check command inside the
+`mcm-engine` container, where the database connection string is already set:
+
+```bash
+docker compose exec mcm-engine sh -c 'mcm-engine corpus-verify-entries --store "$MCM_POSTGRES_DSN"'
+```
+
+It prints JSON like this and exits 0:
+
+```json
+{
+  "store": "postgresql://mcm:...@postgres:5432/mcm",
+  "counts": {
+    "knowledge": {"legacy": 624, "entries": 624},
+    "negative":  {"legacy": 31,  "entries": 31},
+    "error":     {"legacy": 609, "entries": 609},
+    "rule":      {"legacy": 924, "entries": 924}
+  },
+  "divergence": []
+}
+```
+
+Each `legacy` number must equal its `entries` number and `divergence` must be an
+empty list. Your numbers will differ from these; equality is the point. If the
+lists are not equal or `divergence` names rows, the command exits 1: stop here,
+do not set `unified`, and open an issue with the output. The server is still
+fine to use on `legacy` in the meantime.
+
+If you would rather look at the database directly, the same check in SQL is:
+
+```bash
+docker compose exec postgres psql -U mcm -d mcm -c "select kind, count(*) from entries group by kind order by kind;" -c "select (select count(*) from knowledge) as knowledge, (select count(*) from negative_knowledge) as negative, (select count(*) from errors) as error, (select count(*) from rules) as rule;"
+```
+
+Do not look for a version row in `_mcm_versions`: on Postgres that table is not
+how migrations are tracked. The counts are the check.
+
+**Step 5. Use it normally for a while on `legacy`.** This is the default you are
+on now. Every write keeps `entries` in step, and every restart re-checks and
+repairs `entries` from the four old tables. Re-run step 4 whenever you like.
+
+**Step 6. Switch reads to `entries`.** In `docker-compose.yml`, add this line
+under `environment:` of the `mcm-engine` service (and of `mcm-admin`, so the
+admin page reads the same side):
+
+```yaml
+      MCM_ENTRY_MODEL: unified
+```
+
+then:
+
+```bash
+docker compose up -d
+```
+
+Sessions should look the same: `session_start`, `search`, `get_entry` return
+the same entries. The one measured difference is the order of the last few
+search hits when many rows match (the CHANGELOG `[4.0.0]` Migration section has
+the numbers). To measure it on your own history, from the machine that holds
+your Claude Code transcripts:
+
+```bash
+mcm-engine replay-queries ~/.claude/projects/<your-project-dir>/*.jsonl --store "postgresql://mcm:<password>@<host>:5432/mcm" --query-mode natural
+```
+
+**Backing out.** At any point, remove the `MCM_ENTRY_MODEL` line (or set it to
+`legacy`) and run `docker compose up -d`: reads return to the four old tables.
+To leave 4.0 entirely, change the two `image:` lines back to the previous
+version and `docker compose up -d`; 3.16 ignores the extra `entries` table and
+nothing in the four old tables was changed by 4.0.
+
+**What comes later.** 4.1 makes `unified` the default; 5.0, one release later,
+drops the four old tables.
 
 ### Moving between backends
 
