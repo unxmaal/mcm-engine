@@ -210,10 +210,12 @@ def _make_claims_endpoint(server: Any):
         principal = getattr(request.state, "principal", None) or "anonymous"
 
         try:
-            # Own connection from the pool (issue #83 / audit H3): this insert
-            # never shares a connection with a tool handler's transaction. The
-            # pool's context commits on clean exit / rolls back on error.
-            with storage._pool.connection() as conn:
+            # Own connection (issue #83 / audit H3): the request context has no
+            # tool transaction, so transaction() checks one out for this insert
+            # and its entries mirror (#180); commits on clean exit, rolls back
+            # on error.
+            with storage.transaction():
+                conn = storage._conn
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -230,6 +232,10 @@ def _make_claims_endpoint(server: Any):
                         ),
                     )
                     row = cur.fetchone()
+                from .backends import EntityType
+                from .entries import mirror_entry
+                mirror_entry(storage, EntityType.KNOWLEDGE,
+                             row["id"] if hasattr(row, "keys") else row[0])
         except Exception as e:
             return JSONResponse(
                 {"error": f"insert failed: {type(e).__name__}: {e}"},

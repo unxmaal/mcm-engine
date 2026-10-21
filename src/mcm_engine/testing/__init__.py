@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .conformance import (
     CounterConformance,
+    WriteThroughCounterConformance,
     SearchConformance,
     SessionConformance,
     StorageConformance,
@@ -17,6 +18,7 @@ from .conformance import (
 __all__ = [
     "StorageConformance",
     "CounterConformance",
+    "WriteThroughCounterConformance",
     "SearchConformance",
     "SessionConformance",
 ]

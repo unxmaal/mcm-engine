@@ -439,6 +439,7 @@ def register_knowledge_tools(
                         (claim_id, principal or "governance", reason or None),
                     )
                     cur.execute("DELETE FROM knowledge WHERE id = %s", (claim_id,))
+                storage.delete_entry("knowledge", claim_id)  # #180 mirror
         except Exception as e:
             return _with_nudge(
                 f"kb_recall failed: {type(e).__name__}: {e}", tracker,

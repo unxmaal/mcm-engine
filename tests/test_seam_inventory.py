@@ -44,14 +44,14 @@ EXPECTED_SQL_SITES_BY_FILE: dict[str, int] = {
     # repository. These files are the new authoritative home for SQL.
     "adapters/sqlite/storage.py":  85,  # +2 #170 (update_negative/update_error UPDATE); +14 #179 unified entries (insert/update/find/delete/count x2/iter x2/page/next_id x3/seed x2); +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT); +2 #100 (unsupersede_rule UPDATE/INSERT); +1 #104 (page_entries SELECT); +1 #111 (delete_relation DELETE); +2 #111 (supersede/unsupersede_knowledge UPDATE); +3 v15 session_metrics (upsert INSERT + list SELECT x2 branches); +1 #116 get_last_session scoped branch
     "adapters/sqlite/search.py":   5,   # +2 for MCM2-07 search_plugin (FTS + LIKE)
-    "adapters/sqlite/counters.py": 4,
+    "adapters/sqlite/counters.py": 6,   # +2 #180 dual-write copy-through to entries (facets json_set branch + column branch)
     # MCM2-08 Postgres adapter — first non-embedded reference. SQL count
     # matches SqliteStorage's contract surface minus the FTS-table reads
     # (Postgres folds FTS into the same row via tsvector generated columns).
     # +7 MCM2-11 id-preserving inserts, +4 iter, +1 bump_sequences.
     "adapters/postgres/storage.py": 86,  # +2 #170 (update_negative/update_error UPDATE); +13 #179 unified entries (insert/update/find/delete/count x2/iter x2/page/next_id x3/seed x2); +5 #21; +2 #37 (token ledger); +1 #36 (list_rule_outcomes SELECT); +1 #54 (find_rule_by_content_hash); +1 #64 (_mcm_versions version stamp in ensure_schema); +3 #64 Phase 2 (list_rules SELECT + set_rule_metadata UPDATE/INSERT); +2 #100 (unsupersede_rule UPDATE/INSERT); +1 #104 (page_entries SELECT); +1 #111 (delete_relation DELETE); +2 #111 (supersede/unsupersede_knowledge UPDATE); +3 v15 session_metrics (upsert INSERT + list SELECT x2 branches); +1 #116 get_last_session scoped branch (sessions principal/workspace ALTERs are guarded DDL string literals, 0 execute sites)
     # MCM2-13b: PostgresCounters (write-through to entry rows, mirrors SqliteCounters shape).
-    "adapters/postgres/counters.py": 5,
+    "adapters/postgres/counters.py": 7,  # +2 #180 dual-write copy-through to entries (facets jsonb_set branch + column branch)
     # MCM2-15a: PostgresSearch (tsvector + ts_rank_cd, LIKE fallback,
     # plugin search via ILIKE).
     "adapters/postgres/search.py": 5,  # +1 #107 natural-mode OR-rank fallback (to_tsquery)

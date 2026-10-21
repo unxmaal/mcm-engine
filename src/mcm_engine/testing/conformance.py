@@ -54,7 +54,53 @@ from ..backends import (
 # ---------------------------------------------------------------------------
 
 
-class StorageConformance:
+class _DualWriteConformance:
+    """#180: every legacy mutation is mirrored into ``entries`` in the same
+    transaction. Mixed into StorageConformance below."""
+
+    def test_every_mutation_is_mirrored_into_entries(self, storage):
+        from ..entries import divergence
+        k = storage.insert_knowledge(KnowledgeRow(id=0, topic="m", summary="s", kind="finding"))
+        k2 = storage.insert_knowledge(KnowledgeRow(id=0, topic="m2", summary="s2", kind="finding"))
+        n = storage.insert_negative(NegativeRow(id=0, category="c", what_failed="w"))
+        e = storage.insert_error(ErrorRow(id=0, pattern="p"))
+        r = storage.insert_rule(RuleRow(id=0, title="r", keywords="k", content="b"))
+        r2 = storage.insert_rule(RuleRow(id=0, title="r2", keywords="k", content="b2"))
+        assert divergence(storage) == []
+        steps = [
+            lambda: storage.update_knowledge(k, summary="changed"),
+            lambda: storage.supersede_knowledge(k, k2),
+            lambda: storage.unsupersede_knowledge(k),
+            lambda: storage.update_negative(n, why_failed="y"),
+            lambda: storage.update_error(e, fix="f"),
+            lambda: storage.update_rule(r, content="changed"),
+            lambda: storage.set_rule_metadata(r, importance=2, scope="universal", actor="t"),
+            lambda: storage.soft_delete_rule(r),
+            lambda: storage.restore_rule(r),
+            lambda: storage.record_outcome(r, "judge", True),
+            lambda: storage.record_outcome(r, "judge", False, count=False),
+            lambda: storage.supersede_rule(r, r2, "t"),
+            lambda: storage.unsupersede_rule(r, "t"),
+            lambda: storage.set_pinned(EntityType.KNOWLEDGE, k, True),
+            lambda: storage.set_pinned(EntityType.NEGATIVE, n, True),
+            lambda: storage.set_pinned(EntityType.ERROR, e, True),
+            lambda: storage.set_pinned(EntityType.RULE, r, True),
+            lambda: storage.set_pinned(EntityType.RULE, r, False),
+        ]
+        for i, step in enumerate(steps):
+            step()
+            assert divergence(storage) == [], f"after step {i}"
+        assert storage.count_entries() == 6
+
+    def test_insert_with_explicit_id_is_mirrored_and_ids_advance(self, storage):
+        from ..entries import divergence
+        storage.insert_rule(RuleRow(id=40, title="r", keywords="k", content="b"))
+        assert divergence(storage) == []
+        assert storage.find_entry("rule", 40) is not None
+        assert storage.next_entry_id("rule") == 41
+
+
+class StorageConformance(_DualWriteConformance):
     """Conformance tests for any StorageBackend implementation.
 
     Subclasses MUST provide a ``storage`` fixture returning a freshly
@@ -145,6 +191,9 @@ class StorageConformance:
         storage.insert_negative(NegativeRow(id=0, category="c", what_failed="w"))
         storage.insert_error(ErrorRow(id=0, pattern="p", context="x"))
         storage.insert_rule(RuleRow(id=0, title="r", keywords="k", content="body"))
+        # Simulate a pre-4.0 store: strip the dual-write mirror (#180).
+        for e in list(storage.iter_entries_unified()):
+            storage.delete_entry(e.kind, e.id)
         assert needs_backfill(storage) is True
         report = storage.backfill_entries()
         assert all(v["legacy"] == v["entries"] == 1 for v in report.values())
@@ -497,6 +546,31 @@ class CounterConformance:
 # ---------------------------------------------------------------------------
 # SearchBackend
 # ---------------------------------------------------------------------------
+
+
+
+class WriteThroughCounterConformance(CounterConformance):
+    """CounterConformance plus the #180 dual-write check, for adapters whose
+    counters are columns on the legacy row (SQLite, Postgres). Off-row stores
+    (Redis) never touch the legacy table, so they have nothing to mirror."""
+
+    def test_increments_are_mirrored_into_entries(self, storage, counters):
+        # #180 dual-write: every counter column lands in entries too.
+        from ..entries import divergence
+        k = storage.insert_knowledge(KnowledgeRow(id=0, topic="m", summary="m", kind="finding"))
+        r = storage.insert_rule(RuleRow(id=0, title="m", keywords="k", content="b"))
+        counters.increment(EntityType.KNOWLEDGE, k, "hit_count", by=2)
+        counters.increment(EntityType.KNOWLEDGE, k, "last_hit_at")
+        counters.increment(EntityType.KNOWLEDGE, k, "reinforcement_count")
+        counters.increment(EntityType.KNOWLEDGE, k, "pinned")
+        counters.increment(EntityType.RULE, r, "correct_count")
+        counters.increment(EntityType.RULE, r, "incorrect_count")
+        counters.increment(EntityType.RULE, r, "correct_count")
+        counters.increment(EntityType.RULE, r, "hit_count")
+        assert divergence(storage) == []
+        e = storage.find_entry("rule", r)
+        assert e.facets["correct_count"] == 2 and e.facets["incorrect_count"] == 1
+        assert storage.find_entry("knowledge", k).hit_count == 2
 
 
 class SearchConformance:

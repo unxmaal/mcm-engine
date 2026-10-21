@@ -12,7 +12,14 @@ import json as _json
 from datetime import timezone as _timezone
 
 from ...backends import Entry
-from ...entries import backfill as _backfill_entries, needs_backfill as _needs_backfill
+from ...entries import (
+    arg_ids as _arg_ids,
+    backfill as _backfill_entries,
+    mirrored as _mirrored,
+    needs_backfill as _needs_backfill,
+    reconcile as _reconcile,
+    returned_id as _returned_id,
+)
 
 from contextlib import contextmanager
 from datetime import datetime
@@ -680,6 +687,7 @@ _ENTRY_UPDATABLE = frozenset({
     "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
     "superseded_by", "valid_until", "hit_count", "last_hit_at",
     "reinforcement_count", "source_classification", "facets", "facets_json",
+    "created_at", "updated_at",
 })
 
 
@@ -968,6 +976,8 @@ class PostgresStorage:
         # start (the legacy tables are untouched either way).
         if _needs_backfill(self):
             self.backfill_entries()
+        else:
+            _reconcile(self)
 
     def truncate_all(self) -> None:
         """Test-only convenience: wipe every owned table and reset
@@ -1007,6 +1017,7 @@ class PostgresStorage:
             r = cur.fetchone()
         return _knowledge_from_row(r) if r else None
 
+    @_mirrored(EntityType.KNOWLEDGE, _returned_id)
     def insert_knowledge(self, row: KnowledgeRow) -> int:
         with self._conn.cursor() as cur:
             if row.id:
@@ -1031,6 +1042,7 @@ class PostgresStorage:
         self._commit()
         return new_id
 
+    @_mirrored(EntityType.KNOWLEDGE, _arg_ids("knowledge_id"))
     def update_knowledge(self, knowledge_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -1048,6 +1060,7 @@ class PostgresStorage:
             )
         self._commit()
 
+    @_mirrored(EntityType.KNOWLEDGE, _arg_ids("old_id", "new_id"))
     def supersede_knowledge(self, old_id: int, new_id: int) -> None:
         """Soft-expire a knowledge finding (issue #111): status 'superseded' +
         superseded_by set. Drops out of default search, stays inspectable."""
@@ -1059,6 +1072,7 @@ class PostgresStorage:
             )
         self._commit()
 
+    @_mirrored(EntityType.KNOWLEDGE, _arg_ids("knowledge_id"))
     def unsupersede_knowledge(self, knowledge_id: int) -> None:
         """Clear a knowledge finding's superseded state (issue #111): status
         back to active, superseded_by cleared."""
@@ -1072,6 +1086,7 @@ class PostgresStorage:
 
     # ---- Negative ----
 
+    @_mirrored(EntityType.NEGATIVE, _returned_id)
     def insert_negative(self, row: NegativeRow) -> int:
         with self._conn.cursor() as cur:
             if row.id:
@@ -1096,6 +1111,7 @@ class PostgresStorage:
         self._commit()
         return new_id
 
+    @_mirrored(EntityType.NEGATIVE, _arg_ids("negative_id"))
     def update_negative(self, negative_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -1114,6 +1130,7 @@ class PostgresStorage:
 
     # ---- Errors ----
 
+    @_mirrored(EntityType.ERROR, _returned_id)
     def insert_error(self, row: ErrorRow) -> int:
         with self._conn.cursor() as cur:
             if row.id:
@@ -1136,6 +1153,7 @@ class PostgresStorage:
         self._commit()
         return new_id
 
+    @_mirrored(EntityType.ERROR, _arg_ids("error_id"))
     def update_error(self, error_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -1187,11 +1205,12 @@ class PostgresStorage:
             raise ValueError(f"unknown entry fields: {sorted(bad)}")
         if "facets" in fields:
             fields["facets_json"] = _dump_facets(fields.pop("facets"))
+        stamp = "" if "updated_at" in fields else ", updated_at = now()"
         cols = ", ".join(f"{k} = %s" for k in fields)
         values = tuple(fields.values()) + (kind, entry_id)
         with self._conn.cursor() as cur:
             cur.execute(
-                f"UPDATE entries SET {cols}, updated_at = now() "
+                f"UPDATE entries SET {cols}{stamp} "
                 f"WHERE kind = %s AND id = %s", values,
             )
         self._commit()
@@ -1304,6 +1323,7 @@ class PostgresStorage:
             r = cur.fetchone()
         return _rule_from_row(r) if r else None
 
+    @_mirrored(EntityType.RULE, _returned_id)
     def insert_rule(self, row: RuleRow) -> int:
         with self._conn.cursor() as cur:
             if row.id:
@@ -1330,6 +1350,7 @@ class PostgresStorage:
         self._commit()
         return new_id
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def update_rule(self, rule_id: int, **fields: Any) -> None:
         if not fields:
             return
@@ -1384,6 +1405,7 @@ class PostgresStorage:
             rows = cur.fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def set_rule_metadata(
         self, rule_id: int, *,
         importance: Optional[int] = None,
@@ -1433,6 +1455,7 @@ class PostgresStorage:
             rows = cur.fetchall()
         return [_rule_from_row(r) for r in rows]
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def soft_delete_rule(self, rule_id: int) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -1442,6 +1465,7 @@ class PostgresStorage:
             )
         self._commit()
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def restore_rule(self, rule_id: int) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -1451,6 +1475,7 @@ class PostgresStorage:
             )
         self._commit()
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def record_outcome(
         self, rule_id: int, actor: str, passed: bool, *, count: bool = True
     ) -> None:
@@ -1511,6 +1536,7 @@ class PostgresStorage:
             )
             return [(r["actor"], bool(r["passed"])) for r in cur.fetchall()]
 
+    @_mirrored(EntityType.RULE, _arg_ids("old_id", "new_id"))
     def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
         """Issue #21 — soft-supersede (never delete). Atomic via transaction()."""
         with self.transaction():
@@ -1527,6 +1553,7 @@ class PostgresStorage:
                 )
             self._commit()
 
+    @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
     def unsupersede_rule(self, rule_id: int, actor: str) -> None:
         """Issue #100 — clear a rule's superseded state (inverse of
         supersede_rule). Atomic via transaction()."""
@@ -1824,6 +1851,7 @@ class PostgresStorage:
 
     # ---- Cross-entity (enum-driven) ----
 
+    @_mirrored(None, _arg_ids("entity_id"))
     def set_pinned(self, entity_type: EntityType, entity_id: int, value: bool) -> None:
         table = _ENTITY_TABLE[entity_type]
         with self._conn.cursor() as cur:

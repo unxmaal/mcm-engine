@@ -75,6 +75,20 @@ class SqliteCounters:
                 f"UPDATE {table} SET {col} = {col} + ? WHERE id = ?",
                 (by, entity_id),
             )
+        # #180 dual-write: copy the legacy value through to entries so the two
+        # sides commit together.
+        if col in ("correct_count", "incorrect_count"):
+            self._db.execute_write(
+                "UPDATE entries SET facets_json = json_set(COALESCE(facets_json, '{}'), ?, "
+                f"(SELECT {col} FROM {table} WHERE id = ?)) WHERE kind = ? AND id = ?",
+                (f"$.{col}", entity_id, entity_type.value, entity_id),
+            )
+        else:
+            self._db.execute_write(
+                f"UPDATE entries SET {col} = (SELECT {col} FROM {table} WHERE id = ?) "
+                "WHERE kind = ? AND id = ?",
+                (entity_id, entity_type.value, entity_id),
+            )
         self._db.commit()
 
     def get(self, entity_type: EntityType, entity_id: int) -> dict[str, Any]:

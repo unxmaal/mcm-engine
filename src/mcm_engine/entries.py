@@ -11,7 +11,9 @@ contract step, so it is not a kind policy.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import json
 from dataclasses import asdict
 from datetime import datetime
@@ -248,3 +250,125 @@ def needs_backfill(storage) -> bool:
     if any(storage.count_entries(k) for k in KINDS):
         return False
     return any(storage.count_by_type(et) for et in EntityType)
+
+
+# ---- dual-write mirror (issue #180) -------------------------------------------
+
+_ENTRY_COLUMNS: tuple[str, ...] = (
+    "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
+    "superseded_by", "valid_until", "hit_count", "last_hit_at",
+    "reinforcement_count", "created_at", "updated_at", "source_classification",
+    "facets",
+)
+
+
+def entry_fields(e: Entry) -> dict[str, Any]:
+    """Every column of ``e`` except its identity, as ``update_entry`` kwargs."""
+    return {k: getattr(e, k) for k in _ENTRY_COLUMNS}
+
+
+def mirror_entry(storage, etype: EntityType, entry_id: int) -> str:
+    """Re-project one legacy row into ``entries`` (legacy is authoritative in
+    4.x). Idempotent. Call inside ``storage.transaction()`` so the legacy write
+    and its mirror commit together. Returns inserted|updated|deleted|same."""
+    kind = etype.value
+    row = storage.find_by_id(etype, entry_id)
+    if row is None:
+        storage.delete_entry(kind, entry_id)
+        return "deleted"
+    want = to_entry(etype, row)
+    got = storage.find_entry(kind, entry_id)
+    if got is None:
+        storage.insert_entry(want)
+        storage.seed_entry_ids(kind)
+        return "inserted"
+    if entry_hash(got) != entry_hash(want):
+        storage.update_entry(kind, entry_id, **entry_fields(want))
+        return "updated"
+    return "same"
+
+
+def returned_id(bound: dict, ret: Any) -> tuple:
+    return (ret,)
+
+
+def arg_ids(*names: str) -> Callable[[dict, Any], tuple]:
+    return lambda bound, ret: tuple(bound[n] for n in names)
+
+
+def mirrored(etype: Optional[EntityType], ids: Callable[[dict, Any], Iterable]):
+    """Decorate a storage mutation so the rows it touched are re-projected into
+    ``entries`` within the same transaction. ``ids`` picks the affected ids from
+    the bound arguments and the return value; ``etype=None`` reads the kind from
+    the ``entity_type`` argument."""
+    def deco(fn):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            with self.transaction():
+                ret = fn(self, *args, **kwargs)
+                bound = sig.bind(self, *args, **kwargs).arguments
+                et = etype if etype is not None else bound["entity_type"]
+                for eid in ids(bound, ret):
+                    if eid is not None:
+                        mirror_entry(self, et, eid)
+            return ret
+        return wrapper
+    return deco
+
+
+_INSERT_LEGACY: dict[str, str] = {
+    "knowledge": "insert_knowledge",
+    "negative": "insert_negative",
+    "error": "insert_error",
+    "rule": "insert_rule",
+}
+
+
+def insert_legacy(storage, etype: EntityType, row: Any) -> int:
+    """Insert a legacy row of any kind (ids preserved when set). The adapter's
+    mirror populates ``entries``."""
+    return getattr(storage, _INSERT_LEGACY[etype.value])(row)
+
+
+def divergence(storage) -> list[str]:
+    """Every way ``entries`` disagrees with the legacy tables; [] when the two
+    sides are identical row for row."""
+    out: list[str] = []
+    for et in EntityType:
+        kind = et.value
+        legacy = storage.count_by_type(et)
+        unified = storage.count_entries(kind)
+        if legacy != unified:
+            out.append(f"{kind}: legacy rows {legacy} != entries rows {unified}")
+        for row in storage.iter_entries(et):
+            got = storage.find_entry(kind, row.id)
+            if got is None:
+                out.append(f"{kind} #{row.id}: missing from entries")
+            elif entry_hash(got) != entry_hash(to_entry(et, row)):
+                out.append(f"{kind} #{row.id}: entries row differs")
+    return out
+
+
+def reconcile(storage) -> dict[str, int]:
+    """Make ``entries`` agree with the legacy tables, row by row, in one
+    transaction. Runs at boot after the backfill so a missed mirror never
+    outlives a restart. Returns {checked, inserted, updated, deleted}."""
+    report = {"checked": 0, "inserted": 0, "updated": 0, "deleted": 0}
+    with storage.transaction():
+        for et in EntityType:
+            kind = et.value
+            unified_ids = [e.id for e in storage.iter_entries_unified(kind)]
+            legacy_ids: set[int] = set()
+            for row in storage.iter_entries(et):
+                legacy_ids.add(row.id)
+                report["checked"] += 1
+                outcome = mirror_entry(storage, et, row.id)
+                if outcome != "same":
+                    report[outcome] += 1
+            for eid in unified_ids:
+                if eid not in legacy_ids:
+                    storage.delete_entry(kind, eid)
+                    report["deleted"] += 1
+    return report

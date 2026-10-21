@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import pytest
 
-from mcm_engine.testing.conformance import CounterConformance
+from mcm_engine.testing.conformance import WriteThroughCounterConformance
 
 
-class TestSqliteCounters(CounterConformance):
+class TestSqliteCounters(WriteThroughCounterConformance):
     @pytest.fixture
     def _shared(self, tmp_path):
         from mcm_engine.adapters.sqlite.counters import SqliteCounters
