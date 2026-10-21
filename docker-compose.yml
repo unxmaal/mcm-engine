@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mcm
+      POSTGRES_DB: mcm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcm -d mcm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcm-engine:
+    image: ghcr.io/unxmaal/mcm-engine:3.11.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MCM_PROJECT_NAME: mcm
+      MCM_SOURCE_OF_TRUTH: database          # World B: DB is authoritative, no filesystem sync
+      MCM_TRANSPORT: streamable-http          # clients hit /mcp (image default is sse)
+      MCM_ALLOWED_HOSTS: 192.168.8.88
+      MCM_HOST: 0.0.0.0
+      MCM_PORT: 8080
+      MCM_BACKENDS_STORAGE: postgres
+      MCM_BACKENDS_COUNTERS: postgres
+      MCM_BACKENDS_SEARCH: postgres
+      MCM_SEARCH_QUERY_MODE: natural
+      MCM_POSTGRES_DSN: postgresql://mcm:${POSTGRES_PASSWORD}@postgres:5432/mcm
+      # MCM_AUTH_REQUIRED unset = auth off (LAN only)
+    ports:
+      - "8080:8080"
+
+  mcm-admin:
+    image: ghcr.io/unxmaal/mcm-engine:3.11.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "exec mcm-engine admin --host 0.0.0.0 --port 8090"]
+    environment:
+      MCM_PROJECT_NAME: mcm
+      MCM_SOURCE_OF_TRUTH: database
+      MCM_BACKENDS_STORAGE: postgres
+      MCM_BACKENDS_COUNTERS: postgres
+      MCM_BACKENDS_SEARCH: postgres
+      MCM_POSTGRES_DSN: postgresql://mcm:${POSTGRES_PASSWORD}@postgres:5432/mcm
+    ports:
+      - "8090:8090"
+
+volumes:
+  pgdata:

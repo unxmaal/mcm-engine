@@ -5,6 +5,8 @@ existing rows in place.
 from __future__ import annotations
 
 from mcm_engine.sanitize import (
+    clean_error,
+    clean_negative,
     clean_summary_detail,
     is_polluted,
     strip_tool_call_fragments,
@@ -66,3 +68,72 @@ def test_strip_tool_call_fragments():
     assert strip_tool_call_fragments("rule body</invoke>") == "rule body"
     assert strip_tool_call_fragments("clean rule body") == "clean rule body"
     assert strip_tool_call_fragments("") == ""
+
+
+# --- NEGATIVE / ERROR pollution (issue #170) --------------------------------
+
+# A what_failed as observed on NEGATIVE #10: the whole serialized entry crammed
+# into the headline column, sibling fields empty.
+POLLUTED_NEG = (
+    "I measured the cache honestly and then wrote the opposite into the issue."
+    "</what_failed>\n"
+    '<parameter name="why_failed">Zero requests is evidence of caching, not '
+    "staleness.</parameter>\n"
+    '<parameter name="correct_approach">Re-read the write-up against the '
+    "measurement, not memory of it.</parameter>\n"
+    '<parameter name="project">localharness</parameter>\n'
+    '<parameter name="tags">honesty,cache</parameter>\n'
+    "</invoke>"
+)
+
+# An ERROR pattern as observed on #71: real text, serialized <error_text> close,
+# then the sibling fields; last block lacks a closing </parameter>.
+POLLUTED_ERR = (
+    "main is RED: a gitignored eval dir exists on the desk and in no clone."
+    "</error_text>\n"
+    '<parameter name="context">A check whose input differs between desk and '
+    "CI.</parameter>\n"
+    '<parameter name="project">localharness'
+)
+
+
+def test_clean_negative_resplits_into_columns():
+    wf, why, fix, changed = clean_negative(POLLUTED_NEG, None, None)
+    assert changed is True
+    assert wf == (
+        "I measured the cache honestly and then wrote the opposite into the issue."
+    )
+    assert why == "Zero requests is evidence of caching, not staleness."
+    assert fix == "Re-read the write-up against the measurement, not memory of it."
+    for junk in ("</what_failed>", "<parameter", "</invoke>"):
+        assert junk not in wf and junk not in (why or "") and junk not in (fix or "")
+
+
+def test_clean_negative_leaves_clean_rows_untouched():
+    out = clean_negative("tried X", "because Y", "do Z instead")
+    assert out == ("tried X", "because Y", "do Z instead", False)
+
+
+def test_clean_negative_keeps_existing_columns():
+    # When the real columns are already populated, salvage must not overwrite.
+    wf, why, fix, changed = clean_negative(
+        POLLUTED_NEG, "operator why", "operator fix"
+    )
+    assert changed is True
+    assert (why, fix) == ("operator why", "operator fix")
+
+
+def test_clean_error_resplits_into_columns():
+    pat, ctx, rc, fix, changed = clean_error(POLLUTED_ERR, None, None, None)
+    assert changed is True
+    assert pat == (
+        "main is RED: a gitignored eval dir exists on the desk and in no clone."
+    )
+    assert ctx == "A check whose input differs between desk and CI."
+    assert rc is None and fix is None  # not present in the blob
+    assert "<parameter" not in pat and "</error_text>" not in pat
+
+
+def test_clean_error_leaves_clean_rows_untouched():
+    out = clean_error("boom", "while doing X", "because Y", "do Z")
+    assert out == ("boom", "while doing X", "because Y", "do Z", False)

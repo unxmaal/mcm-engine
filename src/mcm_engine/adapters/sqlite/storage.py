@@ -416,6 +416,21 @@ class SqliteStorage:
         self._db.commit()
         return cur.lastrowid
 
+    def update_negative(self, negative_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        allowed = {"category", "what_failed", "why_failed", "correct_approach",
+                   "severity", "project"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unknown negative fields: {sorted(bad)}")
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        values = tuple(fields.values()) + (negative_id,)
+        self._db.execute_write(
+            f"UPDATE negative_knowledge SET {cols} WHERE id = ?", values,
+        )
+        self._db.commit()
+
     # ---- Errors ----
 
     def insert_error(self, row: ErrorRow) -> int:
@@ -435,6 +450,20 @@ class SqliteStorage:
             )
         self._db.commit()
         return cur.lastrowid
+
+    def update_error(self, error_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        allowed = {"pattern", "context", "root_cause", "fix", "tags", "project"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unknown error fields: {sorted(bad)}")
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        values = tuple(fields.values()) + (error_id,)
+        self._db.execute_write(
+            f"UPDATE errors SET {cols} WHERE id = ?", values,
+        )
+        self._db.commit()
 
     # ---- Rules ----
 
