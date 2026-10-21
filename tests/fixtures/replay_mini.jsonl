@@ -1,0 +1,11 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__mcm-engine__search","input":{"query":"mahjong"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"..."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"mcp__mcm-engine__search","input":{"query":"nudge","scope":"rules","detail":"full","include_archived":true}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"mcp__mcm-engine__report_error","input":{"error_text":"database is locked","context":"wal"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"mcp__mcm-engine__get_entry","input":{"entity_type":"negative","entry_id":1}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t5","name":"mcp__mcm-engine__get_entry","input":{"entity_type":"rule","entry_id":999}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t6","name":"mcp__mcm-engine__read_rule","input":{"file_path":"rules/x.md"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t7","name":"mcp__mcm-engine__add_rule","input":{"title":"not replayed","keywords":"k"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t8","name":"Bash","input":{"command":"ls"}}]}}
+not json
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t9","name":"mcp__mcm-engine__search","input":{"query":"giraffe"}}]}}

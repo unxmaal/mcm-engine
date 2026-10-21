@@ -368,6 +368,22 @@ def cmd_corpus_census(args):
     print(format_census(census(storage)))
 
 
+def cmd_replay_queries(args):
+    """Legacy vs unified read-path agreement over real transcript queries
+    (issue #182)."""
+    import json as _json
+    from .replay_queries import extract_queries, format_report, open_context, replay
+
+    queries = extract_queries(args.transcript)
+    ctx = open_context(args.store, query_mode=args.query_mode)
+    report = replay(ctx, queries, store=args.store, project_name=args.project,
+                    jaccard_threshold=args.jaccard)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            _json.dump(report.as_dict(), fh, indent=2, default=str)
+    print(format_report(report))
+
+
 def cmd_replay_eval(args):
     """Replay Claude Code transcripts through candidate retrieval-trigger
     policies and print a weighted FN/FP report (issue #160)."""
@@ -1293,6 +1309,28 @@ def main():
     )
     cc_parser.add_argument("db", help="SQLite path (from corpus-snapshot or a dev store).")
     cc_parser.set_defaults(func=cmd_corpus_census)
+
+    # replay-queries (4.0 program, #182): legacy vs unified read-path agreement
+    rq_parser = subparsers.add_parser(
+        "replay-queries",
+        help="Replay search/report_error/get_entry/read_rule calls from Claude Code "
+             "JSONL transcripts against one store under MCM_ENTRY_MODEL=legacy and "
+             "unified; report id-set / rank / row agreement (JSON with --out).",
+    )
+    rq_parser.add_argument("transcript", nargs="+", help="Claude Code JSONL transcript(s).")
+    rq_parser.add_argument("--store", required=True,
+                           help="SQLite path or Postgres DSN (schema is ensured: a pre-4.0 "
+                                "snapshot migrates and backfills first).")
+    rq_parser.add_argument("--out", default="", help="Write the full JSON report here.")
+    rq_parser.add_argument("--project", default="",
+                           help="Default project for report_error replays (the server's "
+                                "project_name at the time); empty = no filter.")
+    rq_parser.add_argument("--query-mode", default="strict", choices=["strict", "natural"],
+                           help="Postgres search query_mode to replay under (match the "
+                                "deployment's MCM_BACKENDS_SEARCH_OPTIONS).")
+    rq_parser.add_argument("--jaccard", type=float, default=0.9,
+                           help="Agreement threshold on returned-id Jaccard (default 0.9).")
+    rq_parser.set_defaults(func=cmd_replay_queries)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(
