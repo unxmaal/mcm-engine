@@ -6,6 +6,12 @@ refactors tools/*.py to use ctx.storage instead of db.execute directly).
 """
 from __future__ import annotations
 
+import json as _json
+from datetime import timezone as _timezone
+
+from ...backends import Entry
+from ...entries import backfill as _backfill_entries, needs_backfill as _needs_backfill
+
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -50,6 +56,48 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(s)
     except ValueError:
         return None
+
+
+# ---- unified entries helpers (issue #179) ----
+
+_ENTRY_UPDATABLE = frozenset({
+    "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
+    "superseded_by", "valid_until", "hit_count", "last_hit_at",
+    "reinforcement_count", "source_classification", "facets", "facets_json",
+})
+
+
+def _iso(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    return v.isoformat() if isinstance(v, datetime) else str(v)
+
+
+def _now_text() -> str:
+    # Same shape as the legacy tables' datetime('now') default.
+    return datetime.now(_timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _dump_facets(facets: Any) -> str:
+    return _json.dumps(facets or {}, sort_keys=True, default=str)
+
+
+def _entry_from_row(r: sqlite3.Row) -> Entry:
+    raw = _col(r, "facets_json")
+    try:
+        facets = _json.loads(raw) if raw else {}
+    except ValueError:
+        facets = {}
+    return Entry(
+        kind=r["kind"], id=r["id"], subkind=r["subkind"], title=r["title"],
+        summary=r["summary"], body=r["body"], tags=r["tags"], project=r["project"],
+        pinned=bool(r["pinned"]), status=r["status"] or "active",
+        superseded_by=r["superseded_by"], valid_until=_parse_dt(r["valid_until"]),
+        hit_count=r["hit_count"] or 0, last_hit_at=_parse_dt(r["last_hit_at"]),
+        reinforcement_count=r["reinforcement_count"] or 0,
+        created_at=_parse_dt(r["created_at"]), updated_at=_parse_dt(r["updated_at"]),
+        source_classification=_col(r, "source_classification"), facets=facets,
+    )
 
 
 def _knowledge_from_row(r: sqlite3.Row) -> KnowledgeRow:
@@ -255,6 +303,10 @@ class SqliteStorage:
 
     def ensure_schema(self) -> None:
         migrate_core(self._db)
+        # Issue #179 expand step: populate entries from the legacy tables once,
+        # verified row by row; a mismatch raises (legacy tables untouched).
+        if _needs_backfill(self):
+            self.backfill_entries()
 
     # ---- Transactions ----
 
@@ -464,6 +516,128 @@ class SqliteStorage:
             f"UPDATE errors SET {cols} WHERE id = ?", values,
         )
         self._db.commit()
+
+    # ---- Unified entries (issue #179) ----
+
+    def insert_entry(self, entry: Entry, *, if_absent: bool = False) -> Optional[int]:
+        new = not (entry.id and entry.id > 0)
+        eid = self.next_entry_id(entry.kind) if new else entry.id
+        created = _iso(entry.created_at)
+        updated = _iso(entry.updated_at)
+        if new:
+            created = created or _now_text()
+            updated = updated or created
+        verb = "INSERT OR IGNORE" if if_absent else "INSERT"
+        cur = self._db.execute_write(
+            f"{verb} INTO entries (kind, id, subkind, title, summary, body, tags, "
+            "project, pinned, status, superseded_by, valid_until, hit_count, "
+            "last_hit_at, reinforcement_count, created_at, updated_at, "
+            "source_classification, facets_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (entry.kind, eid, entry.subkind, entry.title, entry.summary, entry.body,
+             entry.tags, entry.project, 1 if entry.pinned else 0, entry.status or "active",
+             entry.superseded_by, _iso(entry.valid_until), entry.hit_count or 0,
+             _iso(entry.last_hit_at), entry.reinforcement_count or 0, created, updated,
+             entry.source_classification, _dump_facets(entry.facets)),
+        )
+        self._db.commit()
+        return None if (if_absent and cur.rowcount == 0) else eid
+
+    def update_entry(self, kind: str, entry_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        bad = set(fields) - _ENTRY_UPDATABLE
+        if bad:
+            raise ValueError(f"unknown entry fields: {sorted(bad)}")
+        if "facets" in fields:
+            fields["facets_json"] = _dump_facets(fields.pop("facets"))
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        values = tuple(
+            (1 if v else 0) if k == "pinned" else _iso(v) if isinstance(v, datetime) else v
+            for k, v in fields.items()
+        ) + (kind, entry_id)
+        self._db.execute_write(
+            f"UPDATE entries SET {cols}, updated_at = datetime('now') "
+            f"WHERE kind = ? AND id = ?", values,
+        )
+        self._db.commit()
+
+    def find_entry(self, kind: str, entry_id: int) -> Optional[Entry]:
+        r = self._db.execute(
+            "SELECT * FROM entries WHERE kind = ? AND id = ?", (kind, entry_id)
+        ).fetchone()
+        return _entry_from_row(r) if r else None
+
+    def delete_entry(self, kind: str, entry_id: int) -> None:
+        self._db.execute_write(
+            "DELETE FROM entries WHERE kind = ? AND id = ?", (kind, entry_id)
+        )
+        self._db.commit()
+
+    def count_entries(self, kind: Optional[str] = None) -> int:
+        if kind is None:
+            r = self._db.execute("SELECT COUNT(*) AS cnt FROM entries").fetchone()
+        else:
+            r = self._db.execute(
+                "SELECT COUNT(*) AS cnt FROM entries WHERE kind = ?", (kind,)
+            ).fetchone()
+        return r["cnt"]
+
+    def iter_entries_unified(self, kind: Optional[str] = None) -> Iterator[Entry]:
+        if kind is None:
+            rows = self._db.execute("SELECT * FROM entries ORDER BY kind, id").fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM entries WHERE kind = ? ORDER BY id", (kind,)
+            ).fetchall()
+        for r in rows:
+            yield _entry_from_row(r)
+
+    def page_entries_unified(
+        self, kind: str, *, after_id: int = 0, limit: int = 100,
+    ) -> list[Entry]:
+        rows = self._db.execute(
+            "SELECT * FROM entries WHERE kind = ? AND id > ? ORDER BY id LIMIT ?",
+            (kind, after_id, limit),
+        ).fetchall()
+        return [_entry_from_row(r) for r in rows]
+
+    def next_entry_id(self, kind: str) -> int:
+        # Read-then-bump under the connection lock so two writers never draw
+        # the same id.
+        with self._db.transaction():
+            r = self._db.execute(
+                "SELECT next_id FROM entry_ids WHERE kind = ?", (kind,)
+            ).fetchone()
+            if r is None:
+                self.seed_entry_ids(kind)
+                r = self._db.execute(
+                    "SELECT next_id FROM entry_ids WHERE kind = ?", (kind,)
+                ).fetchone()
+            nid = int(r["next_id"])
+            self._db.execute_write(
+                "UPDATE entry_ids SET next_id = ? WHERE kind = ?", (nid + 1, kind)
+            )
+        return nid
+
+    def seed_entry_ids(self, kind: str) -> None:
+        table = _ENTITY_TABLE[EntityType(kind)]
+        r = self._db.execute(
+            f"SELECT MAX(COALESCE((SELECT MAX(id) FROM {table}), 0), "
+            f"COALESCE((SELECT MAX(id) FROM entries WHERE kind = ?), 0)) AS m",
+            (kind,),
+        ).fetchone()
+        nxt = int(r["m"]) + 1
+        self._db.execute_write(
+            "INSERT INTO entry_ids (kind, next_id) VALUES (?, ?) "
+            "ON CONFLICT(kind) DO UPDATE SET next_id = MAX(next_id, excluded.next_id)",
+            (kind, nxt),
+        )
+        self._db.commit()
+
+    def backfill_entries(self) -> dict:
+        with self.transaction():
+            return _backfill_entries(self)
 
     # ---- Rules ----
 

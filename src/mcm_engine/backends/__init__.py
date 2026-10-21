@@ -124,6 +124,33 @@ class Capability(StrEnum):
 
 
 @dataclass
+class Entry:
+    """Unified entry (issue #179, 4.0 program #176): one shape for every
+    stored thing, identified by ``(kind, id)`` so every legacy reference keeps
+    working. ``facets`` holds the kind-specific named fields (see
+    ``mcm_engine.entries`` for the lossless projection)."""
+    kind: str
+    id: int
+    title: str
+    summary: Optional[str] = None
+    body: Optional[str] = None
+    tags: Optional[str] = None
+    project: Optional[str] = None
+    subkind: Optional[str] = None
+    pinned: bool = False
+    status: str = "active"
+    superseded_by: Optional[int] = None
+    valid_until: Optional[datetime] = None
+    hit_count: int = 0
+    last_hit_at: Optional[datetime] = None
+    reinforcement_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    source_classification: Optional[str] = None
+    facets: dict = field(default_factory=dict)
+
+
+@dataclass
 class KnowledgeRow:
     id: int
     topic: str
@@ -658,6 +685,38 @@ class StorageBackend(Protocol):
         paging stays stable under concurrent writes; the caller pages by
         passing the last id it saw as the next ``after_id``.
         """
+        ...
+
+    # ---- Unified entries (issue #179; expand step of #176) ----
+    def insert_entry(self, entry: Entry, *, if_absent: bool = False) -> Optional[int]:
+        """Insert one unified entry. ``entry.id`` <= 0 draws the next id for
+        its kind. With ``if_absent`` an existing ``(kind, id)`` is left alone
+        and None is returned (idempotent backfill); otherwise returns the id."""
+        ...
+
+    def update_entry(self, kind: str, entry_id: int, **fields: Any) -> None: ...
+    def find_entry(self, kind: str, entry_id: int) -> Optional[Entry]: ...
+    def delete_entry(self, kind: str, entry_id: int) -> None: ...
+    def count_entries(self, kind: Optional[str] = None) -> int: ...
+
+    def iter_entries_unified(self, kind: Optional[str] = None) -> Iterator[Entry]:
+        """Every unified entry (optionally one kind), (kind, id) ascending."""
+        ...
+
+    def page_entries_unified(
+        self, kind: str, *, after_id: int = 0, limit: int = 100,
+    ) -> list[Entry]: ...
+
+    def next_entry_id(self, kind: str) -> int:
+        """Draw the next id for ``kind`` from the per-kind sequence."""
+        ...
+
+    def seed_entry_ids(self, kind: str) -> None:
+        """Advance ``kind``'s sequence past max(id) over legacy and unified rows."""
+        ...
+
+    def backfill_entries(self) -> dict:
+        """Run ``mcm_engine.entries.backfill`` inside one transaction."""
         ...
 
     def iter_sessions(

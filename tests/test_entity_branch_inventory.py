@@ -38,8 +38,10 @@ EXPECTED_DISPATCH_SITES: dict[str, tuple[int, str]] = {
     "tools/rules.py":               (3, "incidental: promote_to_rule projection by type"),
     "testing/conformance.py":       (3, "test: hit.entity_type assertions"),
     "admin/service.py":             (2, "essential: rule-graph relation filter"),
+    "corpus_snapshot.py":           (7, "incidental: #177 parse/project by type (sanctioned legacy-shape tool, retired with the legacy tables)"),
+    "tools/corpus.py":              (6, "incidental: #170 sanitize plan/apply by type (collapses into the unified text-field map)"),
 }
-EXPECTED_TOTAL = 40
+EXPECTED_TOTAL = 53
 
 
 def _count(path: Path) -> int:

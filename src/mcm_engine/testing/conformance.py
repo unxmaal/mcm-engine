@@ -117,6 +117,47 @@ class StorageConformance:
         assert fetched.summary == "new"
         assert fetched.detail == "added"
 
+    # ---- Unified entries (issue #179) -----------------------------------
+
+    def test_entry_insert_find_update_delete(self, storage):
+        from ..backends import Entry
+        eid = storage.insert_entry(Entry(
+            kind="knowledge", id=0, title="unified", summary="s", body="b",
+            facets={"rationale": "r"}))
+        assert eid > 0
+        got = storage.find_entry("knowledge", eid)
+        assert got is not None and got.title == "unified"
+        assert got.facets == {"rationale": "r"} and got.created_at is not None
+        storage.update_entry("knowledge", eid, body="b2", pinned=True,
+                             facets={"rationale": "r2"})
+        got = storage.find_entry("knowledge", eid)
+        assert got.body == "b2" and got.pinned is True and got.facets == {"rationale": "r2"}
+        assert storage.insert_entry(Entry(kind="knowledge", id=eid, title="dup"),
+                                    if_absent=True) is None
+        assert storage.count_entries("knowledge") == 1
+        assert [e.id for e in storage.page_entries_unified("knowledge", after_id=0, limit=5)] == [eid]
+        storage.delete_entry("knowledge", eid)
+        assert storage.find_entry("knowledge", eid) is None
+
+    def test_backfill_entries_reproduces_legacy_rows(self, storage):
+        from ..entries import entry_hash, from_entry, needs_backfill, to_entry
+        storage.insert_knowledge(KnowledgeRow(id=0, topic="t", summary="s", detail="d"))
+        storage.insert_negative(NegativeRow(id=0, category="c", what_failed="w"))
+        storage.insert_error(ErrorRow(id=0, pattern="p", context="x"))
+        storage.insert_rule(RuleRow(id=0, title="r", keywords="k", content="body"))
+        assert needs_backfill(storage) is True
+        report = storage.backfill_entries()
+        assert all(v["legacy"] == v["entries"] == 1 for v in report.values())
+        for et in EntityType:
+            for row in storage.iter_entries(et):
+                got = storage.find_entry(et.value, row.id)
+                assert entry_hash(got) == entry_hash(to_entry(et, row))
+                assert from_entry(got) == row
+        assert needs_backfill(storage) is False
+        # ids continue past the legacy max for every kind
+        for et in EntityType:
+            assert storage.next_entry_id(et.value) == 2
+
     # ---- Negative + Errors ----------------------------------------------
 
     def test_insert_negative(self, storage):

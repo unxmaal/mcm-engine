@@ -3,7 +3,65 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 17
+CORE_VERSION = 18
+
+# Unified entries (issue #179, 4.0 program #176): additive expand-step tables
+# beside the four legacy tables. One row per (kind, id); facets_json carries
+# the kind-specific named fields; one FTS5 index over the common text columns.
+# Executed on fresh installs and by the v17->v18 migration (idempotent).
+ENTRIES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS entries (
+    kind TEXT NOT NULL,
+    id INTEGER NOT NULL,
+    subkind TEXT,
+    title TEXT NOT NULL,
+    summary TEXT,
+    body TEXT,
+    tags TEXT,
+    project TEXT,
+    pinned INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    superseded_by INTEGER,
+    valid_until TEXT,
+    hit_count INTEGER DEFAULT 0,
+    last_hit_at TEXT,
+    reinforcement_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    source_classification TEXT,
+    facets_json TEXT,
+    PRIMARY KEY (kind, id)
+);
+
+CREATE TABLE IF NOT EXISTS entry_ids (
+    kind TEXT PRIMARY KEY,
+    next_id INTEGER NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+    kind UNINDEXED, title, summary, body, tags,
+    content='entries',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+    INSERT INTO entries_fts(rowid, kind, title, summary, body, tags)
+    VALUES (new.rowid, new.kind, new.title, new.summary, new.body, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+    INSERT INTO entries_fts(entries_fts, rowid, kind, title, summary, body, tags)
+    VALUES ('delete', old.rowid, old.kind, old.title, old.summary, old.body, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+    INSERT INTO entries_fts(entries_fts, rowid, kind, title, summary, body, tags)
+    VALUES ('delete', old.rowid, old.kind, old.title, old.summary, old.body, old.tags);
+    INSERT INTO entries_fts(rowid, kind, title, summary, body, tags)
+    VALUES (new.rowid, new.kind, new.title, new.summary, new.body, new.tags);
+END;
+"""
 
 # Full schema for fresh installs (creates everything at latest version)
 CORE_SCHEMA = """
@@ -769,6 +827,17 @@ def _migrate_v16_to_v17(db: KnowledgeDB) -> None:
     db.commit()
 
 
+def _migrate_v17_to_v18(db: KnowledgeDB) -> None:
+    """v17 -> v18: unified entries expand step (issue #179). Creates the
+    additive entries / entry_ids / entries_fts tables beside the legacy four;
+    no legacy table is touched. The backfill + verify runs from
+    SqliteStorage.ensure_schema (it needs the storage adapter), so this stays a
+    pure DDL step."""
+    db.executescript(ENTRIES_SCHEMA)
+    db.commit()
+    log("Migration v17->v18: created entries, entry_ids, entries_fts")
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -787,6 +856,7 @@ _MIGRATIONS = [
     (14, 15, _migrate_v14_to_v15),
     (15, 16, _migrate_v15_to_v16),
     (16, 17, _migrate_v16_to_v17),
+    (17, 18, _migrate_v17_to_v18),
 ]
 
 
@@ -798,6 +868,7 @@ def migrate_core(db: KnowledgeDB) -> None:
     """
     # Apply full schema — CREATE IF NOT EXISTS makes this safe for existing DBs
     db.executescript(CORE_SCHEMA)
+    db.executescript(ENTRIES_SCHEMA)
 
     # Check current version
     existing = db.execute(

@@ -431,6 +431,18 @@ method shapes (preliminary — Phase 0 will refine):
 - `insert_error(ErrorRow) -> int`
 - `update_error(id, **fields) -> None`  (#170 sanitize re-split)
 
+**Unified entries (#179, 4.0 expand step; both adapters):**
+- `insert_entry(Entry, if_absent=False) -> int | None`
+- `update_entry(kind, id, **fields) -> None`
+- `find_entry(kind, id) -> Entry | None`
+- `delete_entry(kind, id) -> None`
+- `count_entries(kind=None) -> int`
+- `iter_entries_unified(kind=None) -> Iterator[Entry]`
+- `page_entries_unified(kind, after_id, limit) -> list[Entry]`
+- `next_entry_id(kind) -> int`  (per-kind sequence in `entry_ids`)
+- `seed_entry_ids(kind) -> None`
+- `backfill_entries() -> dict`  (runs `entries.backfill` in one transaction)
+
 **Rules:**
 - `find_rule_by_title(title) -> Row | None`
 - `find_rule_by_file_path(path) -> Row | None`
