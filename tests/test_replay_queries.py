@@ -14,12 +14,15 @@ from pathlib import Path
 from mcm_engine.backends import ErrorRow, KnowledgeRow, NegativeRow, RuleRow
 from mcm_engine.cli import main as cli_main
 from mcm_engine.replay_queries import (
+    _ranked_ids,
     extract_queries,
     format_report,
     jaccard,
+    kind_bytes,
     open_context,
     prefix_agreement,
     replay,
+    wire_bytes,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "replay_mini.jsonl"
@@ -47,7 +50,26 @@ def test_extract_queries_keeps_only_replayable_tool_uses():
     assert qs[1].args == {"query": "nudge", "scope": "rules", "detail": "full",
                           "include_archived": True}
     assert all(q.source == "replay_mini.jsonl" for q in qs)
+    # #199: a tool_use is paired with its recorded tool_result (string or
+    # text blocks); unpaired queries carry -1
+    assert [q.recorded_bytes for q in qs] == [10, -1, 6, -1, -1, -1, -1]
     assert extract_queries(["/nonexistent/transcript.jsonl"]) == []
+
+
+def test_wire_bytes_is_the_compact_json_envelope():
+    assert wire_bytes("ab") == len('{"result":"ab"}')
+    assert wire_bytes("…\n") == len('{"result":"…\\n"}'.encode("utf-8"))
+
+
+def test_kind_bytes_attributes_each_hit_block_to_its_kind():
+    text = ("[RULE #1] title\n  body line\n\n[NEGATIVE #2] what\nsecond paragraph of what\n"
+            "  Why: x\n--- Related ---\n  RULE #9\n(summary view)")
+    kb = kind_bytes(text)
+    # blank lines and unindented continuation paragraphs stay with their hit;
+    # a divider or footer line starts an other section
+    assert kb == {"rule": len("[RULE #1] title\n  body line\n\n"),
+                  "negative": len("[NEGATIVE #2] what\nsecond paragraph of what\n  Why: x\n"),
+                  "other": len("--- Related ---\n  RULE #9\n(summary view)\n")}
 
 
 def test_metrics():
@@ -57,7 +79,7 @@ def test_metrics():
     assert prefix_agreement([], [["A", 1]]) == 0.0
 
 
-def test_seeded_store_agrees_completely(tmp_path):
+def test_seeded_store_agrees_completely(tmp_path, monkeypatch):
     ctx = open_context(str(tmp_path / "k.db"))
     _seed(ctx.storage)
     report = replay(ctx, extract_queries([FIXTURE]), store="k.db")
@@ -77,6 +99,18 @@ def test_seeded_store_agrees_completely(tmp_path):
         __import__("mcm_engine.backends", fromlist=["EntityType"]).EntityType.KNOWLEDGE, 1
     ).hit_count == 0
     assert "agree=1.000" in format_report(report)
+    # #199: sizes per tool, ratios only over the queries the transcript paired
+    s = report.sizes["search"]
+    assert s["legacy"]["n"] == 3 and s["unified"]["n"] == 3
+    assert s["recorded"] == {"n": 1, "total": 10, "median": 10.0, "p90": 10.0}
+    monkeypatch.setenv("MCM_ENTRY_MODEL", "legacy")
+    _, mahjong_text = _ranked_ids(ctx, extract_queries([FIXTURE])[0], "")
+    assert s["legacy_ratio"] == wire_bytes(mahjong_text) / 10
+    assert s["unified_ratio"] > 0
+    assert set(s["legacy"]["by_kind"]) <= {"knowledge", "negative", "error", "rule", "other"}
+    assert sum(s["legacy"]["by_kind"].values()) > 0
+    printed = format_report(report)
+    assert "bytes/search:" in printed and "of recorded" in printed
 
 
 def test_tampered_unified_side_is_reported(tmp_path):
