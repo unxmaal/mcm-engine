@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from mcm_engine.testing.conformance import CounterConformance
+from mcm_engine.testing.conformance import WriteThroughCounterConformance
 
 DEFAULT_PG_DSN = "postgresql://mcm:mcm@127.0.0.1:55432/mcm_test"
 TEST_PG_DSN = os.environ.get("MCM_TEST_POSTGRES_DSN", DEFAULT_PG_DSN)
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-class TestPostgresCounters(CounterConformance):
+class TestPostgresCounters(WriteThroughCounterConformance):
     @pytest.fixture
     def _shared(self):
         from mcm_engine.adapters.postgres.counters import PostgresCounters

@@ -515,24 +515,6 @@ class CounterConformance:
         with pytest.raises(ValueError, match="no counter column"):
             counters.increment(EntityType.KNOWLEDGE, k, "made_up_counter")
 
-    def test_increments_are_mirrored_into_entries(self, storage, counters):
-        # #180 dual-write: every counter column lands in entries too.
-        from ..entries import divergence
-        k = storage.insert_knowledge(KnowledgeRow(id=0, topic="m", summary="m", kind="finding"))
-        r = storage.insert_rule(RuleRow(id=0, title="m", keywords="k", content="b"))
-        counters.increment(EntityType.KNOWLEDGE, k, "hit_count", by=2)
-        counters.increment(EntityType.KNOWLEDGE, k, "last_hit_at")
-        counters.increment(EntityType.KNOWLEDGE, k, "reinforcement_count")
-        counters.increment(EntityType.KNOWLEDGE, k, "pinned")
-        counters.increment(EntityType.RULE, r, "correct_count")
-        counters.increment(EntityType.RULE, r, "incorrect_count")
-        counters.increment(EntityType.RULE, r, "correct_count")
-        counters.increment(EntityType.RULE, r, "hit_count")
-        assert divergence(storage) == []
-        e = storage.find_entry("rule", r)
-        assert e.facets["correct_count"] == 2 and e.facets["incorrect_count"] == 1
-        assert storage.find_entry("knowledge", k).hit_count == 2
-
     def test_top_by_returns_descending(self, storage, counters):
         a = storage.insert_knowledge(KnowledgeRow(id=0, topic="A", summary="a", kind="finding"))
         b = storage.insert_knowledge(KnowledgeRow(id=0, topic="B", summary="b", kind="finding"))
@@ -564,6 +546,31 @@ class CounterConformance:
 # ---------------------------------------------------------------------------
 # SearchBackend
 # ---------------------------------------------------------------------------
+
+
+
+class WriteThroughCounterConformance(CounterConformance):
+    """CounterConformance plus the #180 dual-write check, for adapters whose
+    counters are columns on the legacy row (SQLite, Postgres). Off-row stores
+    (Redis) never touch the legacy table, so they have nothing to mirror."""
+
+    def test_increments_are_mirrored_into_entries(self, storage, counters):
+        # #180 dual-write: every counter column lands in entries too.
+        from ..entries import divergence
+        k = storage.insert_knowledge(KnowledgeRow(id=0, topic="m", summary="m", kind="finding"))
+        r = storage.insert_rule(RuleRow(id=0, title="m", keywords="k", content="b"))
+        counters.increment(EntityType.KNOWLEDGE, k, "hit_count", by=2)
+        counters.increment(EntityType.KNOWLEDGE, k, "last_hit_at")
+        counters.increment(EntityType.KNOWLEDGE, k, "reinforcement_count")
+        counters.increment(EntityType.KNOWLEDGE, k, "pinned")
+        counters.increment(EntityType.RULE, r, "correct_count")
+        counters.increment(EntityType.RULE, r, "incorrect_count")
+        counters.increment(EntityType.RULE, r, "correct_count")
+        counters.increment(EntityType.RULE, r, "hit_count")
+        assert divergence(storage) == []
+        e = storage.find_entry("rule", r)
+        assert e.facets["correct_count"] == 2 and e.facets["incorrect_count"] == 1
+        assert storage.find_entry("knowledge", k).hit_count == 2
 
 
 class SearchConformance:
