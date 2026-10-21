@@ -368,6 +368,26 @@ def cmd_corpus_census(args):
     print(format_census(census(storage)))
 
 
+def cmd_corpus_verify_entries(args):
+    """Prove `entries` reproduces the four legacy tables on a store (issue
+    #183 runbook): per-kind counts on both sides plus every row that differs.
+    Exit 1 on any divergence."""
+    import json as _json
+    from .backends import EntityType
+    from .entries import divergence
+    from .replay_queries import open_context
+
+    ctx = open_context(args.store, ensure=False)  # observe, never repair
+    counts = {et.value: {"legacy": ctx.storage.count_by_type(et),
+                         "entries": ctx.storage.count_entries(et.value)}
+              for et in EntityType}
+    problems = divergence(ctx.storage)
+    print(_json.dumps({"store": args.store, "counts": counts,
+                       "divergence": problems}, indent=2))
+    if problems:
+        sys.exit(1)
+
+
 def cmd_replay_queries(args):
     """Legacy vs unified read-path agreement over real transcript queries
     (issue #182)."""
@@ -1331,6 +1351,14 @@ def main():
     rq_parser.add_argument("--jaccard", type=float, default=0.9,
                            help="Agreement threshold on returned-id Jaccard (default 0.9).")
     rq_parser.set_defaults(func=cmd_replay_queries)
+
+    cv_parser = subparsers.add_parser(
+        "corpus-verify-entries",
+        help="4.0 cutover check (#183): per-kind legacy vs entries counts and every "
+             "row whose entries projection differs; exit 1 on any divergence.",
+    )
+    cv_parser.add_argument("--store", required=True, help="SQLite path or Postgres DSN.")
+    cv_parser.set_defaults(func=cmd_corpus_verify_entries)
 
     # ingest (polymorphic bulk import)
     ingest_parser = subparsers.add_parser(

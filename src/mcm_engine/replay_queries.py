@@ -260,10 +260,11 @@ def replay(ctx: Context, queries: list[ReplayQuery], *, store: str = "",
 
 # ---- store resolution ---------------------------------------------------------------
 
-def open_context(store: str, *, query_mode: str = "strict") -> Context:
+def open_context(store: str, *, query_mode: str = "strict", ensure: bool = True) -> Context:
     """A full Context (storage + counters + search) for a SQLite path or a
-    Postgres DSN, schema ensured (so a pre-4.0 snapshot migrates, backfills
-    and reconciles exactly as a deployment would)."""
+    Postgres DSN. With ``ensure`` (default) the schema is ensured, so a pre-4.0
+    snapshot migrates, backfills and reconciles exactly as a deployment would;
+    a verifier passes ``ensure=False`` to observe the store without repairing it."""
     from .adapters.sqlite.session import InMemorySession
 
     if store.startswith(("postgres://", "postgresql://")):
@@ -274,7 +275,8 @@ def open_context(store: str, *, query_mode: str = "strict") -> Context:
 
         pool = make_pool(store)
         storage = PostgresStorage(dsn=store, pool=pool)
-        storage.ensure_schema()
+        if ensure:
+            storage.ensure_schema()
         return Context(storage=storage, counters=PostgresCounters(store, pool=pool),
                        search=PostgresSearch(store, pool=pool, query_mode=query_mode),
                        session=InMemorySession())
@@ -287,7 +289,8 @@ def open_context(store: str, *, query_mode: str = "strict") -> Context:
     path = store[len("sqlite:///"):] if store.startswith("sqlite:///") else store
     db = KnowledgeDB(path)
     storage = SqliteStorage(db=db)
-    storage.ensure_schema()
+    if ensure:
+        storage.ensure_schema()
     return Context(storage=storage, counters=SqliteCounters(db=db),
                    search=SqliteSearch(db=db), session=InMemorySession())
 

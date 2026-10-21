@@ -13,6 +13,7 @@ metadata:
 data:
   MCM_PROJECT_NAME: {{ .Values.mcm.projectName | quote }}
   MCM_SOURCE_OF_TRUTH: {{ .Values.mcm.sourceOfTruth | quote }}
+  MCM_ENTRY_MODEL: {{ .Values.mcm.entryModel | default "legacy" | quote }}
   MCM_TRANSPORT: {{ .Values.mcm.transport | quote }}
   MCM_HOST: "0.0.0.0"
   MCM_PORT: {{ .Values.mcm.port | quote }}

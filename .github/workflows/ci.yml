@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   embedded:
-    name: Embedded conformance (SQLite + InMemorySession)${{ matrix.entry_model == 'unified' && ' [unified]' || '' }}
+    name: Embedded conformance (SQLite + InMemorySession) [${{ matrix.entry_model }}]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # #181: the whole suite runs under both read paths, each on a fresh runner
@@ -100,7 +100,7 @@ jobs:
           fi
 
   cross-adapter:
-    name: Cross-adapter conformance (postgres + redis + opensearch)${{ matrix.entry_model == 'unified' && ' [unified]' || '' }}
+    name: Cross-adapter conformance (postgres + redis + opensearch) [${{ matrix.entry_model }}]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

@@ -23,6 +23,10 @@ fullnameOverride: ""
 mcm:
   projectName: mcm
   sourceOfTruth: database        # DB authoritative; no filesystem rules sync
+  # 4.0 read path: legacy (the four tables) or unified (the entries table the
+  # 4.0 expand step keeps in lockstep). Flip to unified only after the soak
+  # described in the README cutover runbook; flip back is instant.
+  entryModel: legacy
   transport: streamable-http     # clients hit /mcp (image default is sse)
   port: 8080
   # Host values clients reach the daemon by. REQUIRED past the DNS-rebinding
