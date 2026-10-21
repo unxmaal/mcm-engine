@@ -8,6 +8,12 @@ generated column.
 """
 from __future__ import annotations
 
+import json as _json
+from datetime import timezone as _timezone
+
+from ...backends import Entry
+from ...entries import backfill as _backfill_entries, needs_backfill as _needs_backfill
+
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterator, Optional
@@ -568,6 +574,63 @@ _DDL_STATEMENTS: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_sieve_rejections_principal ON sieve_rejections (principal)",
     "CREATE INDEX IF NOT EXISTS idx_sieve_rejections_reason    ON sieve_rejections (reason_code)",
+
+    # Unified entries (issue #179, 4.0 program #176): additive expand-step
+    # tables beside the legacy four. Guarded + idempotent like everything above;
+    # the backfill runs from ensure_schema when entries is empty.
+    """
+    CREATE TABLE IF NOT EXISTS entries (
+        kind                 TEXT NOT NULL,
+        id                   BIGINT NOT NULL,
+        subkind              TEXT,
+        title                TEXT NOT NULL,
+        summary              TEXT,
+        body                 TEXT,
+        tags                 TEXT,
+        project              TEXT,
+        pinned               BOOLEAN NOT NULL DEFAULT FALSE,
+        status               TEXT NOT NULL DEFAULT 'active',
+        superseded_by        BIGINT,
+        valid_until          TIMESTAMPTZ,
+        hit_count            INTEGER NOT NULL DEFAULT 0,
+        last_hit_at          TIMESTAMPTZ,
+        reinforcement_count  INTEGER NOT NULL DEFAULT 0,
+        created_at           TIMESTAMPTZ DEFAULT now(),
+        updated_at           TIMESTAMPTZ DEFAULT now(),
+        source_classification TEXT,
+        facets_json          TEXT,
+        tsv  tsvector GENERATED ALWAYS AS (
+            setweight(to_tsvector('english', coalesce(title, '')),   'A') ||
+            setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
+            setweight(to_tsvector('english', coalesce(body, '')),    'C') ||
+            setweight(to_tsvector('english', coalesce(tags, '')),    'D')
+        ) STORED,
+        PRIMARY KEY (kind, id)
+    )
+    """,
+    # Timestamps are nullable so a legacy row without updated_at (negative,
+    # error) backfills verbatim and hashes equal; this relaxes a table created
+    # by an earlier build of this step. Idempotent catalog read afterwards.
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'entries' AND column_name = 'updated_at'
+                   AND is_nullable = 'NO') THEN
+            ALTER TABLE entries ALTER COLUMN created_at DROP NOT NULL;
+            ALTER TABLE entries ALTER COLUMN updated_at DROP NOT NULL;
+        END IF;
+    END$$
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_entries_tsv     ON entries USING GIN (tsv)",
+    "CREATE INDEX IF NOT EXISTS idx_entries_project ON entries (project) WHERE project IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_entries_pinned  ON entries (pinned) WHERE pinned",
+    """
+    CREATE TABLE IF NOT EXISTS entry_ids (
+        kind     TEXT PRIMARY KEY,
+        next_id  BIGINT NOT NULL
+    )
+    """,
 ]
 
 
@@ -581,6 +644,8 @@ _ENTITY_TABLE: dict[EntityType, str] = {
 
 # Tables this adapter owns. Used by truncate_all() for the test fixture.
 _OWNED_TABLES: list[str] = [
+    "entries",
+    "entry_ids",
     "token_ledger",
     "rule_outcomes",
     "rule_events",
@@ -607,6 +672,38 @@ _OWNED_TABLES: list[str] = [
 
 def _as_dt(v: Any) -> Optional[datetime]:
     return v if isinstance(v, datetime) else None
+
+
+# Columns update_entry may touch (issue #179). `facets` is accepted and stored
+# as facets_json.
+_ENTRY_UPDATABLE = frozenset({
+    "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
+    "superseded_by", "valid_until", "hit_count", "last_hit_at",
+    "reinforcement_count", "source_classification", "facets", "facets_json",
+})
+
+
+def _dump_facets(facets: Any) -> str:
+    return _json.dumps(facets or {}, sort_keys=True, default=str)
+
+
+def _entry_from_row(r: dict[str, Any]) -> Entry:
+    raw = r.get("facets_json")
+    try:
+        facets = _json.loads(raw) if raw else {}
+    except ValueError:
+        facets = {}
+    return Entry(
+        kind=r["kind"], id=r["id"], subkind=r.get("subkind"), title=r["title"],
+        summary=r.get("summary"), body=r.get("body"), tags=r.get("tags"),
+        project=r.get("project"), pinned=bool(r.get("pinned")),
+        status=r.get("status") or "active", superseded_by=r.get("superseded_by"),
+        valid_until=_as_dt(r.get("valid_until")), hit_count=r.get("hit_count") or 0,
+        last_hit_at=_as_dt(r.get("last_hit_at")),
+        reinforcement_count=r.get("reinforcement_count") or 0,
+        created_at=_as_dt(r.get("created_at")), updated_at=_as_dt(r.get("updated_at")),
+        source_classification=r.get("source_classification"), facets=facets,
+    )
 
 
 def _knowledge_from_row(r: dict[str, Any]) -> KnowledgeRow:
@@ -866,6 +963,11 @@ class PostgresStorage:
                 (CORE_VERSION,),
             )
         self._commit()
+        # Issue #179 expand step: populate entries from the legacy tables once,
+        # verified row by row; a mismatch raises and the server refuses to
+        # start (the legacy tables are untouched either way).
+        if _needs_backfill(self):
+            self.backfill_entries()
 
     def truncate_all(self) -> None:
         """Test-only convenience: wipe every owned table and reset
@@ -1017,6 +1119,126 @@ class PostgresStorage:
             new_id = cur.fetchone()["id"]
         self._commit()
         return new_id
+
+    # ---- Unified entries (issue #179) ----
+
+    def insert_entry(self, entry: Entry, *, if_absent: bool = False) -> Optional[int]:
+        new = not (entry.id and entry.id > 0)
+        eid = self.next_entry_id(entry.kind) if new else entry.id
+        created, updated = entry.created_at, entry.updated_at
+        if new:
+            # Legacy values pass through verbatim (the backfill hashes them);
+            # only a brand-new entry gets stamped here.
+            created = created or datetime.now(_timezone.utc)
+            updated = updated or created
+        conflict = " ON CONFLICT (kind, id) DO NOTHING" if if_absent else ""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO entries (kind, id, subkind, title, summary, body, tags, "
+                "project, pinned, status, superseded_by, valid_until, hit_count, "
+                "last_hit_at, reinforcement_count, created_at, updated_at, "
+                "source_classification, facets_json) VALUES "
+                "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s, %s, %s)" + conflict,
+                (entry.kind, eid, entry.subkind, entry.title, entry.summary, entry.body,
+                 entry.tags, entry.project, bool(entry.pinned), entry.status or "active",
+                 entry.superseded_by, entry.valid_until, entry.hit_count or 0,
+                 entry.last_hit_at, entry.reinforcement_count or 0, created, updated,
+                 entry.source_classification, _dump_facets(entry.facets)),
+            )
+            inserted = cur.rowcount
+        self._commit()
+        return None if (if_absent and inserted == 0) else eid
+
+    def update_entry(self, kind: str, entry_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        bad = set(fields) - _ENTRY_UPDATABLE
+        if bad:
+            raise ValueError(f"unknown entry fields: {sorted(bad)}")
+        if "facets" in fields:
+            fields["facets_json"] = _dump_facets(fields.pop("facets"))
+        cols = ", ".join(f"{k} = %s" for k in fields)
+        values = tuple(fields.values()) + (kind, entry_id)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE entries SET {cols}, updated_at = now() "
+                f"WHERE kind = %s AND id = %s", values,
+            )
+        self._commit()
+
+    def find_entry(self, kind: str, entry_id: int) -> Optional[Entry]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT * FROM entries WHERE kind = %s AND id = %s", (kind, entry_id))
+            r = cur.fetchone()
+        return _entry_from_row(r) if r else None
+
+    def delete_entry(self, kind: str, entry_id: int) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM entries WHERE kind = %s AND id = %s", (kind, entry_id))
+        self._commit()
+
+    def count_entries(self, kind: Optional[str] = None) -> int:
+        with self._conn.cursor() as cur:
+            if kind is None:
+                cur.execute("SELECT COUNT(*) AS cnt FROM entries")
+            else:
+                cur.execute("SELECT COUNT(*) AS cnt FROM entries WHERE kind = %s", (kind,))
+            return cur.fetchone()["cnt"]
+
+    def iter_entries_unified(self, kind: Optional[str] = None) -> Iterator[Entry]:
+        # Generator: borrows its own connection (see iter_entries).
+        with _borrow(self) as conn:
+            with conn.cursor(name="iter_entries_unified") as cur:
+                if kind is None:
+                    cur.execute("SELECT * FROM entries ORDER BY kind, id")
+                else:
+                    cur.execute("SELECT * FROM entries WHERE kind = %s ORDER BY id", (kind,))
+                for r in cur:
+                    yield _entry_from_row(r)
+
+    def page_entries_unified(
+        self, kind: str, *, after_id: int = 0, limit: int = 100,
+    ) -> list[Entry]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM entries WHERE kind = %s AND id > %s ORDER BY id LIMIT %s",
+                (kind, after_id, limit),
+            )
+            return [_entry_from_row(r) for r in cur.fetchall()]
+
+    def next_entry_id(self, kind: str) -> int:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM entry_ids WHERE kind = %s", (kind,))
+            if cur.fetchone() is None:
+                self.seed_entry_ids(kind)
+            cur.execute(
+                "UPDATE entry_ids SET next_id = next_id + 1 WHERE kind = %s "
+                "RETURNING next_id - 1 AS id", (kind,),
+            )
+            nid = cur.fetchone()["id"]
+        self._commit()
+        return int(nid)
+
+    def seed_entry_ids(self, kind: str) -> None:
+        table = _ENTITY_TABLE[EntityType(kind)]
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT GREATEST(COALESCE((SELECT MAX(id) FROM {table}), 0), "
+                f"COALESCE((SELECT MAX(id) FROM entries WHERE kind = %s), 0)) AS m",
+                (kind,),
+            )
+            nxt = int(cur.fetchone()["m"]) + 1
+            cur.execute(
+                "INSERT INTO entry_ids (kind, next_id) VALUES (%s, %s) "
+                "ON CONFLICT (kind) DO UPDATE SET next_id = GREATEST(entry_ids.next_id, EXCLUDED.next_id)",
+                (kind, nxt),
+            )
+        self._commit()
+
+    def backfill_entries(self) -> dict:
+        with self.transaction():
+            return _backfill_entries(self)
 
     # ---- Rules ----
 
