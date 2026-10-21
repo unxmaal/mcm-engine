@@ -15,7 +15,9 @@ import pytest
 from mcm_engine.hooks import coverage
 from mcm_engine.hooks.mcp_enforcement import _read_state, _state_path
 from mcm_engine.hooks.user_prompt_submit import (
+    INJECT_MAX_BYTES,
     _pick_keyword,
+    _truncate_injection,
     classify,
     main,
 )
@@ -148,3 +150,66 @@ def test_bad_stdin_is_fail_open(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("not json{"))
     assert main() == 0
     assert capsys.readouterr().out.strip() == ""
+
+
+# --- issue #172: byte cap + session dedup -----------------------------------
+
+
+def test_truncate_injection_bounds_bytes_at_hit_boundary():
+    hits = "\n\n".join(f"[NEGATIVE #{i}] " + "X" * 500 for i in range(10))
+    out = _truncate_injection(hits, "deploy")
+    assert len(out.encode("utf-8")) <= INJECT_MAX_BYTES
+    assert "truncated — run search('deploy')" in out
+    # cut on a boundary: no hit is shown half (every kept [NEGATIVE #n] line is
+    # followed by its full 500-X body up to the pointer)
+    assert out.endswith("for the rest)")
+
+
+def test_truncate_injection_passes_small_result_through():
+    small = "[RULE #1] tiny"
+    assert _truncate_injection(small, "q") == small
+
+
+def test_huge_injection_is_capped_in_main(monkeypatch, capsys, tmp_path):
+    big = "\n\n".join(f"[NEGATIVE #{i}] " + "Y" * 800 for i in range(20))
+    rc, out = _run(
+        monkeypatch, capsys,
+        {"prompt": "the deploy_guard thing again", "cwd": str(tmp_path),
+         "session_id": "cap"},
+        search=lambda q, cwd: big,
+    )
+    assert rc == 0
+    hso = json.loads(out)["hookSpecificOutput"]
+    # the injected result body is bounded (prefix adds a little, allow slack)
+    assert len(hso["additionalContext"].encode("utf-8")) <= INJECT_MAX_BYTES + 200
+    assert "truncated" in hso["additionalContext"]
+
+
+def test_topic_injected_once_per_session(monkeypatch, capsys, tmp_path):
+    runs = []
+
+    def fake_search(q, cwd):
+        runs.append(q)
+        return "[RULE #1] the answer for save_snapshot"
+
+    ev = {"prompt": "why did we change save_snapshot again", "cwd": str(tmp_path),
+          "session_id": "dedup"}
+    rc1, out1 = _run(monkeypatch, capsys, ev, search=fake_search)
+    rc2, out2 = _run(monkeypatch, capsys, ev, search=fake_search)
+
+    assert "[RULE #1]" in json.loads(out1)["hookSpecificOutput"]["additionalContext"]
+    assert out2.strip() == ""           # second time: no re-injection
+
+
+def test_different_topic_still_injects_same_session(monkeypatch, capsys, tmp_path):
+    def fake_search(q, cwd):
+        return f"[RULE #1] answer for {q}"
+
+    base = {"cwd": str(tmp_path), "session_id": "multi"}
+    _run(monkeypatch, capsys,
+         {**base, "prompt": "why did we change save_snapshot again"},
+         search=fake_search)
+    _, out2 = _run(monkeypatch, capsys,
+                   {**base, "prompt": "remember the healthcheck we discussed"},
+                   search=fake_search)
+    assert "healthcheck" in json.loads(out2)["hookSpecificOutput"]["additionalContext"]
