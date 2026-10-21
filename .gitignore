@@ -36,3 +36,6 @@ Thumbs.db
 terraform/aws/.terraform/
 
 
+
+# Working files (CLAUDE.md): per-task scratch dirs, never committed.
+tmp/
