@@ -44,6 +44,8 @@ services:
       MCM_BACKENDS_STORAGE: postgres
       MCM_BACKENDS_COUNTERS: postgres
       MCM_BACKENDS_SEARCH: postgres
+      # 4.0 read path: legacy (default) or unified; see README "Upgrade: 4.0".
+      MCM_ENTRY_MODEL: legacy
       # The session axis is in-memory only (live nudge counters, reset on restart);
       # there is no postgres session adapter, so it is intentionally left unset.
       MCM_POSTGRES_DSN: postgresql://mcm:${POSTGRES_PASSWORD}@postgres:5432/mcm
@@ -70,6 +72,7 @@ services:
       MCM_BACKENDS_STORAGE: postgres
       MCM_BACKENDS_COUNTERS: postgres
       MCM_BACKENDS_SEARCH: postgres
+      MCM_ENTRY_MODEL: legacy
       MCM_POSTGRES_DSN: postgresql://mcm:${POSTGRES_PASSWORD}@postgres:5432/mcm
     # Override the image's baked healthcheck: it probes ${MCM_PORT} (8080), but
     # the admin UI listens on 8090, so the default would always report unhealthy.

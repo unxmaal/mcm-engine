@@ -603,6 +603,34 @@ Verify after upgrading:
   Column existence still confirms a specific migration, e.g.
   `SELECT to_regclass('public.token_ledger');` (non-null).
 
+### 4.0: the unified entries model and the cutover runbook
+
+4.0.0 is an expand-only release: it adds an `entries` table beside the four
+legacy tables, keeps them in lockstep on every write, and reads from the legacy
+tables unless `MCM_ENTRY_MODEL=unified` is set. Nothing a client calls changes.
+
+1. **Insurance.** `docker compose exec -T postgres pg_dump -U mcm -d mcm -Fc > mcm-pre-4.0.dump`
+   (SQLite: copy the `.db`).
+2. **Deploy 4.0.0** with `MCM_ENTRY_MODEL` unset or `legacy` (the compose and
+   Helm defaults). First boot backfills `entries` from the legacy tables and
+   verifies every row; on a mismatch the server refuses to start and the legacy
+   tables are untouched (redeploy 3.16.x, nothing to undo).
+3. **Verify.** `mcm-engine corpus-verify-entries --store "$DSN"` prints the
+   per-kind legacy vs `entries` counts and exits 1 on any differing row. On
+   Postgres do not look for a `_mcm_versions` row: counts and content are the
+   check. Equivalent SQL: `select kind, count(*) from entries group by kind;`
+   against `select count(*) from knowledge` and the other three.
+4. **Soak on legacy.** Normal sessions. Every write mirrors into `entries`;
+   each restart reconciles. Re-run step 3 whenever you like.
+5. **Flip.** Set `MCM_ENTRY_MODEL=unified`, restart, run the same sessions.
+   `session_start`, `search`, `get_entry` should read the same; the measured
+   difference on the reference corpus is rank-tail churn only (see the
+   CHANGELOG). To compare on your own history:
+   `mcm-engine replay-queries ~/.claude/projects/<proj>/*.jsonl --store "$DSN" --query-mode natural`.
+6. **Back out** at any point by unsetting the flag and restarting. Nothing moved.
+
+4.1 flips the default to `unified`; 5.0 drops the legacy tables one cycle later.
+
 ### Moving between backends
 
 ```bash

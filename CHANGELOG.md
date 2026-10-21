@@ -6,6 +6,74 @@ versioning.
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-10-21
+
+The unified entries model, expand step (umbrella #176, children #177–#183).
+**Nothing a client calls changes**: every tool name, signature and id keeps
+working, and the default read path is the one 3.16 used.
+
+### Added
+- **`entries`: one table for every stored thing, keyed by `(kind, id)`**
+  (#179). The four legacy tables (knowledge, negative_knowledge, errors, rules)
+  are projected losslessly into it at first boot by a self-verifying backfill
+  (per-kind counts and per-row content hashes inside one transaction; a
+  mismatch refuses to serve and leaves the legacy tables untouched). SQLite
+  schema v17 → v19; Postgres gains `entries`, `entry_ids` and a tsvector index
+  through the usual guarded DDL.
+- **Dual-write** (#180): every legacy mutation (inserts, updates, supersede /
+  unsupersede, archive / restore, outcomes, pins, counter bumps, the raw-SQL
+  recall paths and `/v1/claims`) is mirrored into `entries` inside the same
+  transaction; a failed mirror rolls the legacy write back. `ensure_schema`
+  reconciles `entries` against the legacy tables at every boot, so a store
+  changed while the server was down is repaired on restart.
+- **`MCM_ENTRY_MODEL=legacy|unified`** (#181): the read path. `unified` reads
+  `entries` through one scorer and renderer, with `policies.py` the only
+  module that branches on kind (visibility, rank terms, hit text, relation
+  label, promote body). `entries.facets_text` carries the facet fields the
+  legacy per-table indexes covered, so the unified index finds what the
+  legacy ones find. Helm `mcm.entryModel`, compose `MCM_ENTRY_MODEL`.
+- **`mcm-engine corpus-snapshot` / `corpus-census`** (#177): snapshot a live
+  corpus through MCP into a local SQLite and census what the tables hold.
+- **`mcm-engine replay-queries`** (#182): replay the search / report_error /
+  get_entry / read_rule calls from Claude Code transcripts against one store
+  under both read paths and report id-set, rank and row agreement.
+- **`mcm-engine corpus-verify-entries --store <dsn>`** (#183): the cutover
+  check: per-kind legacy vs `entries` counts and every row that differs.
+- `tests/test_entity_branch_inventory.py` pins every `EntityType` dispatch
+  site (#178): 40 at the start of the program, 34 now, policy module exempt.
+
+### Changed
+- `sanitize_corpus` (#170) extends the serialized-blob cleaner to NEGATIVE and
+  ERROR rows; `add_negative` / `report_error` clean at write time.
+- `search` summary output is capped (#171): inline NEGATIVE/ERROR fields
+  truncate with a `get_entry` pointer; at most 3 NEGATIVE/ERROR hits per scope
+  in the multi-scope summary path.
+- The UserPromptSubmit hook injection is byte-capped and deduplicated per
+  session (#172).
+- CI runs the whole suite under both `MCM_ENTRY_MODEL` values on separate
+  runners.
+
+### Migration
+- **Expand only.** 4.0.0 adds `entries` beside the legacy tables and never
+  writes a legacy table differently than 3.16 did. The legacy tables stay
+  authoritative; `entries` follows them.
+- **Default read path is `legacy`.** Set `MCM_ENTRY_MODEL=unified` to switch;
+  unset or set it back to switch back. No data moves either way.
+- **Rollback** is the flag flip, or redeploying the 3.16.x image: the extra
+  tables are ignored by 3.16 and dropped by nothing.
+- **First boot on an existing store runs the backfill** (2,188 rows in well
+  under a second on the reference corpus) and refuses to start on a verify
+  mismatch, with the legacy tables intact. Take a `pg_dump` first anyway.
+- **Verify on Postgres by counts and content, not by `_mcm_versions`**:
+  `mcm-engine corpus-verify-entries --store "$DSN"` (or
+  `select kind, count(*) from entries group by kind` against the four legacy
+  counts). The full cutover runbook is in the README under "Upgrade: 4.0".
+- Measured agreement between the two read paths on the reference corpus
+  (1,454 real searches, 187 report_errors): point reads identical; search
+  mean Jaccard 0.955 on SQLite and 0.911 on Postgres with top-5 agreement
+  0.96; the residual is rank-tail churn from the uniform index weighting.
+  4.1 flips the default to `unified`; 5.0 drops the legacy tables.
+
 ## [3.16.0] — 2026-10-16
 
 ### Added

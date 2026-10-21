@@ -104,3 +104,22 @@ def test_cli_writes_a_json_report(tmp_path, capsys, monkeypatch):
     assert "search        n=3" in printed
     data = json.loads(out.read_text())
     assert data["counts"]["search"] == 3 and data["agreement"]["search"]["agree"] == 1.0
+
+
+def test_verify_entries_cli_reports_counts_and_exit_code(tmp_path, capsys, monkeypatch):
+    import pytest as _pytest
+    ctx = open_context(str(tmp_path / "k.db"))
+    _seed(ctx.storage)
+    monkeypatch.setattr(sys, "argv", ["mcm-engine", "corpus-verify-entries", "--store",
+                                      str(tmp_path / "k.db")])
+    cli_main()
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["rule"] == {"legacy": 2, "entries": 2}
+    assert data["divergence"] == []
+    ctx.storage.delete_entry("rule", 1)
+    with _pytest.raises(SystemExit) as exc:
+        cli_main()
+    assert exc.value.code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["rule"] == {"legacy": 2, "entries": 1}
+    assert "rule #1: missing from entries" in data["divergence"]
