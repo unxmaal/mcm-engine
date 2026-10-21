@@ -194,6 +194,24 @@ def from_entry(e: Entry) -> Any:
     return _FROM_ENTRY[e.kind](e)
 
 
+# ---- searchable facet text (issue #181) ----------------------------------------
+
+# The legacy FTS indexes cover these named fields beyond title/summary/body/
+# tags (negative why/fix, error context/root cause/fix, rule category, the
+# knowledge kind). They are facets on an Entry, so the unified index carries
+# them as one derived text column. Keys are disjoint across kinds.
+_INDEXED_FACETS: tuple[str, ...] = (
+    "why_failed", "correct_approach", "context", "root_cause", "fix", "category",
+)
+
+
+def facets_text(subkind: Optional[str], facets: Optional[dict]) -> str:
+    parts = [subkind] if subkind else []
+    f = facets or {}
+    parts.extend(str(f[k]) for k in _INDEXED_FACETS if f.get(k))
+    return " ".join(parts)
+
+
 # ---- content hash + backfill ---------------------------------------------------
 
 def entry_hash(e: Entry) -> str:

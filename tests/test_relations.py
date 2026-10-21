@@ -8,6 +8,15 @@ from mcm_engine.tools.relations import register_relations_tools
 from mcm_engine.tools.rules import register_rules_tools
 from mcm_engine.tools.search import register_search_tools
 from mcm_engine.tools.session import register_session_tools
+from mcm_engine.adapters.sqlite.storage import SqliteStorage
+from mcm_engine.entries import reconcile
+
+
+def _sync_entries(db):
+    """These tests seed legacy rows with raw SQL, which bypasses the #180
+    adapter mirror; reconcile so the unified read path (#181) sees them."""
+    reconcile(SqliteStorage(db=db))
+
 
 
 class FakeMCP:
@@ -234,6 +243,7 @@ class TestStalenessAndQualityGates:
             "VALUES ('ancient topic', 'very old finding', datetime('now', '-100 days'))"
         )
         db.commit()
+        _sync_entries(db)
 
         result = mcp["search"](query="ancient topic")
         assert "STALE" in result
@@ -253,6 +263,7 @@ class TestStalenessAndQualityGates:
             "VALUES ('old but active', 'still useful', datetime('now', '-200 days'), datetime('now', '-5 days'))"
         )
         db.commit()
+        _sync_entries(db)
 
         result = mcp["search"](query="old but active")
         assert "STALE" not in result
@@ -266,6 +277,7 @@ class TestStalenessAndQualityGates:
                 f"VALUES ('stale_{i}', 'old', datetime('now', '-{100 + i} days'))"
             )
         db.commit()
+        _sync_entries(db)
 
         result = mcp["session_start"]()
         assert "Stale knowledge" in result

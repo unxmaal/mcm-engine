@@ -27,6 +27,7 @@ from ...backends import (
     MissingDependencyError,
     SearchHit,
 )
+from ...entries import KINDS
 
 
 # Per-entity table + LIKE-fallback columns (mirrors SqliteSearch._FTS).
@@ -119,25 +120,94 @@ class PostgresSearch:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
-    def reindex(self, entity_type: Optional[EntityType] = None) -> None:
-        """Refresh the GIN index. tsvector generated columns auto-populate
-        on INSERT/UPDATE, so the routine ``reindex`` here is a REINDEX of
-        the GIN index — rarely needed but cheap to expose."""
-        targets = {entity_type} if entity_type else set(EntityType)
+    def search_entries(
+        self,
+        query: str,
+        *,
+        kinds: Optional[set[str]] = None,
+        limit: int = 10,
+        project: Optional[str] = None,
+        caller: Optional[str] = None,
+    ) -> list[SearchHit]:
+        """Issue #181: one tsvector query over entries, kind-filtered. Same
+        strict -> natural -> ILIKE ladder as the per-table path."""
+        targets = sorted(kinds) if kinds else list(KINDS)
+        proj_clause = ""
+        proj_params: tuple = ()
+        if project is not None:
+            proj_clause = "AND (project = %s OR project IS NULL OR project = '')"
+            proj_params = (project,)
+        like_cols = ("title", "summary", "body", "tags", "facets_text")
+        doc_expr = "concat_ws(' ', " + ", ".join(like_cols) + ")"
+        hl_opts = "StartSel=, StopSel=, MaxFragments=1, MaxWords=14, MinWords=4"
         with self._conn.cursor() as cur:
-            for et in targets:
-                table = _TABLES[et]["table"]
-                # Use the named index from PostgresStorage's DDL.
-                idx_table = "negative" if table == "negative_knowledge" else table.rstrip("s") if table == "errors" else table
-                # Just rebuild the named GIN. Names in postgres/storage.py:
-                # idx_knowledge_tsv, idx_negative_tsv, idx_errors_tsv, idx_rules_tsv
-                tsv_index_name = {
-                    "knowledge": "idx_knowledge_tsv",
-                    "negative_knowledge": "idx_negative_tsv",
-                    "errors": "idx_errors_tsv",
-                    "rules": "idx_rules_tsv",
-                }[table]
-                cur.execute(f"REINDEX INDEX {tsv_index_name}")
+            cur.execute(
+                "SELECT kind, id, pinned, "
+                "  ts_rank_cd(tsv, plainto_tsquery('english', %s)) AS rank, "
+                f"  ts_headline('english', {doc_expr}, "
+                "              plainto_tsquery('english', %s), %s) AS snip "
+                "FROM entries "
+                f"WHERE tsv @@ plainto_tsquery('english', %s) AND kind = ANY(%s) {proj_clause} "
+                "ORDER BY rank DESC LIMIT %s",
+                (query, query, hl_opts, query, targets, *proj_params, limit),
+            )
+            rows = cur.fetchall()
+        if not rows and self._query_mode == "natural":
+            or_text = _or_tsquery_text(query)
+            if or_text:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT kind, id, pinned, "
+                        "  ts_rank_cd(tsv, to_tsquery('english', %s)) AS rank, "
+                        f"  ts_headline('english', {doc_expr}, "
+                        "              to_tsquery('english', %s), %s) AS snip "
+                        "FROM entries "
+                        f"WHERE tsv @@ to_tsquery('english', %s) AND kind = ANY(%s) {proj_clause} "
+                        "ORDER BY rank DESC LIMIT %s",
+                        (or_text, or_text, hl_opts, or_text, targets, *proj_params, limit),
+                    )
+                    rows = cur.fetchall()
+        if not rows:
+            conditions = " OR ".join(f"{c} ILIKE %s" for c in like_cols)
+            like_pattern = f"%{query}%"
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT kind, id, pinned, 0.5::float8 AS rank, NULL::text AS snip "
+                    f"FROM entries WHERE ({conditions}) AND kind = ANY(%s) {proj_clause} LIMIT %s",
+                    (*(like_pattern for _ in like_cols), targets, *proj_params, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            SearchHit(
+                entity_type=EntityType(r["kind"]),
+                entity_id=r["id"],
+                score=float(r["rank"]) if r["rank"] is not None else 0.5,
+                is_pinned=bool(r["pinned"]),
+                is_stale=False,
+                counters_snapshot={},
+                row=None,
+                snippet=((r["snip"] or "").strip() or None),
+            )
+            for r in rows
+        ]
+
+    def reindex(self, entity_type: Optional[EntityType] = None) -> None:
+        """Refresh the GIN indexes. tsvector generated columns auto-populate
+        on INSERT/UPDATE, so the routine ``reindex`` here is a REINDEX of
+        the named GIN indexes — rarely needed but cheap to expose."""
+        names = {
+            EntityType.KNOWLEDGE: "idx_knowledge_tsv",
+            EntityType.NEGATIVE: "idx_negative_tsv",
+            EntityType.ERROR: "idx_errors_tsv",
+            EntityType.RULE: "idx_rules_tsv",
+        }
+        if entity_type is not None:
+            targets = [names[entity_type]]
+        else:
+            targets = list(names.values()) + ["idx_entries_tsv"]
+        with self._conn.cursor() as cur:
+            for idx in targets:
+                cur.execute(f"REINDEX INDEX {idx}")
         self._conn.commit()
 
     def search_plugin(

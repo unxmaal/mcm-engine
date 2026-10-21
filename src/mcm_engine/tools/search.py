@@ -21,6 +21,8 @@ from ..backends import (
     StorageBackend,
 )
 from ..db import log
+from ..policies import hidden as _hidden
+from ..policies import policy_for, rank_inputs, render_hit, use_unified
 from ..refs import format_refs
 from ..scoring import compose_rank, compose_rank_pinned_only, minmax_normalize
 from ..tracker import SessionTracker
@@ -350,6 +352,72 @@ def _score_and_format_error(
     return composite, entry
 
 
+def _score_and_format_entry(
+    hit: SearchHit,
+    storage: StorageBackend,
+    counters: CounterStore,
+    project: str,
+    relevance: float = 1.0,
+    include_archived: bool = False,
+    detail: DetailLevel = "summary",
+) -> tuple[float, str] | None:
+    """Unified read path (issue #181): one scorer + renderer for every kind.
+    The kind decides only what policies.py says it decides: visibility, which
+    rank terms apply, and the hit's text."""
+    e = storage.find_entry(hit.entity_type.value, hit.entity_id)
+    if e is None:
+        return None
+    if _hidden(e, include_archived=include_archived):
+        return None
+    if project and not _project_match(e.project, project):
+        return None
+    policy = policy_for(e.kind)
+    if not policy.composite_rank:
+        composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
+        tags = _pinned_tag(hit.is_pinned)
+    else:
+        snap = counters.last_flushed_snapshot(hit.entity_type, hit.entity_id)
+        extra: dict = {}
+        if policy.governed:
+            correct = snap.get("correct_count") or 0
+            incorrect = snap.get("incorrect_count") or 0
+            if correct or incorrect:
+                from ..trust import actor_weight
+                author = e.facets.get("created_by")
+                wc = wi = 0.0
+                for actor, passed in storage.list_rule_outcomes(e.id):
+                    if author and actor == author:
+                        continue
+                    w = actor_weight(actor)
+                    if passed:
+                        wc += w
+                    else:
+                        wi += w
+                correct, incorrect = wc, wi
+            extra = {"correct_count": correct, "incorrect_count": incorrect}
+        composite = compose_rank(
+            relevance=relevance,
+            hit_count=snap.get("hit_count"),
+            reinforcement_count=snap.get("reinforcement_count"),
+            pinned=bool(snap.get("pinned")),
+            age_days=_age_days(e.created_at),
+            **extra, **rank_inputs(e),
+        )
+        expired = _is_expired(e.valid_until)
+        if expired:
+            composite *= EXPIRED_PENALTY
+        tags = (
+            _staleness_tag(_age_days(e.created_at), _age_days(e.last_hit_at), hit.is_pinned)
+            + (" [EXPIRED]" if expired else "")
+            + _pinned_tag(hit.is_pinned)
+        )
+    text = render_hit(
+        e, detail=detail, tags=tags,
+        cap=lambda t, ent, eid: _cap_inline_field(t, detail, ent, eid),
+    )
+    return composite, text
+
+
 def _spread_related_rules(top, storage, counters, *, include_archived, cap, detail="summary"):
     """One-hop spreading activation (#35): surface rules LINKED to the direct
     hits (via the relations graph) that the query itself missed on tokens.
@@ -375,7 +443,10 @@ def _spread_related_rules(top, storage, counters, *, include_archived, cap, deta
     related: list[str] = []
     for nid in neighbor_ids[:cap]:
         hit = SearchHit(entity_type=EntityType.RULE, entity_id=nid, score=0.0)
-        res = _score_and_format_rule(hit, storage, counters, include_archived, 0.0, detail)
+        if use_unified():
+            res = _score_and_format_entry(hit, storage, counters, "", 0.0, include_archived, detail)
+        else:
+            res = _score_and_format_rule(hit, storage, counters, include_archived, 0.0, detail)
         if res is None:  # archived / superseded / missing -> not surfaced
             continue
         _, formatted = res
@@ -404,7 +475,11 @@ def _scope_block(
     # Pull more than `limit` so the threshold filter still has options to
     # sort across. SqliteSearch already sorts by raw rank desc; the
     # composite re-sort may reorder a bit.
-    raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3)
+    unified = use_unified()
+    if unified:
+        raw_hits = search_backend.search_entries(query, kinds={etype.value}, limit=limit * 3)
+    else:
+        raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3)
     # Batch min-max relevance normalization (#27): scale-free across adapters
     # (SQLite bm25 vs Postgres ts_rank_cd) because it uses THIS batch's own
     # score range rather than a fixed, adapter-specific midpoint.
@@ -417,7 +492,9 @@ def _scope_block(
         if min_rank > 0 and hit.score < min_rank:
             continue
         relevance = minmax_normalize(hit.score, _lo, _hi)
-        if etype is EntityType.KNOWLEDGE:
+        if unified:
+            result = _score_and_format_entry(hit, storage, counters, project, relevance, include_archived, detail)
+        elif etype is EntityType.KNOWLEDGE:
             result = _score_and_format_knowledge(hit, storage, counters, project, relevance, include_archived, detail)
         elif etype is EntityType.RULE:
             result = _score_and_format_rule(hit, storage, counters, include_archived, relevance, detail)
@@ -443,7 +520,8 @@ def _scope_block(
     if ids_out is not None:
         ids_out.extend((etype.name, eid) for _, _, eid in top)
 
-    if bump_counters and etype in (EntityType.KNOWLEDGE, EntityType.RULE):
+    policy = policy_for(etype)
+    if bump_counters and policy.tracks_hits:
         # Hit-count tracking is best-effort telemetry. Under write-lock
         # contention (concurrent writer, WAL checkpoint) counters.increment's
         # commit re-raises "database is locked" — that must never take down the
@@ -456,7 +534,7 @@ def _scope_block(
                 log(f"search: hit-count bump skipped for {etype.name} #{eid} ({e})")
 
     out_lines = [f for _, f, _ in top]
-    if etype is EntityType.RULE and top:
+    if policy.governed and top:
         out_lines += _spread_related_rules(
             top, storage, counters, include_archived=include_archived, cap=limit,
             detail=detail,

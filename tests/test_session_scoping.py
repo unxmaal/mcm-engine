@@ -38,7 +38,7 @@ def test_v16_to_v17_adds_sessions_scope_columns(tmp_path):
     assert "principal" in cols and "workspace" in cols
     ver = db.execute(
         "SELECT version FROM _mcm_versions WHERE component='core'").fetchone()
-    assert ver["version"] == CORE_VERSION == 18
+    assert ver["version"] == CORE_VERSION == 19
 
 
 def test_fresh_install_has_sessions_scope_columns(tmp_path):

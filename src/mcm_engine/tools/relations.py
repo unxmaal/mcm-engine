@@ -9,6 +9,7 @@ from typing import Literal, get_args
 from mcp.server.fastmcp import FastMCP
 
 from ..backends import EntityType, EntityTypeLiteral, RelationRow, StorageBackend
+from ..policies import label, read_entry
 from ..tracker import SessionTracker
 from ..wiring import Context, coerce_context
 
@@ -42,19 +43,10 @@ def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) 
 
 def _entry_label(storage: StorageBackend, entry_type: str, entry_id: int) -> str:
     """Get a human-readable label for an entry."""
-    etype = EntityType(entry_type)
-    row = storage.find_by_id(etype, entry_id)
-    if row is None:
+    e = read_entry(storage, EntityType(entry_type), entry_id)
+    if e is None:
         return f"[{entry_type.upper()} #{entry_id}]"
-    if etype is EntityType.KNOWLEDGE:
-        return f"[KNOWLEDGE] {row.topic}: {(row.summary or '')[:60]}"
-    if etype is EntityType.ERROR:
-        return f"[ERROR] {(row.pattern or '')[:80]}"
-    if etype is EntityType.RULE:
-        return f"[RULE] {row.title}"
-    if etype is EntityType.NEGATIVE:
-        return f"[NEGATIVE] {row.category}: {(row.what_failed or '')[:60]}"
-    return f"[{entry_type.upper()} #{entry_id}]"
+    return label(e)
 
 
 def register_relations_tools(

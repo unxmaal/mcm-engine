@@ -12,6 +12,7 @@ from datetime import timezone as _timezone
 from ...backends import Entry
 from ...entries import (
     arg_ids as _arg_ids,
+    facets_text as _facets_text,
     backfill as _backfill_entries,
     mirrored as _mirrored,
     needs_backfill as _needs_backfill,
@@ -71,7 +72,7 @@ _ENTRY_UPDATABLE = frozenset({
     "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
     "superseded_by", "valid_until", "hit_count", "last_hit_at",
     "reinforcement_count", "source_classification", "facets", "facets_json",
-    "created_at", "updated_at",
+    "created_at", "updated_at", "facets_text",
 })
 
 
@@ -313,10 +314,29 @@ class SqliteStorage:
         migrate_core(self._db)
         # Issue #179 expand step: populate entries from the legacy tables once,
         # verified row by row; a mismatch raises (legacy tables untouched).
+        self._backfill_facets_text()
         if _needs_backfill(self):
             self.backfill_entries()
         else:
             _reconcile(self)
+
+    def _backfill_facets_text(self) -> None:
+        # #181: rows written before facets_text existed get the derived column
+        # once; the entries_au trigger re-indexes them.
+        rows = self._db.execute(
+            "SELECT rowid AS rid, subkind, facets_json FROM entries WHERE facets_text IS NULL"
+        ).fetchall()
+        for r in rows:
+            try:
+                facets = _json.loads(r["facets_json"]) if r["facets_json"] else {}
+            except ValueError:
+                facets = {}
+            self._db.execute_write(
+                "UPDATE entries SET facets_text = ? WHERE rowid = ?",
+                (_facets_text(r["subkind"], facets), r["rid"]),
+            )
+        if rows:
+            self._db.commit()
 
     # ---- Transactions ----
 
@@ -550,13 +570,14 @@ class SqliteStorage:
             f"{verb} INTO entries (kind, id, subkind, title, summary, body, tags, "
             "project, pinned, status, superseded_by, valid_until, hit_count, "
             "last_hit_at, reinforcement_count, created_at, updated_at, "
-            "source_classification, facets_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_classification, facets_json, facets_text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (entry.kind, eid, entry.subkind, entry.title, entry.summary, entry.body,
              entry.tags, entry.project, 1 if entry.pinned else 0, entry.status or "active",
              entry.superseded_by, _iso(entry.valid_until), entry.hit_count or 0,
              _iso(entry.last_hit_at), entry.reinforcement_count or 0, created, updated,
-             entry.source_classification, _dump_facets(entry.facets)),
+             entry.source_classification, _dump_facets(entry.facets),
+             _facets_text(entry.subkind, entry.facets)),
         )
         self._db.commit()
         return None if (if_absent and cur.rowcount == 0) else eid
@@ -567,6 +588,13 @@ class SqliteStorage:
         bad = set(fields) - _ENTRY_UPDATABLE
         if bad:
             raise ValueError(f"unknown entry fields: {sorted(bad)}")
+        if "facets" in fields or "subkind" in fields:
+            cur = None
+            if "facets" not in fields or "subkind" not in fields:
+                cur = self.find_entry(kind, entry_id)
+            facets = fields["facets"] if "facets" in fields else (cur.facets if cur else {})
+            subkind = fields["subkind"] if "subkind" in fields else (cur.subkind if cur else None)
+            fields["facets_text"] = _facets_text(subkind, facets)
         if "facets" in fields:
             fields["facets_json"] = _dump_facets(fields.pop("facets"))
         stamp = "" if "updated_at" in fields else ", updated_at = datetime('now')"

@@ -7,6 +7,15 @@ from mcm_engine.tools.knowledge import register_knowledge_tools
 from mcm_engine.tools.rules import register_rules_tools
 from mcm_engine.tools.search import register_search_tools
 from mcm_engine.tools.session import register_session_tools
+from mcm_engine.adapters.sqlite.storage import SqliteStorage
+from mcm_engine.entries import reconcile
+
+
+def _sync_entries(db):
+    """These tests seed legacy rows with raw SQL, which bypasses the #180
+    adapter mirror; reconcile so the unified read path (#181) sees them."""
+    reconcile(SqliteStorage(db=db))
+
 
 
 class FakeMCP:
@@ -128,6 +137,7 @@ class TestPinnedNeverStale:
             "VALUES ('ancient pinned', 'very old but pinned', datetime('now', '-200 days'), 1)"
         )
         db.commit()
+        _sync_entries(db)
 
         result = mcp["search"](query="ancient pinned")
         assert "STALE" not in result
@@ -141,6 +151,7 @@ class TestPinnedNeverStale:
             "VALUES ('ancient unpinned', 'very old not pinned', datetime('now', '-200 days'), 0)"
         )
         db.commit()
+        _sync_entries(db)
 
         result = mcp["search"](query="ancient unpinned")
         assert "STALE" in result
@@ -175,6 +186,7 @@ class TestPinnedInSessionStart:
             "VALUES ('old-unpinned', 'unpinned old', datetime('now', '-200 days'), 0)"
         )
         db.commit()
+        _sync_entries(db)
 
         result = mcp["session_start"]()
         # Should show 1 stale (only the unpinned one)
