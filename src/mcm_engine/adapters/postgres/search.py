@@ -47,6 +47,10 @@ def _or_tsquery_text(query: str) -> str:
     return " | ".join(_WORD_RE.findall(query))
 
 
+# ts_headline markers must be quoted empties: an unquoted `StartSel=,` reads
+# the comma as the marker and every matched term comes back as `,term,` (#197).
+_HL_OPTS = 'StartSel="", StopSel="", MaxFragments=1, MaxWords=14, MinWords=4'
+
 _TABLES: dict[EntityType, dict[str, Any]] = {
     EntityType.KNOWLEDGE: {
         "table": "knowledge",
@@ -139,7 +143,7 @@ class PostgresSearch:
             proj_params = (project,)
         like_cols = ("title", "summary", "body", "tags", "facets_text")
         doc_expr = "concat_ws(' ', " + ", ".join(like_cols) + ")"
-        hl_opts = "StartSel=, StopSel=, MaxFragments=1, MaxWords=14, MinWords=4"
+        hl_opts = _HL_OPTS
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT kind, id, pinned, "
@@ -269,11 +273,11 @@ class PostgresSearch:
             proj_params = (project,)
 
         # ts_headline highlights WHY the row matched (issue #135), over the
-        # table's text columns. 'StartSel/StopSel' empty so no <b> markup leaks
-        # into the snippet; the tool layer caps the length.
+        # table's text columns, with empty markers so nothing leaks into the
+        # snippet; the tool layer caps the length.
         like_cols = _TABLES[etype]["like_columns"]
         doc_expr = "concat_ws(' ', " + ", ".join(like_cols) + ")"
-        hl_opts = "StartSel=, StopSel=, MaxFragments=1, MaxWords=14, MinWords=4"
+        hl_opts = _HL_OPTS
 
         # Try the strict tsvector path first (AND-match). This is the whole of
         # strict mode, and the precise-first step of natural mode.
