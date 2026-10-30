@@ -443,6 +443,9 @@ _DDL_STATEMENTS: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots (session_id, sequence_num)",
+    # issue #206: verified/unverified claims as JSON on handoffs and snapshots.
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS claims TEXT",
+    "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS claims TEXT",
 
     # v15: per-session efficiency telemetry (diagnostic only, keyed on the
     # Claude Code session id). Real token counts come from the transcript;
@@ -852,6 +855,7 @@ def _session_from_row(r: dict[str, Any]) -> SessionRow:
         created_at=_as_dt(r["created_at"]),
         principal=r.get("principal"),
         workspace=r.get("workspace"),
+        claims=r.get("claims"),
     )
 
 
@@ -868,6 +872,7 @@ def _snapshot_from_row(r: dict[str, Any]) -> SnapshotRow:
         active_files=r["active_files"],
         key_decisions=r["key_decisions"],
         created_at=_as_dt(r["created_at"]),
+        claims=r.get("claims"),
     )
 
 
@@ -1741,20 +1746,20 @@ class PostgresStorage:
             if row.id:
                 cur.execute(
                     "INSERT INTO sessions "
-                    "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace, claims) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.id, row.status, row.current_task, row.findings_summary,
                      row.next_steps, row.blockers, row.context_snapshot,
-                     row.principal, row.workspace),
+                     row.principal, row.workspace, row.claims),
                 )
             else:
                 cur.execute(
                     "INSERT INTO sessions "
-                    "(status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    "(status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace, claims) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.status, row.current_task, row.findings_summary,
                      row.next_steps, row.blockers, row.context_snapshot,
-                     row.principal, row.workspace),
+                     row.principal, row.workspace, row.claims),
                 )
             new_id = cur.fetchone()["id"]
         self._commit()
@@ -1819,21 +1824,21 @@ class PostgresStorage:
                 cur.execute(
                     "INSERT INTO snapshots "
                     "(id, session_id, sequence_num, goal, progress, open_questions, blockers, "
-                    " next_steps, active_files, key_decisions) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    " next_steps, active_files, key_decisions, claims) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.id, row.session_id, row.sequence_num, row.goal, row.progress,
                      row.open_questions, row.blockers, row.next_steps,
-                     row.active_files, row.key_decisions),
+                     row.active_files, row.key_decisions, row.claims),
                 )
             else:
                 cur.execute(
                     "INSERT INTO snapshots "
                     "(session_id, sequence_num, goal, progress, open_questions, blockers, "
-                    " next_steps, active_files, key_decisions) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    " next_steps, active_files, key_decisions, claims) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                     (row.session_id, row.sequence_num, row.goal, row.progress,
                      row.open_questions, row.blockers, row.next_steps,
-                     row.active_files, row.key_decisions),
+                     row.active_files, row.key_decisions, row.claims),
                 )
             new_id = cur.fetchone()["id"]
         self._commit()

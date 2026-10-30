@@ -232,6 +232,7 @@ def _session_from_row(r: sqlite3.Row) -> SessionRow:
         created_at=_parse_dt(r["created_at"]),
         principal=_col(r, "principal"),
         workspace=_col(r, "workspace"),
+        claims=_col(r, "claims"),
     )
 
 
@@ -248,6 +249,7 @@ def _snapshot_from_row(r: sqlite3.Row) -> SnapshotRow:
         active_files=r["active_files"],
         key_decisions=r["key_decisions"],
         created_at=_parse_dt(r["created_at"]),
+        claims=_col(r, "claims"),
     )
 
 
@@ -1050,20 +1052,20 @@ class SqliteStorage:
         if row.id:
             cur = self._db.execute_write(
                 "INSERT INTO sessions "
-                "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace, claims) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.status, row.current_task, row.findings_summary,
                  row.next_steps, row.blockers, row.context_snapshot,
-                 row.principal, row.workspace),
+                 row.principal, row.workspace, row.claims),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO sessions "
-                "(status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(status, current_task, findings_summary, next_steps, blockers, context_snapshot, principal, workspace, claims) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.status, row.current_task, row.findings_summary,
                  row.next_steps, row.blockers, row.context_snapshot,
-                 row.principal, row.workspace),
+                 row.principal, row.workspace, row.claims),
             )
         self._db.commit()
         return cur.lastrowid
@@ -1125,21 +1127,21 @@ class SqliteStorage:
             cur = self._db.execute_write(
                 "INSERT INTO snapshots "
                 "(id, session_id, sequence_num, goal, progress, open_questions, blockers, "
-                " next_steps, active_files, key_decisions) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " next_steps, active_files, key_decisions, claims) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.id, row.session_id, row.sequence_num, row.goal, row.progress,
                  row.open_questions, row.blockers, row.next_steps,
-                 row.active_files, row.key_decisions),
+                 row.active_files, row.key_decisions, row.claims),
             )
         else:
             cur = self._db.execute_write(
                 "INSERT INTO snapshots "
                 "(session_id, sequence_num, goal, progress, open_questions, blockers, "
-                " next_steps, active_files, key_decisions) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " next_steps, active_files, key_decisions, claims) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row.session_id, row.sequence_num, row.goal, row.progress,
                  row.open_questions, row.blockers, row.next_steps,
-                 row.active_files, row.key_decisions),
+                 row.active_files, row.key_decisions, row.claims),
             )
         self._db.commit()
         return cur.lastrowid
