@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .db import KnowledgeDB, log
 
-CORE_VERSION = 19
+CORE_VERSION = 20
 
 # Unified entries (issue #179, 4.0 program #176): additive expand-step tables
 # beside the four legacy tables. One row per (kind, id); facets_json carries
@@ -139,7 +139,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     context_snapshot TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     principal TEXT,
-    workspace TEXT
+    workspace TEXT,
+    claims TEXT
 );
 
 -- Per-session efficiency telemetry (v15). One row per Claude Code session,
@@ -384,6 +385,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     active_files TEXT,
     key_decisions TEXT,
     created_at TEXT DEFAULT (datetime('now')),
+    claims TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots(session_id, sequence_num);
@@ -858,6 +860,15 @@ def _migrate_v18_to_v19(db: KnowledgeDB) -> None:
     log("Migration v18->v19: entries.facets_text + entries_fts rebuilt")
 
 
+def _migrate_v19_to_v20(db: KnowledgeDB) -> None:
+    """v19 -> v20: sessions.claims and snapshots.claims hold verified/unverified claims as JSON (issue #206)."""
+    for table in ("sessions", "snapshots"):
+        if not _has_column(db, table, "claims"):
+            db.execute_write(f"ALTER TABLE {table} ADD COLUMN claims TEXT")
+            log(f"Migration v19->v20: added {table}.claims")
+    db.commit()
+
+
 _MIGRATIONS = [
     # (from_version, to_version, function)
     (1, 2, _migrate_v1_to_v2),
@@ -878,6 +889,7 @@ _MIGRATIONS = [
     (16, 17, _migrate_v16_to_v17),
     (17, 18, _migrate_v17_to_v18),
     (18, 19, _migrate_v18_to_v19),
+    (19, 20, _migrate_v19_to_v20),
 ]
 
 

@@ -290,6 +290,8 @@ class SessionRow:
     # Pre-migration rows have both NULL (a global/unscoped fallback).
     principal: Optional[str] = None
     workspace: Optional[str] = None
+    # issue #206: JSON {"verified": [...], "unverified": [...]}; NULL when none given.
+    claims: Optional[str] = None
 
 
 @dataclass
@@ -305,6 +307,7 @@ class SnapshotRow:
     active_files: Optional[str] = None
     key_decisions: Optional[str] = None
     created_at: Optional[datetime] = None
+    claims: Optional[str] = None
 
 
 @dataclass

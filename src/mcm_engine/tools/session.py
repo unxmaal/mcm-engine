@@ -7,9 +7,11 @@ session callbacks still receive the raw db until MCM2-07 lands.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .. import claims as _claims
 from ..backends import EntityType, SessionRow, SnapshotRow
 from ..db import KnowledgeDB
 from ..principal import get_transport_principal
@@ -84,6 +86,20 @@ def _clip(text: str | None, limit: int) -> str | None:
     if not text or limit <= 0 or len(text) <= limit:
         return text
     return text[:limit].rstrip() + " …[clipped]"
+
+
+def _resume_claims(storage, session) -> str:
+    """Render the newest claims for this session: its last snapshot's, else the handoff's."""
+    try:
+        snap = storage.get_last_snapshot()
+    except Exception:
+        snap = None
+    if snap is not None and snap.claims and (
+            session is None or snap.session_id in (None, session.id)):
+        return _claims.render(_claims.decode(snap.claims), snap.created_at)
+    if session is not None and session.claims:
+        return _claims.render(_claims.decode(session.claims), session.created_at)
+    return ""
 
 
 def register_session_tools(
@@ -269,6 +285,9 @@ def register_session_tools(
         # session orients itself, so a stale rules index is not silent.
         if ctx.stale_index_warning:
             parts.insert(0, f"[STALE INDEX] {ctx.stale_index_warning}")
+        block = _resume_claims(storage, handoff)
+        if block:
+            parts.insert(0, block + "\n")
         return "\n".join(parts)
 
     @mcp.tool()
@@ -278,17 +297,22 @@ def register_session_tools(
         next_steps: str = "",
         blockers: str = "",
         workspace: str = "",
+        verified: list[dict[str, Any]] | str | None = None,
+        unverified: list[dict[str, Any]] | str | None = None,
     ) -> str:
         """Snapshot session state for the next session to pick up.
 
         workspace: optional label separating one principal's multiple projects
         on a shared store (issue #116). The transport principal is stamped
         automatically; pass workspace when one identity works several projects.
+        verified: [{claim, evidence, at}], evidence being a command, file:line or run id; none means unverified.
+        unverified: [{claim, check}], printed first on resume with the check to run.
         """
         tracker.record_call("session_handoff")
         # Compute suggestions BEFORE reset_all clears session tracking.
         suggestions = _handoff_suggestions(storage, tracker)
         tracker.reset_all()
+        claims_json = _claims.encode(_claims.normalize(verified, unverified))
 
         knowledge_count = storage.count_recent_knowledge(since_days=1)
         context = json.dumps({
@@ -307,6 +331,7 @@ def register_session_tools(
             context_snapshot=context,
             principal=get_transport_principal(),
             workspace=workspace or None,
+            claims=claims_json,
         ))
 
         # Auto-snapshot with the handoff data.
@@ -320,6 +345,7 @@ def register_session_tools(
                 progress=status,
                 next_steps=next_steps or None,
                 blockers=blockers or None,
+                claims=claims_json,
             ))
         except Exception:
             # Older DBs may not have the snapshots table — non-fatal.
@@ -368,8 +394,12 @@ def register_session_tools(
         active_files: str = "",
         key_decisions: str = "",
         compaction: bool = False,
+        verified: list[dict[str, Any]] | str | None = None,
+        unverified: list[dict[str, Any]] | str | None = None,
     ) -> str:
         """Save a numbered mid-session checkpoint.
+
+        verified / unverified: as for session_handoff; a verified claim with no evidence is stored unverified.
 
         compaction: set by the PreCompact hook. When true, this snapshot marks
         the compaction boundary, so coverage is reconciled non-resident (#156).
@@ -394,6 +424,7 @@ def register_session_tools(
             next_steps=next_steps or None,
             active_files=active_files or None,
             key_decisions=key_decisions or None,
+            claims=_claims.encode(_claims.normalize(verified, unverified)),
         ))
         return _with_nudge(
             f"Snapshot #{seq} saved (session={session_id}).", tracker,
@@ -498,6 +529,10 @@ def register_session_tools(
             pass
 
         parts.append(f"\nProject: {project_name}")
+
+        block = _resume_claims(storage, session)
+        if block:
+            parts.insert(0, block + "\n")
 
         if not parts:
             return _with_nudge("No resume context available.", tracker)

@@ -873,3 +873,10 @@ reads `entries` and consults it for visibility, rank terms and the hit text.
 - `tools/search.py`, `tools/relations.py`, `tools/rules.py`,
   `tools/corpus.py`: 0 SQL; dispatch moved to `policies.py` or to tables
   (branch inventory 49 → 34).
+
+## Addendum — handoff claims (issue #206)
+
+- `schema.py`: 72 → 73. v19→v20 adds `claims` to `sessions` and `snapshots`
+  (one `execute_write` site looped over both tables). Postgres adds the
+  columns in `_DDL_STATEMENTS` (DDL literals, no new site); the session and
+  snapshot inserts carry the column through existing sites.

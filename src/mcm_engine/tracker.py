@@ -310,7 +310,9 @@ class SessionTracker:
         elif turns_since_checkpoint >= cfg.checkpoint_turns:
             typed.append(("checkpoint",
                 f"CHECKPOINT: {turns_since_checkpoint} tool calls since last checkpoint. "
-                "Call `session_handoff` or `save_snapshot` to reset. "
+                "Call `session_handoff` or `save_snapshot` to reset, passing "
+                "`verified` (claim + evidence) and `unverified` (claim + how to check) "
+                "so a compaction keeps which claims were checked. "
                 "If debugging the same issue for >3 attempts, delegate "
                 "to a sub-agent."))
 
