@@ -7,6 +7,11 @@ versioning.
 ## [Unreleased]
 
 ### Added
+- **PreToolUse deny table** (#208): `mcm-engine hook` denies seven known-bad Bash
+  commands (pgrep wait loops, `git add -A`/`.`/`--all`, piped tests chained into
+  `git commit`, `launchctl` disable/unload of localharness units, `-n auto`,
+  discarding uncommitted changes the agent did not make, `gh pr merge` without
+  `--auto`), each with its reason and replacement, logged as a `deny` event.
 - **Verified and unverified claims survive a handoff and a compaction** (#206).
   `session_handoff` and `save_snapshot` take optional `verified`
   (`[{claim, evidence, at}]`) and `unverified` (`[{claim, check}]`), stored as

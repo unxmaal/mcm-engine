@@ -87,6 +87,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import coverage
+from .deny_table import Context as DenyContext, deny_message, find_denial
 
 
 # These are the numbers the project contract has always advertised. The code
@@ -975,6 +976,16 @@ def _ambient_recall(tool_name, event, session_state, cwd, *, search=None) -> Opt
 # ---------------------------------------------------------------------------
 
 
+def _bash_denial(tool_name: str, event: dict, s: dict, cwd: Path):
+    if _normalize_builtin_tool(tool_name) != "bash":
+        return None
+    cmd = (event.get("tool_input") or {}).get("command") or ""
+    if not cmd:
+        return None
+    ctx = DenyContext(cwd=cwd, edited_files=frozenset(s.get("edited_files") or ()))
+    return find_denial(cmd, ctx)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Read a PreToolUse event from stdin and decide whether to allow it.
 
@@ -1014,6 +1025,29 @@ def main(argv: list[str] | None = None) -> int:
         "first_seen_at": _now_iso(),
     })
     s.setdefault("first_seen_at", _now_iso())
+
+    # Known-bad Bash commands are denied outright (#208), the one place this
+    # hook says no. A fault inside the check allows the call.
+    try:
+        denied = _bash_denial(tool_name, event, s, cwd)
+    except Exception:
+        denied = None
+    if denied is not None:
+        _append_event(_events_path(cwd), {
+            "ts": time.time(),
+            "session_id": session_id,
+            "tool": tool_name,
+            "action": "deny",
+            "pattern": denied.id,
+        })
+        reason = deny_message(denied)
+        print(reason, file=sys.stderr)
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }}))
+        return 0
 
     exit_code, message = _decide(tool_name, s)
 

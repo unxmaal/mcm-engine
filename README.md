@@ -379,6 +379,11 @@ Add to `~/.claude/settings.json` or a project's `.claude/settings.local.json`:
   reset at a compaction boundary. Deterministic classifier only (no LLM). Set
   `MCM_COVERAGE_GATE=0` to disable. The interval net records an `interval_only_warn` event
   whenever it fires on a non-consequential op, to measure whether it still earns its keep.
+- **Deny table** (#208), the one exception to never-block: a Bash command matching a pattern in
+  `src/mcm_engine/hooks/deny_table.py` (pgrep wait loops, `git add -A`, piped tests chained into
+  `git commit`, `-n auto`, `gh pr merge` without `--auto`, ...) gets `permissionDecision: "deny"`
+  with the reason and the replacement, and a `deny` event naming the pattern. There is no
+  override; edit the table. An error inside the check allows the call.
 
 #### Wire the compaction hooks (optional)
 
