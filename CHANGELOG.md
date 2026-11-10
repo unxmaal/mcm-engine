@@ -6,6 +6,13 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+- **PreToolUse deny table** (#208): `mcm-engine hook` denies seven known-bad Bash
+  commands (pgrep wait loops, `git add -A`/`.`/`--all`, piped tests chained into
+  `git commit`, `launchctl` disable/unload of localharness units, `-n auto`,
+  discarding uncommitted changes the agent did not make, `gh pr merge` without
+  `--auto`), each with its reason and replacement, logged as a `deny` event.
+
 ## [4.0.0] — 2026-10-21
 
 The unified entries model, expand step (umbrella #176, children #177–#183).
