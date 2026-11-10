@@ -45,6 +45,14 @@ ECHO_RULES = """[RULE #794] zsh: a bare word starting with = is EQUALS expansion
   HAPPENED 2026-10-17 in a Claude Code Bash tool call.
   Match: word starting with = is EQUALS expansion; `,echo, ====` fails"""
 
+EDIT_RULES = """[RULE #61] PreToolUse hook is fail-open: records consultation_gap, never blocks (issue #19) (mcm-engine)
+  # PreToolUse hook is fail-open: records consultation_gap, never blocks (issue #19)
+  Refines [[hook-mutator-only-block-and-event-log]]. The PreToolUse enforcement hook (`mcm-engine hook`, `src/mcm_engine/hooks/mcp_enforcement.py`) no longer blocks any edit.
+  Match: PreToolUse ,hook, is fail-open"""
+
+ENFORCEMENT_EDIT = {"tool_name": "Edit",
+                    "tool_input": {"file_path": "/r/src/mcm_engine/hooks/mcp_enforcement.py"}}
+
 PGREP_CMD = "while pgrep -f 'soh discover --loop' >/dev/null; do sleep 30; done"
 
 
@@ -198,24 +206,25 @@ def _main(monkeypatch, capsys, event):
 def test_hook_main_injects_and_logs_ids(tmp_path, monkeypatch, capsys):
     (tmp_path / ".git").mkdir()
     monkeypatch.setenv("MCM_MCP_URL", "http://127.0.0.1:9/mcp")
-    monkeypatch.setattr(L, "http_fetch", _fetch(PGREP_RULES, PGREP_NEGATIVES))
+    monkeypatch.setattr(L, "http_fetch", _fetch(EDIT_RULES))
     monkeypatch.setattr(me, "_gate_http_search", lambda q, c: "")
-    ev = {**_bash(PGREP_CMD), "session_id": "s1", "cwd": str(tmp_path)}
+    # An Edit, so the deny table (#208) never sees it.
+    ev = {**ENFORCEMENT_EDIT, "session_id": "s1", "cwd": str(tmp_path)}
     rc, cap = _main(monkeypatch, capsys, ev)
     assert rc == 0
     payload = json.loads(cap.out.strip().splitlines()[-1])
     hso = payload["hookSpecificOutput"]
     assert "permissionDecision" not in hso
-    assert "RULE #906" in hso["additionalContext"]
+    assert "RULE #61" in hso["additionalContext"]
     events = [json.loads(l) for l in
               (tmp_path / ".claude" / "mcp-enforcement-events.jsonl").read_text().splitlines()]
     lessons = [e for e in events if e["action"] == "lessons"]
     assert lessons and lessons[-1]["status"] == "injected"
-    assert lessons[-1]["ids"][0] == "rule:906"
-    assert lessons[-1]["query"] == "pgrep sleep"
+    assert lessons[-1]["ids"] == ["rule:61"]
+    assert lessons[-1]["query"] == "mcp_enforcement hooks mcm_engine"
     # Second identical call: logged as dedup, nothing injected.
     rc, cap = _main(monkeypatch, capsys, ev)
-    assert "RULE #906" not in cap.out
+    assert "RULE #61" not in cap.out
     events = [json.loads(l) for l in
               (tmp_path / ".claude" / "mcp-enforcement-events.jsonl").read_text().splitlines()]
     assert [e for e in events if e["action"] == "lessons"][-1]["status"] == "dedup"
@@ -234,6 +243,6 @@ def test_hook_main_unrelated_command_prints_nothing(tmp_path, monkeypatch, capsy
 def test_hook_main_fault_in_lessons_still_allows(tmp_path, monkeypatch, capsys):
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(L, "lessons_for", lambda *a, **k: 1 / 0)
-    ev = {**_bash(PGREP_CMD), "session_id": "s1", "cwd": str(tmp_path)}
+    ev = {**ENFORCEMENT_EDIT, "session_id": "s1", "cwd": str(tmp_path)}
     rc, cap = _main(monkeypatch, capsys, ev)
     assert rc == 0 and cap.out == ""
