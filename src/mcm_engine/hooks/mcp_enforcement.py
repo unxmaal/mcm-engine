@@ -1071,6 +1071,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         ambient = None
 
+    # Lessons matching the pending action (#210). Mutates `s` (dedup map).
+    try:
+        from .lessons import lessons_for
+        lesson = lessons_for(tool_name, event, s, cwd)
+    except Exception:
+        lesson = None
+
     try:
         _write_state(sp, state)
     except OSError:
@@ -1115,6 +1122,17 @@ def main(argv: list[str] | None = None) -> int:
             "tool": tool_name,
             "action": "coverage_gate",
         })
+    if lesson is not None:
+        _append_event(_events_path(cwd), {
+            "ts": time.time(),
+            "session_id": session_id,
+            "tool": tool_name,
+            "action": "lessons",
+            "status": lesson.status,
+            "query": lesson.query,
+            "ids": lesson.ids,
+            "ms": lesson.ms,
+        })
     if fixation:
         _append_event(_events_path(cwd), {
             "ts": time.time(),
@@ -1148,6 +1166,8 @@ def main(argv: list[str] | None = None) -> int:
         out = f"{out}\n{ambient}" if out else ambient
     if gate_msg:
         out = f"{out}\n{gate_msg}" if out else gate_msg
+    if lesson is not None and lesson.text:
+        out = f"{out}\n{lesson.text}" if out else lesson.text
     if out:
         # THE MODEL ONLY SEES STDERR ON EXIT 2. This hook is deliberately
         # fail-open (issue #19) and never returns 2, so for years every nudge
