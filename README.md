@@ -118,6 +118,13 @@ weighted knowledge encodes what the team has verified works.
   tunable in `mcm-engine.yaml`.
 - **Opt-in ambient recall** (`MCM_AMBIENT_RECALL`). Best-effort: the hook surfaces a
   relevant rule based on what is being edited. Never blocks, tight timeout, rate-limited.
+- **Lessons for the pending action** (#210, on by default with an HTTP server). On Bash, Edit
+  and Write the hook builds a query from the action itself (program, subcommand, flags, path
+  stems, module names), runs the server's OR-ranked natural search over rules and negatives,
+  re-scores the hits against the action's words, and injects the top 1-3 (title, one-line fix,
+  id) as `additionalContext`. Nothing below the threshold, no entry repeated within 50 calls,
+  abandoned at a 0.6 s budget, and every call is logged as a `lessons` event with the ids shown.
+  Needs the server's `MCM_SEARCH_QUERY_MODE=natural`; under `strict` most queries return nothing.
 
 **Safety**
 - **Poisoning defense.** Stored rule content is delimited as untrusted data at read time,
@@ -529,6 +536,7 @@ re-indexes on every query (O(N)), so it is not suitable for production query loa
 | `MCM_ACTOR` | actor recorded on writes (provenance / author≠judge) |
 | `MCM_TRUST_WEIGHTS` / `MCM_TRUST_DEFAULT` | graded `actor→weight` map / default weight |
 | `MCM_AMBIENT_RECALL` | enable opt-in ambient recall in the hook |
+| `MCM_LESSONS` / `MCM_LESSONS_BUDGET_S` | `0` turns off hook lesson injection / its retrieval budget (default 0.6 s) |
 | `MCM_SERVER_NAME` / `MCM_SERVER_INSTRUCTIONS` / `MCM_CONFIG` / `MCM_LOG_PATH` | server identity / config path / log |
 
 **Shared rules across projects.** `rules_path` accepts a list. The first is where new rules
