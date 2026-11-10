@@ -104,6 +104,19 @@ def test_threshold_rejects_hits_that_do_not_share_the_actions_terms(tmp_path):
     assert out.status == "none" and out.text == ""
 
 
+PASSING_MENTION = """[RULE #869] sohot energy ledger on macOS 27: macmon <0.9 reads CPU 0 W and catch-up spikes (architecture)
+  0.8.2 (Homebrew stable) on macOS 27.0.1: cpu_power 0.0 while cpu_active_ratio > 0.
+  Match: v0.10.0 src/clpc.rs. v0.10.0 built in scratch (,cargo, ,build, --release, 10 s) reads"""
+
+
+def test_a_hit_that_names_the_command_only_in_passing_is_not_injected(tmp_path):
+    # Live KB, 2026-11-10: `cargo build --release` returned this rule, whose
+    # snippet quotes the exact command but whose subject is power metering.
+    out = L.lessons_for("Bash", _bash("cargo build --release"), {}, tmp_path,
+                        fetch=_fetch(PASSING_MENTION))
+    assert out.status == "none" and out.text == ""
+
+
 def test_same_entry_is_not_injected_twice_within_the_window(tmp_path):
     state: dict = {}
     fetch = _fetch(PGREP_RULES, PGREP_NEGATIVES)
