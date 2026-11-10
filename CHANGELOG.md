@@ -12,6 +12,15 @@ versioning.
   `git commit`, `launchctl` disable/unload of localharness units, `-n auto`,
   discarding uncommitted changes the agent did not make, `gh pr merge` without
   `--auto`), each with its reason and replacement, logged as a `deny` event.
+- **Verified and unverified claims survive a handoff and a compaction** (#206).
+  `session_handoff` and `save_snapshot` take optional `verified`
+  (`[{claim, evidence, at}]`) and `unverified` (`[{claim, check}]`), stored as
+  JSON in a new `claims` column on `sessions` and `snapshots` (schema v20). A
+  verified claim with no evidence is stored as unverified. `get_resume_context`
+  and `session_start` print the UNVERIFIED block first, each with its check,
+  then verified claims with evidence and age. The compact directive says to
+  treat every number, state and finish time in the summary as unverified, and
+  the checkpoint nudge asks for both lists.
 
 ## [4.0.0] — 2026-10-21
 

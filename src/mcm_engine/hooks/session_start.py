@@ -55,7 +55,9 @@ COMPACT_DIRECTIVE = (
     "detail. Before acting on it, call `get_resume_context` (and `session_start`) "
     "via the MCP to recover your last handoff, active tasks, pinned rules, and "
     "the pre-compaction checkpoint the engine saved. Trust the knowledge base "
-    "over the summary where they differ; do not read any local database or file."
+    "over the summary where they differ; do not read any local database or file. "
+    "Treat every number, state and finish time in the summary as unverified "
+    "until re-read from its source."
 )
 
 
