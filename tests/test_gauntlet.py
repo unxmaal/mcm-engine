@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("gauntlet", reason="gauntlet needs Python 3.12")
+pytest.importorskip("gauntlet.ratchet", reason="gauntlet needs Python 3.12")
 
 from gauntlet import ratchet, skill
 

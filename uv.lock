@@ -304,8 +304,8 @@ wheels = [
 
 [[package]]
 name = "gauntlet"
-version = "0.3.0"
-source = { git = "https://github.com/unxmaal/gauntlet?rev=v0.3.0#d353fa35fa795915c96ee33dd462595b5d72d9b5" }
+version = "0.3.1"
+source = { git = "https://github.com/unxmaal/gauntlet?rev=v0.3.1#b58165ef63ba91dbc102093169b120dbf2a879c9" }
 
 [package.optional-dependencies]
 hcl = [
@@ -511,7 +511,7 @@ requires-dist = [
 provides-extras = ["dev", "postgres", "redis", "opensearch"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "gauntlet", extras = ["hcl"], marker = "python_full_version >= '3.12'", git = "https://github.com/unxmaal/gauntlet?rev=v0.3.0" }]
+dev = [{ name = "gauntlet", extras = ["hcl"], marker = "python_full_version >= '3.12'", git = "https://github.com/unxmaal/gauntlet?rev=v0.3.1" }]
 
 [[package]]
 name = "mcp"

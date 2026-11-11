@@ -1,4 +1,4 @@
-"""This repo's gauntlet registry, written by `gauntlet init` 0.3.0; edit it by hand from here."""
+"""This repo's gauntlet registry, written by `gauntlet init` 0.3.1; edit it by hand from here."""
 
 from pathlib import Path
 
@@ -8,7 +8,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 
 # TODO(gauntlet): production: which paths are shipped code; the default is everything outside tests/ and test/.
-# TODO(gauntlet): repo_slug: "owner/repo" of the issue tracker, for `gauntlet snapshot-defects` and `gauntlet audit`.
+# TODO(gauntlet): repo_slug: "owner/repo" of the issue tracker, for `gauntlet snapshot-defects` and `gauntlet audit`; until it is set, defects.json stays empty.
 # TODO(gauntlet): detector_config commit_then_link: helpers that commit besides conn.commit(): {"committers": ("put",)}
 # TODO(gauntlet): detector_config effect_reachable: the effects and the live-run predicate: {"effects": ("send",), "live": ("LIVE_HOME",)}
 # TODO(gauntlet): detector_config empty_on_failure: the functions that choose a store: {"choosers": ("backend",)}
