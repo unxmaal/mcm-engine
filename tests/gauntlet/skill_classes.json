@@ -1,0 +1,686 @@
+[
+ {
+  "id": "each-half-verified-against-its-own-spec-the-seam-against-nothing",
+  "heading": "Each half verified against its own spec, the seam against nothing",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 16,
+  "trigger": "does this change add or alter a boundary between two things that are built, deployed or run separately? A config value the code must honour. A producer and a consumer. A program and the environment it runs in. Two workloads that must agree about something neither declares.",
+  "test_shape": "assert the two sides against EACH OTHER, not each against its own spec. The test must fail when either side changes alone -- that is what makes it a seam test rather than two more unit tests. Where one side is machine-readable, scan it: the binaries a program invokes by bare name can be extracted from the source and checked against the image that runs it."
+ },
+ {
+  "id": "a-fact-about-the-harness-recorded-as-a-verdict-on-the-subject",
+  "heading": "A fact about the harness recorded as a verdict on the subject",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 14,
+  "trigger": "does a tier write a TERMINAL verdict (broken, declined, failed) about the thing under test? Could the same failure come from the harness: a dead server, a refused request, a runner default, a limit you chose, a missing download, a name the code could not match?",
+  "test_shape": "produce the harness-side failure with a fake (kill the server, return 400, exhaust the budget you set, ship a README-only snapshot) and assert the verdict is non-terminal and carries a reason naming the harness. The cause is a column written where the failure is caught, never a phrase matched later."
+ },
+ {
+  "id": "one-question-two-answers",
+  "heading": "One question, two answers",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 13,
+  "trigger": "is this value, list, or policy written down in more than one place? Shell and Python. Code and config. Code and a case file. Two configs.",
+  "test_shape": "read both copies from source and assert they agree. Parse rather than import, so the test does not depend on the other side's dependencies being installed. Then add a row to a **census** listing every known instance, so the pattern is visible in one place: the first five were each filed as unrelated bugs because nobody could see they were one thing."
+ },
+ {
+  "id": "a-closed-table-fronting-an-open-set",
+  "heading": "A closed table fronting an open set",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 9,
+  "trigger": "is there a dict, enum or if-chain keyed on something an outside party names (HF tasks, architectures, model families, runtimes, file formats, error phrases)? What happens to a key nobody listed?",
+  "test_shape": "feed a key that is not in the table and assert it is refused or reported as unknown, never silently mapped to the default."
+ },
+ {
+  "id": "a-platform-primitive-assumed-universal",
+  "heading": "A platform primitive assumed universal",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 9,
+  "trigger": "does this call a shell command by bare name, touch file modes, read or write text, or format a path?",
+  "test_shape": "scan every source file for the unguarded form. Prefer an AST scan to a grep: it sees a multi-line call and can tell a literal binary mode from a text one."
+ },
+ {
+  "id": "a-guard-built-and-tested-that-nothing-invokes",
+  "heading": "A guard built and tested that nothing invokes",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 8,
+  "trigger": "is there a check, limit or safety function with tests? List its production callers. Is the risky path among them?",
+  "test_shape": "drive the risky entry point (not the guard) into the guarded condition and assert the guard fired."
+ },
+ {
+  "id": "a-proxy-checked-in-place-of-the-property",
+  "heading": "A proxy checked in place of the property",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 7,
+  "trigger": "what question does the caller actually need answered? Is the check answering an easier one: present on disk instead of loadable, process started instead of serving, a name spelled right instead of behaving right, file size instead of peak memory?",
+  "test_shape": "construct a case where the proxy holds and the property does not (an empty model directory, a server that started and answers nothing) and assert the check fails."
+ },
+ {
+  "id": "a-deploy-runs-two-releases-at-once",
+  "heading": "A deploy runs two releases at once",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 7,
+  "trigger": "does this change deploy logic, a migration, the schema version, a job's working directory, or anything a node or gateway reports? Which release's code runs each step, and against which release's data?",
+  "test_shape": "run release N-1's code against N's data and steps, and N against N-1's: migrate, then open the store from N-1; queue under N-1, deploy N, run the job; smoke N against N-1's services; verify a node on N-1 from N. Detector `one_sided_schema_check`: an ordering comparison against a version the consumer names that refuses one direction of skew only; a `!=` against one whose branch drops the work and says nothing more than a log line; a check entry point the consumer names that reaches no phase marker. Blind to orchestration versus step behaviour, to processes alive at deploy time, and to comparisons inside SQL."
+ },
+ {
+  "id": "an-order-the-code-needs-but-does-not-check",
+  "heading": "An order the code needs but does not check",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 7,
+  "trigger": "does B silently depend on A having happened first: env sourced, schema migrated, queue paused, backend chosen, a hook stubbed? Does B check it, or does A only usually come first?",
+  "test_shape": "do B without A and assert B refuses or does A itself: stub a hook after import and call the default path; run the entry point with the env unset; switch the home with the shared backend selected; open the store from old code after the migrate. Detector `unchecked_order`: an effect the consumer names bound as a default argument; an environment, home or consumer-named read at import; a consumer-named entry point whose reach never calls the guard, in a module that names what the guard sets up; a home variable set without its paired backend. Blind to orders between processes and between functions."
+ },
+ {
+  "id": "a-fact-recorded-without-its-context",
+  "heading": "A fact recorded without its context",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 6,
+  "trigger": "is something stored that is only true on one machine, for one subject, or on the strength of one piece of evidence? Is that machine, subject or evidence stored with it?",
+  "test_shape": "write the fact from one machine or subject and read it from another; assert the reader cannot mistake it for its own."
+ },
+ {
+  "id": "a-non-production-run-writes-live-state",
+  "heading": "A non-production run writes live state",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 6,
+  "trigger": "can a test, a feature branch, a worktree or a scratch run reach the production store, service or published output? What stops it?",
+  "test_shape": "open the live path from a non-production checkout and assert refusal; run the suite with HOME pointed at an empty dir and assert nothing outside it changed."
+ },
+ {
+  "id": "state-is-whichever-row-came-last",
+  "heading": "State is whichever row came last",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 5,
+  "trigger": "is current state derived from the newest row of an append-only table? Can any writer append a row that means something different from the decision it overwrites?",
+  "test_shape": "append a waypoint row after a terminal decision and assert the decision still stands; better, keep state in one column with one writer."
+ },
+ {
+  "id": "an-input-accepted-and-silently-ignored",
+  "heading": "An input accepted and silently ignored",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 5,
+  "trigger": "does a flag, parameter, config key or fetched field get parsed and then never reach the code that would act on it?",
+  "test_shape": "pass two different values and assert the output differs; pass an unknown one and assert it is refused."
+ },
+ {
+  "id": "a-metric-quoted-without-a-negative-control",
+  "heading": "A metric quoted without a negative control",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 5,
+  "trigger": "does anything rank, score, or judge? Does a number get compared to another number to support a conclusion?",
+  "test_shape": "score two known-DIFFERENT things and two known-SAME things. Assert the gap between classes exceeds the spread within a class. Pin the control's outcome in a test so it cannot silently stop being true."
+ },
+ {
+  "id": "a-consumer-limits-before-it-filters-for-what-it-can-act-on",
+  "heading": "A consumer limits before it filters for what it can act on",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 5,
+  "trigger": "is there a `[:n]`, `LIMIT`, or top-N taken from a ranked list, and THEN a filter for \"ready\", \"in this lane\", \"not yet measured\"?",
+  "test_shape": "put the only actionable row below the cut and assert it is still acted on."
+ },
+ {
+  "id": "identity-by-name-not-by-content",
+  "heading": "Identity by name, not by content",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 5,
+  "trigger": "does a comparison, cache key, dedup or equality check use an identifier? What can change while the identifier does not?",
+  "test_shape": "edit the content, hold the id fixed, assert the check notices. Fix with a digest over the parts that change the meaning, compared only when both sides carry one, so existing records stay valid."
+ },
+ {
+  "id": "a-test-that-bounds-a-measured-duration",
+  "heading": "A test that bounds a measured duration",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 5,
+  "trigger": "does a test compare an elapsed time (perf_counter, time.time, a measured wait or TTFT) against a number? Is any of that time spent in something the test does not control: interpreter startup, a sleeping fake, the scheduler under parallel workers?",
+  "test_shape": "assert what the duration stood for. Order (acquired after released, reasoning before answer), counts (peak in-flight requests), lower bounds that a slow machine cannot break, or a structural fact (the holder is still alive). Keep a time bound only if it is loose enough to mean \"did not hang\"."
+ },
+ {
+  "id": "an-effect-reachable-from-a-run-that-is-not-the-live-deploy",
+  "heading": "An effect reachable from a run that is not the live deploy",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 5,
+  "trigger": "can a test, a scratch home or a non-deploy checkout reach this alert, webhook, push, restart, signal, ssh or download? What stops it: a gate in the effect itself, a stub, or each caller remembering to pass a fake?",
+  "test_shape": "call each effect's caller under pytest with no hook passed, from a scratch home, and from a non-deploy checkout on the live home with the store one schema ahead; assert no real binary ran, no webhook was sent and no marker landed in the live home. Detector `effect_reachable`: a call to an effect the consumer names where neither the caller nor the effect's own definition consults the consumer's live-run predicate; an effect bound as a default argument; a spawn of an effect binary the consumer's guard list lacks. Blind to argv built from parameters or other functions' returns, to effects in shell grandchildren, and to a gate that asks \"is this the live home\" when the question is \"is this the deploy code\"."
+ },
+ {
+  "id": "a-number-without-its-configuration",
+  "heading": "A number without its configuration",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 4,
+  "trigger": "does prose state a number a reader will act on?",
+  "test_shape": "flag a number in a comment or markdown with no nearby date, resolution, machine, quantisation or instrument. Expect a large backlog, so ship it as an inventory. Carve out the sharp subset that starts empty and gate that: a cost quoted beside the command that incurs it."
+ },
+ {
+  "id": "a-rule-change-leaves-old-decisions-standing",
+  "heading": "A rule change leaves old decisions standing",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 4,
+  "trigger": "does this fix change how decisions are made? What happens to the decisions already recorded under the old rule?",
+  "test_shape": "seed a decision made under the old rule, apply the change, and assert it is re-evaluated or explicitly grandfathered with a reason."
+ },
+ {
+  "id": "one-column-two-meanings",
+  "heading": "One column, two meanings",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 4,
+  "trigger": "does one field hold different kinds of value depending on the row (a path here, content there; a download dir for one tier, a receipt for another; a timestamp or a sentinel)?",
+  "test_shape": "for each kind of row, assert every reader gets the kind it expects; a scan that only one module reads the legacy field."
+ },
+ {
+  "id": "a-confounded-experiment-the-label-is-not-the-run",
+  "heading": "A confounded experiment: the label is not the run",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 4,
+  "trigger": "does an experiment compare configurations by name? Did anything verify that the configuration labelled is the one that executed?",
+  "test_shape": "assert the run's own provenance matches its label. Trace where each input actually came from rather than trusting the parameter you passed."
+ },
+ {
+  "id": "a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates",
+  "heading": "A copy whose key leaves out an input, or that nothing invalidates",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 4,
+  "trigger": "is this value derived from a file, process, row or remote, and kept (an `lru_cache`, a cache file, a derived column, a recorded digest)? What changes the source without changing the key? Does a long-lived process write back something it cached when it started?",
+  "test_shape": "fill the cache, then change the source while holding the key fixed, one input at a time (file bytes, mtime, a ceiling, the installed version), and read again: assert the cached value is refused or refreshed. Detector `uncached_key`: an `lru_cache` or `cache` over file reads or subprocesses with no mtime or version among its arguments; a JSON file read and written back with no lock; a process-lifetime cache whose value reaches a persistent write."
+ },
+ {
+  "id": "a-part-s-cost-reported-as-the-whole-s",
+  "heading": "A part's cost reported as the whole's",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "is a cost, latency or size being published? Is it the cost of the component, the phase, or the thing the user actually waits for?",
+  "test_shape": "measure at the user-facing entry point, not the stage. Then assert no published cost sits beside a command with its conditions unstated."
+ },
+ {
+  "id": "a-shared-fixed-resource-in-tests",
+  "heading": "A shared fixed resource in tests",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does a test bind a fixed port, use a fixed launchd label, lock file, temp path, or service name?",
+  "test_shape": "run the suite twice concurrently; assert both pass. Ask the OS for the resource (bind port 0, pid-suffixed labels)."
+ },
+ {
+  "id": "a-fake-that-does-not-model-the-real-process-s-environment",
+  "heading": "A fake that does not model the real process's environment",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 3,
+  "trigger": "does a test stand in for a subprocess, server or CLI with a fake? Does the fake inherit the platform's defaults (stdio encoding, exec bit, shebang) where the real one sets its own?",
+  "test_shape": "launch fakes via sys.executable, set their stdio to the real tool's encoding explicitly, and run the suite on the platform with the hostile default."
+ },
+ {
+  "id": "one-default-tuned-for-one-member-applied-to-all",
+  "heading": "One default tuned for one member applied to all",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 3,
+  "trigger": "was a default (context size, timeout, memory budget, sampling setting) measured on one model or one machine and then applied to every member of an open set?",
+  "test_shape": "assert the default is computed per member from that member's own facts, with two members whose correct values differ."
+ },
+ {
+  "id": "a-test-double-that-never-reaches-the-code-under-test",
+  "heading": "A test double that never reaches the code under test",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does a test monkeypatch or mock a name? Is that the binding the code under test actually reads, or a re-export, an alias, or a module the reader imported the value from before the patch ran?",
+  "test_shape": "assert the patched value is what the code under test observed, not only that the test passed; scan every patch target against its readers."
+ },
+ {
+  "id": "a-constant-chosen-before-the-thing-it-constrains-existed",
+  "heading": "A constant chosen before the thing it constrains existed",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does this change add or keep a module-level number that decides a pass, a verdict or a cutoff (a token budget, a timeout, a ceiling, a threshold), picked before the model, lane or machine it limits was measured?",
+  "test_shape": "register it with the range to sweep, the lanes it affects and the limit it records when it binds. A repo-wide scan holds new unregistered gating constants at zero. Count the recorded limit per lane so a binding knob is reported and swept rather than silently shaping results."
+ },
+ {
+  "id": "a-lifecycle-with-no-declared-state",
+  "heading": "A lifecycle with no declared state",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 3,
+  "trigger": "does an entity move through stages (queued, running, paused, done; deployed, rolled back; pending, closed)? Is its current stage one field, written only by one function that refuses an illegal move? Or is it inferred from which columns are null, which flags are set, whether a file or process exists, or which row is newest, and written from several places?",
+  "test_shape": "list the states and the legal moves as a table in one module. Assert every write goes through it, that an illegal move is refused, and that a concurrent second claim of the same move loses. If the stage is inferred, build the combination no branch handles and assert it is refused rather than read as some state. `State is whichever row came last` is the newest-row special case."
+ },
+ {
+  "id": "a-child-that-outlives-its-owner",
+  "heading": "A child that outlives its owner",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does this start a process in its own session (`start_new_session`, `setsid`, a shell `&`), or write a marker file (a pause flag, a hold, a lock), whose only cleanup is in `finally`, `atexit`, `__exit__` or an EXIT trap? A SIGTERM with the default handler skips all of those and SIGKILL skips everything, so who stops the child or lifts the flag when the owner dies?",
+  "test_shape": "start the owner for real, send it SIGTERM and then SIGKILL, and assert no child process and no flag is left behind. Detector `orphanable_child`: a new-session Popen stopped only on the way out, reached from an entry point that installs no SIGTERM handler; and a marker file with no owner pid or expiry that one path alone lifts."
+ },
+ {
+  "id": "a-wait-with-no-deadline-owner-or-end-state",
+  "heading": "A wait with no deadline, owner or end state",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does this poll, retry or hold something pending? Is there a comparison to a clock or a cap on the loop, does anyone hear when it expires, and does it end in a named state? For a state no move leaves, does anything other than its writers ever read it to settle, expire or report it?",
+  "test_shape": "hold the condition true forever on a fake clock, and assert the wait ends in a named state and that an alert fires. Detectors: `undeadlined_wait`, a while loop that sleeps or waits with no comparison to a clock set before it and no capped counter, exempted only by a waiver with a reason; `terminal_without_reader`, a state with no outgoing move in a move table and no reader outside the modules that write it."
+ },
+ {
+  "id": "a-shared-store-query-with-no-scope-or-a-scope-with-its-own-idea-of-null",
+  "heading": "A shared-store query with no scope, or a scope with its own idea of NULL",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does this query read or write a table that several machines, homes or tenants share? Does it filter on the scope column? Does it treat an unstamped (NULL) row the same way as every other query?",
+  "test_shape": "seed two scopes plus an unstamped row in one store; assert each query sees only its own scope, and that every query gives NULL the one documented meaning. Red-proof by dropping the scope predicate. Detector `unscoped_query`: an SQL string on a table the consumer declares scoped (or whose CREATE TABLE names a scope column) with no scope predicate and no `WHERE id =`; and a `scope IS NULL` written anywhere but the one helper the consumer names for it."
+ },
+ {
+  "id": "a-stored-pid-trusted-as-the-same-process",
+  "heading": "A stored pid trusted as the same process",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "is a pid, pgid or port read back from a file or row, or after a restart, and checked only for liveness? What else could hold that number now?",
+  "test_shape": "store a pid, let the process die, and start an unrelated process under that pid (or fake one); assert the check says gone and the state that depends on it (a lease, a deploy, a yielder) is freed. Detector `stored_pid_liveness`: `os.kill(x, 0)`, or an alive() helper (found, or named by the consumer), fed a value read from a file or row, with no pgid, start-time or command check in the same function."
+ },
+ {
+  "id": "a-decision-read-back-out-of-a-sentence-the-code-wrote",
+  "heading": "A decision read back out of a sentence the code wrote",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does code decide what to do by matching a prefix, substring, LIKE, GLOB or regex in a note, detail, reason or log field that code also writes as prose?",
+  "test_shape": "reword the writer's sentence (or the constant it starts with) and assert the reader's decision does not change; red-proof by showing the reader flips today. Detector `prose_match`: SQL `LIKE`, `GLOB` or `instr()`, `startswith`/`endswith`, `\"x\" in` or a regex against a field the consumer names as stored prose. Blind to needles built from variables, `==` against formatted labels, JSON read with `.get`, and SQL written in lowercase."
+ },
+ {
+  "id": "nothing-and-failed-return-the-same-value",
+  "heading": "Nothing and failed return the same value",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 3,
+  "trigger": "does a read return [], {}, None or 0 both when there is nothing and when the read failed or hit the wrong store, and does the caller act on it or record it?",
+  "test_shape": "run the reader against an empty store, an unreadable store and the wrong store (a stale file beside the real one); only the first may report \"none\", and the others must say which store they read. Detector `empty_on_failure`: an except around a store or file read that returns an empty literal; a \"none found\" message shown for a value an except path leaves empty; a store chosen by the consumer's chooser call in more than one module."
+ },
+ {
+  "id": "a-check-whose-input-differs-between-the-desk-and-ci",
+  "heading": "A check whose input differs between the desk and CI",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 2,
+  "trigger": "does this check enumerate files? Does it ask the filesystem, or `git ls-files`, or anything else that differs between a working tree and a fresh clone?",
+  "test_shape": "resolve against what a push would publish, meaning tracked plus untracked-and-not-ignored. Then a test proving a file written just now is visible, and that an ignored file is not. Where prose legitimately names something that does not ship, enumerate the exceptions with the step that creates each, and assert each exception is still genuinely absent: an allowlist that outlives its reason is how a check rots."
+ },
+ {
+  "id": "a-format-assumed-to-generalise",
+  "heading": "A format assumed to generalise",
+  "source": "SKILL.md",
+  "tier": 3,
+  "bitten": 2,
+  "trigger": "is a syntax being used in a list, a batch, or a delimiter-joined form, on the assumption that the single form extends?",
+  "test_shape": "verify the batch form against the tool's actual behaviour once, then encode the safe form as the convention."
+ },
+ {
+  "id": "external-state-with-no-assertion-on-it",
+  "heading": "External state with no assertion on it",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 2,
+  "trigger": "does anything here depend on someone else's version, image, path or published artifact? Is it true, dated, load-bearing and unwatched?",
+  "test_shape": "assert the external fact in the job that depends on it, and make the failure message name what the claim was load-bearing FOR and both ways out. An assertion that only says \"this changed\" makes the next person re-derive the decision."
+ },
+ {
+  "id": "a-statistic-blind-to-the-effect-under-test",
+  "heading": "A statistic blind to the effect under test",
+  "source": "SKILL.md",
+  "tier": 3,
+  "bitten": 2,
+  "trigger": "is a summary statistic standing in for the thing being measured? What can this statistic NOT see? A count cannot see order. A mean cannot see spread. A top-1 cannot see anything below it.",
+  "test_shape": "none. Ask the question before running the experiment, and if the statistic is blind to the effect, a null result is uninformative rather than negative."
+ },
+ {
+  "id": "a-retraction-never-reaches-the-actor",
+  "heading": "A retraction never reaches the actor",
+  "source": "SKILL.md",
+  "tier": 3,
+  "bitten": 2,
+  "trigger": "has a command, plan or instruction been handed to someone who will act on it later? If it is withdrawn, what guarantees they see the withdrawal before they act?",
+  "test_shape": "none mechanical. Put any retraction first, in bold, on the channel the actor reads at the moment of acting; never reverse a handed-out command mid-message. Assume an actor who read the first version acts on it."
+ },
+ {
+  "id": "a-result-produced-never-read",
+  "heading": "A result produced, never read",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 2,
+  "trigger": "did a job, eval or probe finish? Is anything waiting on its output, and has anyone opened the output since it landed?",
+  "test_shape": "finish a job with a planted report, assert the status lists it as unread until it is acknowledged."
+ },
+ {
+  "id": "a-stored-value-with-no-live-writer-or-no-reader",
+  "heading": "A stored value with no live writer, or no reader",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 2,
+  "trigger": "for each column, file or key this change stores or reads: does something live write it, and does something live read it?",
+  "test_shape": "for a new column, one test that drives its production writer and then its production reader in one live path and asserts the reader sees the value; for a removed writer, assert the reader went too. Detector `unpaired_column`: each column from CREATE TABLE and ALTER TABLE in the consumer's migration paths with no INSERT, UPDATE SET or upsert naming it, or no read naming it, in production code. Blind to JSON keys, run-dir files, meta keys and readers outside the scanned scope."
+ },
+ {
+  "id": "a-failure-mode-inferred-not-observed",
+  "heading": "A failure mode inferred, not observed",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 1,
+  "trigger": "is a claim being made about how a system fails? Was it read from the system, or reasoned out?",
+  "test_shape": "a test that PRODUCES the failure. If it cannot be produced, the claim is wrong."
+ },
+ {
+  "id": "a-reference-that-no-longer-resolves",
+  "heading": "A reference that no longer resolves",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 1,
+  "trigger": "does documentation name files, symbols or commands?",
+  "test_shape": "every repo-relative path in prose must reach a reader. A bare path means this repo; a foreign one carries its repo in front of it."
+ },
+ {
+  "id": "silent-truncation-or-a-partial-read-assumed-complete",
+  "heading": "Silent truncation, or a partial read assumed complete",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 1,
+  "trigger": "does anything read a fixed number of bytes, take a `LIMIT`, cap a buffer with `head`/`tail`, or assume one read returns the whole thing? Is a short or empty result then read as \"absent\" or \"done\"?",
+  "test_shape": "feed input larger than the cap and assert nothing load-bearing is lost, or that the truncation is intended and announced. For a scan that answers a yes/no question, put the evidence PAST the cap and assert it is still found \u2014 a check that reads too few lines fails open, silently."
+ },
+ {
+  "id": "a-transport-change-that-silently-changes-the-payload",
+  "heading": "A transport change that silently changes the payload",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 1,
+  "trigger": "did a change alter HOW a request is made (streaming, batching, a proxy hop, compression, a new client library) for a path whose OUTPUT includes more than the text: logprobs, usage, headers, tool calls?",
+  "test_shape": "for every field a consumer reads, assert it survives the new transport end to end through the real proxy, not just a fake."
+ },
+ {
+  "id": "history-reconstructed-from-present-state",
+  "heading": "History reconstructed from present state",
+  "source": "SKILL.md",
+  "tier": 2,
+  "bitten": 1,
+  "trigger": "does a migration or backfill re-derive a past decision? Does it read the record of that decision, or today's disk, config or adoptions?",
+  "test_shape": "migrate a historical store on a machine whose present state differs from the past (no weights, different adoptions) and assert the backfilled decision matches its receipt."
+ },
+ {
+  "id": "two-durable-writes-with-no-repair-for-the-gap",
+  "heading": "Two durable writes with no repair for the gap",
+  "source": "SKILL.md",
+  "tier": 1,
+  "bitten": 1,
+  "trigger": "does an operation commit a row, file, flag or process and then write a second thing that refers to it? What is left if it dies between the two, and what repairs it?",
+  "test_shape": "inject a death between the two writes, run the settle or recover path, and assert no duplicate, no stranded flag, and that the stores agree. Detectors: `commit_then_link`, a helper that commits and whose returned id a second write then stores, with no shared transaction and no dedup key; `torn_append`, a line-per-record file appended with no newline repair while its reader stops at the first line it cannot parse."
+ },
+ {
+  "id": "boundary-and-fencepost",
+  "heading": "1. Boundary and fencepost",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does anything index, slice, count, or loop over a range? Is there a first, a last, or a gap-between-items?",
+  "test_shape": "feed empty, one element, two, and the maximum. Assert the count of gaps is one less than the count of posts where that is the intent."
+ },
+ {
+  "id": "the-empty-collection",
+  "heading": "2. The empty collection",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does a calculation assume at least one element? A division by a count, a max/min/first, an average?",
+  "test_shape": "call it with zero elements. Assert a defined result or a clear error, never a crash or a silent wrong number."
+ },
+ {
+  "id": "an-error-swallowed",
+  "heading": "3. An error swallowed",
+  "source": "general-corpus.md",
+  "tier": 1,
+  "bitten": null,
+  "trigger": "is there a bare `except`, a `2>/dev/null`, a `|| true`, or a caught exception with an empty body? Does a failure path return the same shape as success?",
+  "test_shape": "make the guarded operation fail and assert the caller LEARNS of it. Scan for the swallowing forms and hold at zero where the class is new."
+ },
+ {
+  "id": "success-assumed-exit-status-unchecked",
+  "heading": "4. Success assumed: exit status unchecked",
+  "source": "general-corpus.md",
+  "tier": 1,
+  "bitten": null,
+  "trigger": "is the return of a call or command used without checking it succeeded? A pipeline whose middle stage can fail? A `cd` before `rm`?",
+  "test_shape": "force the call to fail and assert the program stops or handles it. In Bash, prove a mid-pipeline failure is caught."
+ },
+ {
+  "id": "partial-failure-leaves-inconsistent-state",
+  "heading": "5. Partial failure leaves inconsistent state",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does an operation make several changes that must all land or none? A loop that writes N files, a multi-row update, a rename-then-write?",
+  "test_shape": "inject a failure partway and assert the observable state is either fully-before or fully-after, never half."
+ },
+ {
+  "id": "float-equality-and-money-in-floats",
+  "heading": "6. Float equality and money in floats",
+  "source": "general-corpus.md",
+  "tier": 1,
+  "bitten": null,
+  "trigger": "is `==` used on floats? Is currency or a running total held as a float?",
+  "test_shape": "assert with a tolerance, or use integers/Decimal for money. Add 0.1 ten times and assert it is not 1.0 under `==`."
+ },
+ {
+  "id": "integer-division-and-silent-truncation",
+  "heading": "7. Integer division and silent truncation",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is a division expected to yield a fraction? Is a value narrowed (float to int, int64 to int32, large to small)?",
+  "test_shape": "pick inputs where truncation changes the answer and assert the intended one."
+ },
+ {
+  "id": "order-assumed-on-unordered-data",
+  "heading": "8. Order assumed on unordered data",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code iterate a dict/set/map, a glob, `ls`, `find`, or a DB query with no `ORDER BY`, and then rely on the order?",
+  "test_shape": "shuffle the input (or run twice) and assert the result is identical. Sort explicitly where order is load-bearing."
+ },
+ {
+  "id": "timezone-naive-or-dst-blind-datetime",
+  "heading": "9. Timezone-naive or DST-blind datetime",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code compare, subtract, or add to a datetime? Does it mix a naive and an aware one, or assume the day is 24 hours?",
+  "test_shape": "run the logic across a DST boundary and at a non-UTC offset. Assert the naive/aware mix raises rather than silently comparing wrong."
+ },
+ {
+  "id": "encoding-assumed",
+  "heading": "10. Encoding assumed",
+  "source": "general-corpus.md",
+  "tier": 1,
+  "bitten": null,
+  "trigger": "does the code read or write text? Open a file, decode bytes, or process output that could contain non-ASCII?",
+  "test_shape": "feed a byte sequence that is valid UTF-8 but not ASCII, and one that is invalid, and assert defined behaviour."
+ },
+ {
+  "id": "word-splitting-and-unquoted-expansion",
+  "heading": "11. Word-splitting and unquoted expansion",
+  "source": "general-corpus.md",
+  "tier": 1,
+  "bitten": null,
+  "trigger": "is a variable that could hold a space, a glob character, or be empty used unquoted? An array expanded without `[@]` and quotes?",
+  "test_shape": "set the value to `a b`, to `*`, and to empty, and assert the command sees the intended argument count."
+ },
+ {
+  "id": "external-input-trusted",
+  "heading": "12. External input trusted",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does user input, a filename, an env var, or network data reach a shell, a path join, a SQL string, or an eval without validation?",
+  "test_shape": "feed the hostile case (a `../`, a `;rm`, a `'`, a wildcard) and assert it is rejected or neutralised, not executed."
+ },
+ {
+  "id": "toctou-check-then-act",
+  "heading": "13. TOCTOU: check then act",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code test a condition and then act on it as a separate step? `exists()` then `open()`, `test -f` then read, check-then-create?",
+  "test_shape": "the race is hard to schedule, so assert the code acts atomically (open and handle the error) rather than checking first."
+ },
+ {
+  "id": "non-idempotent-retry",
+  "heading": "14. Non-idempotent retry",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is an operation retried, re-run, or resumable? Does running it twice do the thing twice (double-charge, duplicate row, appended line)?",
+  "test_shape": "run the operation twice and assert the end state equals running it once."
+ },
+ {
+  "id": "resource-leak-on-the-error-path",
+  "heading": "15. Resource leak on the error path",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is a file, socket, lock, connection, or temp dir acquired? Does every path out (exception, early return, break) release it?",
+  "test_shape": "force an error between acquire and release and assert the resource is freed (fd count, lock available, temp gone)."
+ },
+ {
+  "id": "mutable-shared-or-default-state",
+  "heading": "16. Mutable shared or default state",
+  "source": "general-corpus.md",
+  "tier": 1,
+  "bitten": null,
+  "trigger": "is there a default argument that is a list/dict, a module-level mutable, or a container shared across calls, iterations, or threads?",
+  "test_shape": "call the function twice and assert the second call is not polluted by the first."
+ },
+ {
+  "id": "empty-versus-absent-conflated",
+  "heading": "17. Empty versus absent conflated",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does a check treat `0`, `\"\"`, `[]`, or `False` the same as missing? Does it distinguish unset from set-to-empty?",
+  "test_shape": "pass the falsy-but-present value and the truly-absent value separately and assert they are handled differently."
+ },
+ {
+  "id": "comparison-on-the-wrong-type",
+  "heading": "18. Comparison on the wrong type",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "are two values compared as strings when one means a number, a version, or a date? Lexicographic where numeric was intended?",
+  "test_shape": "pick a pair that orders differently as text than as the real type (`\"10\" < \"9\"`, `\"1.10\" < \"1.9\"`) and assert the intended order."
+ },
+ {
+  "id": "regex-over-or-under-matching",
+  "heading": "19. Regex over- or under-matching",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is a regex used to validate, extract, or split? Is it unanchored, greedy, or does it assume `.` spans or stops at newlines?",
+  "test_shape": "feed a near-miss that should NOT match and a valid multiline input. Anchor with `^...$` where the whole string must match."
+ },
+ {
+  "id": "rounding-direction-and-parts-of-a-whole",
+  "heading": "20. Rounding direction and parts of a whole",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is a value rounded, floored, or split into parts that must sum to a total (percentages, a bill split, pixel widths)?",
+  "test_shape": "assert the parts sum to the whole and pick a case where naive rounding drifts (three ways of 100, 1/3 each)."
+ },
+ {
+  "id": "non-atomic-read-modify-write",
+  "heading": "21. Non-atomic read-modify-write",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code read a value, change it, and write it back, where another process or thread could interleave? A counter, a JSON state file, a balance?",
+  "test_shape": "run two writers concurrently and assert no update is lost (final == start + 2, not + 1)."
+ },
+ {
+  "id": "flaky-by-time-or-randomness",
+  "heading": "22. Flaky by time or randomness",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code or its test depend on `sleep`, wall-clock time, or an unseeded random? Does a test pass depend on how fast the machine is?",
+  "test_shape": "inject the clock and the RNG (or seed them). Assert the same input gives the same output. A test with a bare `sleep` is the smell."
+ },
+ {
+  "id": "assuming-a-single-result",
+  "heading": "23. Assuming a single result",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code take the first match, `head -1`, `.first()`, or a single capture, when the source can legitimately return several?",
+  "test_shape": "supply input with two or more matches and assert the code handles all of them, or explicitly and correctly picks one."
+ },
+ {
+  "id": "cwd-or-script-location-path-assumption",
+  "heading": "24. CWD or script-location path assumption",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does the code use a relative path, or assume it runs from the repo root or its own directory? Does it source a sibling file by bare name?",
+  "test_shape": "run it from a different working directory and assert it still finds its files."
+ },
+ {
+  "id": "cleanup-missing-on-failure",
+  "heading": "25. Cleanup missing on failure",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is there setup that must be undone (temp files, a started service, a lock, a changed setting)? Does the undo run on every exit, including errors and signals?",
+  "test_shape": "cause the body to fail and assert the teardown still ran. Also assert teardown does not run twice or on a setup that never happened."
+ },
+ {
+  "id": "boolean-config-and-env-parsing",
+  "heading": "26. Boolean config and env parsing",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "is a flag read from an env var, a config file, or a CLI string and then used as a boolean?",
+  "test_shape": "pass `\"false\"`, `\"0\"`, `\"\"`, and unset, and assert each maps to the intended boolean. The string `\"false\"` is truthy in most languages."
+ },
+ {
+  "id": "irreplaceable-state-with-no-guard-on-its-destruction",
+  "heading": "28. Irreplaceable state with no guard on its destruction",
+  "source": "general-corpus.md",
+  "tier": 2,
+  "bitten": null,
+  "trigger": "does declarative code own something a re-run cannot rebuild: a database, a bucket of objects, a DNS zone whose delegation lives elsewhere, a volume? Can a plan destroy it, or destroy it without keeping a copy?",
+  "test_shape": "plan a change that forces replacement (rename, a changed immutable argument) and assert the plan refuses. Feed every deploy var file and assert none makes the final-snapshot skip true."
+ }
+]

@@ -55,6 +55,11 @@ opensearch = [
     "opensearch-py>=2.6",
 ]
 
+[dependency-groups]
+dev = [
+    "gauntlet[hcl] @ git+https://github.com/unxmaal/gauntlet@v0.3.0 ; python_version >= '3.12'",
+]
+
 [project.scripts]
 mcm-engine = "mcm_engine.cli:main"
 
