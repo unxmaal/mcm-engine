@@ -1,0 +1,131 @@
+{
+ "a-child-that-outlives-its-owner": [
+  "src/mcm_engine/cli.py:path"
+ ],
+ "a-closed-table-fronting-an-open-set": [
+  "src/mcm_engine/hooks/mcp_enforcement.py:_COMMENT_PREFIX",
+  "src/mcm_engine/ingest/text_dir.py:_AST_UPGRADE_HINTS",
+  "src/mcm_engine/tools/search.py:_SCOPE_MAP"
+ ],
+ "a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates": [
+  "src/mcm_engine/cli.py:_save_ingest_state",
+  "src/mcm_engine/hooks/mcp_enforcement.py:_append_event",
+  "src/mcm_engine/hooks/mcp_enforcement.py:_write_state"
+ ],
+ "a-lifecycle-with-no-declared-state": [
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.supersede_knowledge",
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.supersede_rule",
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.unsupersede_knowledge",
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.unsupersede_rule",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.supersede_knowledge",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.supersede_rule",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.unsupersede_knowledge",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.unsupersede_rule",
+  "src/mcm_engine/tools/corpus.py:register_corpus_tools.recall_entry",
+  "table:knowledge.status",
+  "table:rules.status"
+ ],
+ "an-order-the-code-needs-but-does-not-check": [
+  "scripts/audit_rules.py:<module>:import:MCM_MCP_URL",
+  "scripts/import_rules.py:<module>:import:MCM_MCP_URL",
+  "scripts/import_rules.py:<module>:import:MCM_RULES_DIR",
+  "src/mcm_engine/hooks/lessons.py:<module>:import:home()",
+  "src/mcm_engine/hooks/user_prompt_submit.py:<module>:import:MCM_INJECT_MAX_BYTES",
+  "src/mcm_engine/tools/search.py:<module>:import:MCM_INLINE_FIELD_MAX",
+  "src/mcm_engine/tools/search.py:<module>:import:MCM_NEG_ERR_SUMMARY_CAP",
+  "src/mcm_engine/tools/search.py:<module>:import:MCM_SNIPPET_MAX",
+  "terraform/aws/ecr.tf:comment.L1",
+  "terraform/aws/variables.tf:variable.image_uri.description"
+ ],
+ "each-half-verified-against-its-own-spec-the-seam-against-nothing": [
+  "env:MCM_ACTOR",
+  "env:MCM_ADMIN_HOST",
+  "env:MCM_ADMIN_PORT",
+  "env:MCM_ALLOWED_HOSTS",
+  "env:MCM_AUTH_REQUIRED",
+  "env:MCM_CONFIG",
+  "env:MCM_COVERAGE_GATE",
+  "env:MCM_DNS_REBINDING_PROTECTION",
+  "env:MCM_ENTRY_MODEL",
+  "env:MCM_EXPORT_PAGE_MAX",
+  "env:MCM_FIXATION_THRESHOLD",
+  "env:MCM_INJECT_MAX_BYTES",
+  "env:MCM_INLINE_FIELD_MAX",
+  "env:MCM_MCP_TOKEN",
+  "env:MCM_MCP_URL",
+  "env:MCM_METRICS_ENABLED",
+  "env:MCM_NEG_ERR_SUMMARY_CAP",
+  "env:MCM_OPENSEARCH_URL",
+  "env:MCM_POSTGRES_DSN",
+  "env:MCM_REDIS_URL",
+  "env:MCM_RULES_DIR",
+  "env:MCM_SCROLL_PAGE_MAX",
+  "env:MCM_SEARCH_QUERY_MODE",
+  "env:MCM_SIFT_MAX_SPANS",
+  "env:MCM_SNIPPET_MAX"
+ ],
+ "identity-by-name-not-by-content": [
+  "terraform/aws/network.tf:aws_subnet.private",
+  "terraform/aws/network.tf:aws_subnet.public"
+ ],
+ "irreplaceable-state-with-no-guard-on-its-destruction": [
+  "terraform/aws/rds.tf:aws_db_instance.main",
+  "terraform/aws/rds.tf:aws_db_instance.main.skip_final_snapshot"
+ ],
+ "nothing-and-failed-return-the-same-value": [
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.insert_relation:except",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.find_similar_knowledge:except",
+  "src/mcm_engine/admin/app.py:make_handler.Handler.do_POST:except",
+  "src/mcm_engine/eval/trace_transcript.py:load_transcript:except",
+  "src/mcm_engine/files/watcher.py:_parse_rule_file:except",
+  "src/mcm_engine/hooks/deny_table.py:_dirty_files:except",
+  "src/mcm_engine/hooks/mcp_enforcement.py:_read_state:except",
+  "src/mcm_engine/hooks/mcp_enforcement.py:main:except",
+  "src/mcm_engine/hooks/post_tool_use_failure.py:main:except",
+  "src/mcm_engine/hooks/pre_compact.py:main:except",
+  "src/mcm_engine/hooks/session_end.py:main:except",
+  "src/mcm_engine/hooks/user_prompt_submit.py:main:except",
+  "src/mcm_engine/tools/rules.py:_parse_rule_file:except"
+ ],
+ "one-question-two-answers": [
+  "src/mcm_engine/adapters/postgres/storage.py:_ENTRY_UPDATABLE",
+  "src/mcm_engine/adapters/sqlite/storage.py:_ENTRY_UPDATABLE"
+ ],
+ "state-is-whichever-row-came-last": [
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.find_similar_knowledge",
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_session",
+  "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_snapshot",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_session",
+  "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_snapshot"
+ ],
+ "two-durable-writes-with-no-repair-for-the-gap": [
+  "src/mcm_engine/ingest/adjudicate.py:_insert_rule",
+  "src/mcm_engine/testing/conformance.py:CounterConformance.test_increment_last_hit_at_sets_timestamp",
+  "src/mcm_engine/testing/conformance.py:CounterConformance.test_increment_then_get_returns_value",
+  "src/mcm_engine/testing/conformance.py:CounterConformance.test_last_flushed_snapshot_equals_live",
+  "src/mcm_engine/testing/conformance.py:CounterConformance.test_top_by_returns_descending",
+  "src/mcm_engine/testing/conformance.py:CounterConformance.test_unknown_counter_raises",
+  "src/mcm_engine/testing/conformance.py:SearchConformance.test_search_pinned_flag_propagates",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_entry_insert_find_update_delete",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_get_last_snapshot",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_insert_and_list_rule_events",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_insert_relation_and_list_outgoing_incoming",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_list_archived_rules",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_list_rule_events_respects_limit",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_rule_event_actor_defaults_to_nobody",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_set_pinned_false_restores",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_set_pinned_then_list_pinned",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_snapshot_seq_increments_per_session",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_soft_delete_and_restore_rule",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_transaction_commits_on_clean_exit",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_transaction_rolls_back_on_exception",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_update_knowledge",
+  "src/mcm_engine/testing/conformance.py:StorageConformance.test_update_rule",
+  "src/mcm_engine/testing/conformance.py:WriteThroughCounterConformance.test_increments_are_mirrored_into_entries",
+  "src/mcm_engine/tools/decisions.py:register_decisions_tools.record_decision",
+  "src/mcm_engine/tools/rules.py:_apply_import_batch",
+  "src/mcm_engine/tools/rules.py:register_rules_tools.add_rule",
+  "src/mcm_engine/tools/rules.py:register_rules_tools.sync_rules",
+  "src/mcm_engine/tools/session.py:register_session_tools.session_handoff"
+ ]
+}
