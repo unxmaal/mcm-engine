@@ -1,1 +1,12 @@
-[]
+[
+ {
+  "number": 116,
+  "title": "get_last_session returns the global latest handoff \u2014 no per-caller/workspace scoping, so shared deployments resume the wrong session",
+  "created": "2026-08-17T19:12:52Z"
+ },
+ {
+  "number": 197,
+  "title": "Postgres search snippets wrap every matched term in commas (ts_headline StartSel=, StopSel=, parsed as a comma marker)",
+  "created": "2026-10-21T17:54:12Z"
+ }
+]

@@ -8,16 +8,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 
 # TODO(gauntlet): production: which paths are shipped code; the default is everything outside tests/ and test/.
-# TODO(gauntlet): repo_slug: "owner/repo" of the issue tracker, for `gauntlet snapshot-defects` and `gauntlet audit`; until it is set, defects.json stays empty.
 # TODO(gauntlet): detector_config commit_then_link: helpers that commit besides conn.commit(): {"committers": ("put",)}
-# TODO(gauntlet): detector_config effect_reachable: the effects and the live-run predicate: {"effects": ("send",), "live": ("LIVE_HOME",)}
-# TODO(gauntlet): detector_config empty_on_failure: the functions that choose a store: {"choosers": ("backend",)}
-# TODO(gauntlet): detector_config one_sided_schema_check: the schema version names and check entry points: {"versions": (...), "phases": (...)}
-# TODO(gauntlet): detector_config prose_match: the fields that hold prose: {"fields": ("note", "reason")}
 # TODO(gauntlet): detector_config stored_pid_liveness: helpers that test a stored pid besides os.kill(pid, 0): {"alive": ("running",)}
 # TODO(gauntlet): detector_config unchecked_order: the effects and import-time reads that need an order: {"effects": (...), "reads": (...)}
 # TODO(gauntlet): detector_config unpaired_column: the migrations and schema paths: {"migrations": ("app/migrations/",), "schema": (...)}
-# TODO(gauntlet): detector_config unscoped_query: the scope columns and tables of a shared store: {"columns": ("tenant_id",), "tables": ("jobs",)}
 
 INDEX = {
     'a-child-that-outlives-its-owner': {'instances': [], 'scanners': [], 'detector': 'orphanable_child'},
@@ -30,8 +24,9 @@ INDEX = {
     'a-lifecycle-with-no-declared-state': {'instances': [], 'scanners': [], 'detector': 'unguarded_transition'},
     'a-metric-quoted-without-a-negative-control': {'instances': [], 'scanners': [], 'detector': 'hcl_constant_assert'},
     'a-non-production-run-writes-live-state': {'instances': [], 'scanners': [], 'detector': ['hcl_env_two_inputs', 'hcl_shared_backend']},
+    'a-platform-primitive-assumed-universal': {'instances': [{'issue': 197}], 'scanners': []},
     'a-proxy-checked-in-place-of-the-property': {'instances': [], 'scanners': [], 'detector': 'hcl_test_skips_tfvars'},
-    'a-shared-store-query-with-no-scope-or-a-scope-with-its-own-idea-of-null': {'instances': [], 'scanners': [], 'detector': 'unscoped_query'},
+    'a-shared-store-query-with-no-scope-or-a-scope-with-its-own-idea-of-null': {'instances': [{'issue': 116}], 'scanners': [], 'detector': 'unscoped_query'},
     'a-stored-pid-trusted-as-the-same-process': {'instances': [], 'scanners': [], 'detector': 'stored_pid_liveness'},
     'a-stored-value-with-no-live-writer-or-no-reader': {'instances': [], 'scanners': [], 'detector': 'unpaired_column'},
     'a-wait-with-no-deadline-owner-or-end-state': {'instances': [], 'scanners': [], 'detector': ['undeadlined_wait', 'terminal_without_reader']},
@@ -50,8 +45,64 @@ INDEX = {
     'two-durable-writes-with-no-repair-for-the-gap': {'instances': [], 'scanners': [], 'detector': ['commit_then_link', 'torn_append']},
 }
 
+_CONFORMANCE = "test method in the shipped conformance suite, not a production write path"
+_FAIL_OPEN = "hook fails open by design: a hook error must never break the tool call (RULE #61)"
+
+WAIVERS = {
+    'a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates': {
+        'src/mcm_engine/hooks/mcp_enforcement.py:_append_event': 'append-only diagnostic log, one write per line, never read back for a decision',
+    },
+    'nothing-and-failed-return-the-same-value': {
+        'src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.insert_relation:except': "None is the documented 'link already exists' answer on UniqueViolation",
+        'src/mcm_engine/hooks/deny_table.py:_dirty_files:except': _FAIL_OPEN,
+        'src/mcm_engine/hooks/mcp_enforcement.py:_read_state:except': _FAIL_OPEN,
+        'src/mcm_engine/hooks/mcp_enforcement.py:main:except': _FAIL_OPEN,
+        'src/mcm_engine/hooks/post_tool_use_failure.py:main:except': _FAIL_OPEN,
+        'src/mcm_engine/hooks/pre_compact.py:main:except': _FAIL_OPEN,
+        'src/mcm_engine/hooks/session_end.py:main:except': _FAIL_OPEN,
+        'src/mcm_engine/hooks/user_prompt_submit.py:main:except': _FAIL_OPEN,
+    },
+    'state-is-whichever-row-came-last': {
+        'src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.find_similar_knowledge': 'rank-ordered FTS match, not a latest-row read',
+    },
+    'two-durable-writes-with-no-repair-for-the-gap': {
+        'src/mcm_engine/testing/conformance.py:CounterConformance.test_increment_last_hit_at_sets_timestamp': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:CounterConformance.test_increment_then_get_returns_value': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:CounterConformance.test_last_flushed_snapshot_equals_live': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:CounterConformance.test_top_by_returns_descending': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:CounterConformance.test_unknown_counter_raises': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:SearchConformance.test_search_pinned_flag_propagates': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_entry_insert_find_update_delete': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_get_last_snapshot': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_insert_and_list_rule_events': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_insert_relation_and_list_outgoing_incoming': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_list_archived_rules': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_list_rule_events_respects_limit': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_rule_event_actor_defaults_to_nobody': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_set_pinned_false_restores': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_set_pinned_then_list_pinned': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_snapshot_seq_increments_per_session': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_soft_delete_and_restore_rule': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_transaction_commits_on_clean_exit': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_transaction_rolls_back_on_exception': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_update_knowledge': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:StorageConformance.test_update_rule': _CONFORMANCE,
+        'src/mcm_engine/testing/conformance.py:WriteThroughCounterConformance.test_increments_are_mirrored_into_entries': _CONFORMANCE,
+    },
+}
+for _cid, _sites in WAIVERS.items():
+    INDEX[_cid]["waivers"] = _sites
+
 # Unbound hits seeded by init; lower it as the backlog is bound, never raise it.
-BACKLOG_PIN = 105
+BACKLOG_PIN = 103
+
+DETECTOR_CONFIG = {
+    "effect_reachable": {"effects": ("mcp_http_call_tool", "git_commit_tree", "_http_chat")},
+    "empty_on_failure": {"choosers": ("build_verified_context", "open_storage")},
+    "one_sided_schema_check": {"versions": ("CORE_VERSION", "CONTRACT_VERSION")},
+    "prose_match": {"fields": ("summary", "detail"), "migrations": ("src/mcm_engine/sanitize.py",)},
+    "unscoped_query": {"columns": ("principal", "workspace")},
+}
 
 MOVE_WAIVERS = {
 }
@@ -65,4 +116,7 @@ REGISTRY = Registry(
     backlog_pin=BACKLOG_PIN,
     frontends=('python', 'hcl'),
     move_waivers=MOVE_WAIVERS,
+    detector_config=DETECTOR_CONFIG,
+    repo_slug="unxmaal/mcm-engine",
+    defect_label="bug",
 )
