@@ -206,7 +206,7 @@ for _cid, _sites in WAIVERS.items():
     INDEX[_cid]["waivers"] = _sites
 
 # Unbound hits seeded by init; lower it as the backlog is bound, never raise it.
-BACKLOG_PIN = 92
+BACKLOG_PIN = 85
 
 WAIVED = "not yet registered: gauntlet init found it"
 

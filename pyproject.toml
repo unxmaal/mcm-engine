@@ -91,3 +91,4 @@ packages = ["src/mcm_engine"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["gauntlet(class_id, site): binds a test to a gauntlet detector hit"]

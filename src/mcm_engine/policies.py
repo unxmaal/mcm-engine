@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 from .backends import Entry, EntityType
 from .entries import to_entry
 from .refs import format_refs
+from .tunables import env_int
 
 ENTRY_MODELS = ("legacy", "unified")
 
@@ -87,6 +88,38 @@ def rank_inputs(e: Entry) -> dict[str, Any]:
     return {}
 
 
+# ---- headline cap (#203) ----------------------------------------------------------
+
+def headline_max() -> int:
+    return max(0, env_int("MCM_HEADLINE_MAX", 300))
+
+
+def cap_headline(text: Optional[str], detail: str) -> str:
+    """A hit's headline in summary mode: whole when short, else cut at the last
+    sentence end inside the cap. detail="full" and a 0 cap pass through."""
+    text = text or ""
+    n = headline_max()
+    if detail != "summary" or n <= 0 or len(text) <= n:
+        return text
+    cut = text[:n]
+    end = max(cut.rfind(". "), cut.rfind("\n"))
+    if end >= n // 3:
+        cut = cut[:end + 1]
+    return cut.rstrip() + "…"
+
+
+def rule_description(title: Optional[str], description: Optional[str], detail: str) -> str:
+    """A rule's description line; in summary mode without the markdown heading
+    that repeats the title, and capped."""
+    d = description or ""
+    if detail != "summary":
+        return d
+    first, _, rest = d.partition("\n")
+    if first.startswith("#") and first.lstrip("# ").strip() == (title or "").strip():
+        d = rest.lstrip("\n")
+    return cap_headline(d, detail)
+
+
 # ---- render -----------------------------------------------------------------------
 
 def render_hit(
@@ -98,7 +131,7 @@ def render_hit(
     f = e.facets
     if e.kind == "knowledge":
         s = (f"[KNOWLEDGE/{(e.subkind or 'finding').upper()} #{e.id}]{tags} "
-             f"{e.title}: {e.summary or ''}")
+             f"{e.title}: {cap_headline(e.summary, detail)}")
         if detail == "full":
             if e.body:
                 s += f"\n  Detail: {e.body}"
@@ -114,19 +147,20 @@ def render_hit(
         s = f"[RULE #{e.id}]{tags} {e.title}"
         if f.get("category"):
             s += f" ({f['category']})"
-        if e.summary:
-            s += f"\n  {e.summary}"
+        desc = rule_description(e.title, e.summary, detail)
+        if desc:
+            s += f"\n  {desc}"
         if detail == "full" and f.get("file_path"):
             s += f"\n  File: {f['file_path']}"
         return s
     if e.kind == "negative":
-        s = f"[NEGATIVE #{e.id}]{tags} {e.title}: {e.summary or ''}"
+        s = f"[NEGATIVE #{e.id}]{tags} {e.title}: {cap_headline(e.summary, detail)}"
         if f.get("why_failed"):
             s += f"\n  Why: {cap(f['why_failed'], 'negative', e.id)}"
         if f.get("correct_approach"):
             s += f"\n  Fix: {cap(f['correct_approach'], 'negative', e.id)}"
         return s
-    s = f"[ERROR #{e.id}]{tags} {e.title}"
+    s = f"[ERROR #{e.id}]{tags} {cap_headline(e.title, detail)}"
     if f.get("root_cause"):
         s += f"\n  Root cause: {cap(f['root_cause'], 'error', e.id)}"
     if f.get("fix"):

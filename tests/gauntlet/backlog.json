@@ -4,8 +4,7 @@
  ],
  "a-closed-table-fronting-an-open-set": [
   "src/mcm_engine/hooks/mcp_enforcement.py:_COMMENT_PREFIX",
-  "src/mcm_engine/ingest/text_dir.py:_AST_UPGRADE_HINTS",
-  "src/mcm_engine/tools/search.py:_SCOPE_MAP"
+  "src/mcm_engine/ingest/text_dir.py:_AST_UPGRADE_HINTS"
  ],
  "a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates": [
   "src/mcm_engine/cli.py:_save_ingest_state",
@@ -42,9 +41,6 @@
   "scripts/import_rules.py:<module>:import:MCM_RULES_DIR",
   "src/mcm_engine/hooks/lessons.py:<module>:import:home()",
   "src/mcm_engine/hooks/user_prompt_submit.py:<module>:import:MCM_INJECT_MAX_BYTES",
-  "src/mcm_engine/tools/search.py:<module>:import:MCM_INLINE_FIELD_MAX",
-  "src/mcm_engine/tools/search.py:<module>:import:MCM_NEG_ERR_SUMMARY_CAP",
-  "src/mcm_engine/tools/search.py:<module>:import:MCM_SNIPPET_MAX",
   "terraform/aws/ecr.tf:comment.L1",
   "terraform/aws/variables.tf:variable.image_uri.description"
  ],
@@ -61,19 +57,16 @@
   "env:MCM_EXPORT_PAGE_MAX",
   "env:MCM_FIXATION_THRESHOLD",
   "env:MCM_INJECT_MAX_BYTES",
-  "env:MCM_INLINE_FIELD_MAX",
   "env:MCM_MCP_TOKEN",
   "env:MCM_MCP_URL",
   "env:MCM_METRICS_ENABLED",
-  "env:MCM_NEG_ERR_SUMMARY_CAP",
   "env:MCM_OPENSEARCH_URL",
   "env:MCM_POSTGRES_DSN",
   "env:MCM_REDIS_URL",
   "env:MCM_RULES_DIR",
   "env:MCM_SCROLL_PAGE_MAX",
   "env:MCM_SEARCH_QUERY_MODE",
-  "env:MCM_SIFT_MAX_SPANS",
-  "env:MCM_SNIPPET_MAX"
+  "env:MCM_SIFT_MAX_SPANS"
  ],
  "identity-by-name-not-by-content": [
   "terraform/aws/network.tf:aws_subnet.private",

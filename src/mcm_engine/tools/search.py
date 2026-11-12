@@ -22,7 +22,7 @@ from ..backends import (
 )
 from ..db import log
 from ..policies import hidden as _hidden
-from ..policies import policy_for, rank_inputs, render_hit, use_unified
+from ..policies import cap_headline, policy_for, rank_inputs, render_hit, rule_description, use_unified
 from ..refs import format_refs
 from ..scoring import compose_rank, compose_rank_pinned_only, minmax_normalize
 from ..tracker import SessionTracker
@@ -67,13 +67,15 @@ DetailLevel = Literal["summary", "full"]
 # under a summary hit so relevance is legible without fetching the body — most
 # useful under a semantic backend, where the one-liner need not reveal the
 # match. Length-capped so it never re-introduces the #119 body-token cost.
-_SNIPPET_MAX = max(0, int(os.environ.get("MCM_SNIPPET_MAX", "160")))
+def _snippet_max() -> int:
+    return max(0, env_int("MCM_SNIPPET_MAX", 160))
 
 # Issue #171: in summary mode the inline NEGATIVE Why/Fix and ERROR
 # root_cause/fix (kept inline since #136) are the remaining body-token sink —
 # several paragraphs each. Cap each field to a few hundred chars with a
 # get_entry pointer; detail="full" stays uncapped. 0 disables the cap.
-_INLINE_FIELD_MAX = max(0, int(os.environ.get("MCM_INLINE_FIELD_MAX", "320")))
+def _inline_field_max() -> int:
+    return max(0, env_int("MCM_INLINE_FIELD_MAX", 320))
 
 # Issue #171: NEGATIVE/ERROR hits inline their body even in summary mode, so a
 # generic single-token match crowds the response with costly hits (a KNOWLEDGE/
@@ -81,26 +83,34 @@ _INLINE_FIELD_MAX = max(0, int(os.environ.get("MCM_INLINE_FIELD_MAX", "320")))
 # Bound how many of each surface in the multi-scope "all" summary path. The
 # per-scope `limit` still governs scoped (scope="negative") and detail="full"
 # queries. 0 disables (fall back to `limit`).
-_NEG_ERR_SUMMARY_CAP = max(0, int(os.environ.get("MCM_NEG_ERR_SUMMARY_CAP", "3")))
+def _neg_err_summary_cap() -> int:
+    return max(0, env_int("MCM_NEG_ERR_SUMMARY_CAP", 3))
+
+
+# Issue #202: report_error's matches share one byte budget. 0 disables it.
+def _report_error_budget() -> int:
+    return max(0, env_int("MCM_REPORT_ERROR_BUDGET", 6000))
 
 
 def _cap_inline_field(text: str, detail: DetailLevel, entity: str, eid: int) -> str:
     """Truncate an inline NEGATIVE/ERROR body field in summary mode, with a
     get_entry pointer, so the asymmetric #136 inline never re-introduces the
     #119 body-token cost. detail="full" and a disabled cap pass through."""
-    if detail != "summary" or _INLINE_FIELD_MAX <= 0 or len(text) <= _INLINE_FIELD_MAX:
+    n = _inline_field_max()
+    if detail != "summary" or n <= 0 or len(text) <= n:
         return text
-    return text[:_INLINE_FIELD_MAX].rstrip() + f"… (get_entry('{entity}', {eid}) for full)"
+    return text[:n].rstrip() + f"… (get_entry('{entity}', {eid}) for full)"
 
 
 def _format_snippet(snippet: str | None) -> str:
     """Render a capped, single-line match snippet, or '' when there is none or
     the cap disables it. Collapses newlines so a hit stays one logical line."""
-    if not snippet or _SNIPPET_MAX <= 0:
+    n = _snippet_max()
+    if not snippet or n <= 0:
         return ""
     text = " ".join(snippet.split())
-    if len(text) > _SNIPPET_MAX:
-        text = text[:_SNIPPET_MAX].rstrip() + "…"
+    if len(text) > n:
+        text = text[:n].rstrip() + "…"
     return f"\n  Match: {text}" if text else ""
 
 
@@ -208,7 +218,7 @@ def _score_and_format_knowledge(
     stale = _staleness_tag(age_d, last_hit_d, hit.is_pinned)
     expired_tag = " [EXPIRED]" if expired else ""
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()} #{row.id}]{stale}{expired_tag}{pinned} {row.topic}: {row.summary}"
+    entry = f"[KNOWLEDGE/{(row.kind or 'finding').upper()} #{row.id}]{stale}{expired_tag}{pinned} {row.topic}: {cap_headline(row.summary, detail)}"
     if detail == "full":
         if row.detail:
             entry += f"\n  Detail: {row.detail}"
@@ -294,8 +304,9 @@ def _score_and_format_rule(
     entry = f"[RULE #{row.id}]{stale}{expired_tag}{pinned} {row.title}"
     if row.category:
         entry += f" ({row.category})"
-    if row.description:
-        entry += f"\n  {row.description}"
+    desc = rule_description(row.title, row.description, detail)
+    if desc:
+        entry += f"\n  {desc}"
     if detail == "full" and row.file_path:
         entry += f"\n  File: {row.file_path}"
     return composite, entry
@@ -315,7 +326,7 @@ def _score_and_format_negative(
         return None
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[NEGATIVE #{row.id}]{pinned} {row.category}: {row.what_failed}"
+    entry = f"[NEGATIVE #{row.id}]{pinned} {row.category}: {cap_headline(row.what_failed, detail)}"
     # Issue #136: a NEGATIVE's Why/Fix IS its payload and the failure mode is
     # asymmetric — hiding it lets an agent re-attempt the rejected approach, the
     # exact thing this store exists to prevent. Keep it inline even in summary,
@@ -342,7 +353,7 @@ def _score_and_format_error(
         return None
     composite = compose_rank_pinned_only(relevance=relevance, pinned=hit.is_pinned)
     pinned = _pinned_tag(hit.is_pinned)
-    entry = f"[ERROR #{row.id}]{pinned} {row.pattern}"
+    entry = f"[ERROR #{row.id}]{pinned} {cap_headline(row.pattern, detail)}"
     # Issue #136: same asymmetry as NEGATIVE — a known error's root cause + fix
     # are the signal, so hand them back inline even in summary; capped per #171.
     if row.root_cause:
@@ -470,16 +481,20 @@ def _scope_block(
     include_archived: bool = False,
     detail: DetailLevel = "summary",
     ids_out: list | None = None,
+    or_fallback: bool | None = None,
 ) -> list[str]:
-    """Search one entity scope and return formatted result strings."""
+    """Search one entity scope and return formatted result strings.
+    ``or_fallback`` (#201) is passed to a natural-mode backend only; None
+    leaves the backend's own behavior."""
     # Pull more than `limit` so the threshold filter still has options to
     # sort across. SqliteSearch already sorts by raw rank desc; the
     # composite re-sort may reorder a bit.
     unified = use_unified()
+    extra = {} if or_fallback is None else {"fallback": or_fallback}
     if unified:
-        raw_hits = search_backend.search_entries(query, kinds={etype.value}, limit=limit * 3)
+        raw_hits = search_backend.search_entries(query, kinds={etype.value}, limit=limit * 3, **extra)
     else:
-        raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3)
+        raw_hits = search_backend.search(query, entity_types={etype}, limit=limit * 3, **extra)
     # Batch min-max relevance normalization (#27): scale-free across adapters
     # (SQLite bm25 vs Postgres ts_rank_cd) because it uses THIS batch's own
     # score range rather than a fixed, adapter-specific midpoint.
@@ -542,6 +557,72 @@ def _scope_block(
     return out_lines
 
 
+_SCOPE_ORDER = (EntityType.KNOWLEDGE, EntityType.NEGATIVE, EntityType.ERROR, EntityType.RULE)
+
+
+def _collect_scopes(
+    search_backend: SearchBackend,
+    storage: StorageBackend,
+    counters: CounterStore,
+    query: str,
+    limit: int,
+    *,
+    min_rank: float,
+    project: str,
+    entity_types: frozenset[EntityType] = frozenset(EntityType),
+    include_archived: bool = False,
+    detail: DetailLevel = "summary",
+    detail_by_type: dict | None = None,
+    ids_out: list | None = None,
+) -> dict[EntityType, list[str]]:
+    """Formatted hits per entity scope. ``detail_by_type`` overrides ``detail``
+    for single scopes (report_error keeps errors at full detail)."""
+    # Apply gate only when min_rank > 0 (the explicit-search path passes 0
+    # to disable).
+    gate = min_rank if min_rank > 0 else 0.0
+    multi_scope = len(entity_types) > 1
+    overrides = detail_by_type or {}
+
+    def run(or_fallback: bool | None, ids: list | None) -> dict[EntityType, list[str]]:
+        out: dict[EntityType, list[str]] = {}
+        for etype in _SCOPE_ORDER:
+            if etype not in entity_types:
+                continue
+            d = overrides.get(etype, detail)
+            policy = policy_for(etype)
+            scope_limit = limit
+            # Issue #171: NEGATIVE/ERROR inline their (capped) body even in
+            # summary, so bound how many surface in the multi-scope summary
+            # path. Scoped queries and detail="full" keep the caller's limit.
+            cap = _neg_err_summary_cap()
+            if d == "summary" and multi_scope and cap > 0 and not policy.composite_rank:
+                scope_limit = min(limit, cap)
+            out[etype] = _scope_block(
+                etype, search_backend, storage, counters,
+                query=query, limit=scope_limit,
+                # Rules have no project column.
+                project="" if policy.governed else project,
+                min_rank=gate, bump_counters=policy.tracks_hits,
+                include_archived=include_archived, detail=d, ids_out=ids,
+                or_fallback=or_fallback,
+            )
+        return out
+
+    # Issue #201: a natural-mode backend decides its OR fallback per call, so
+    # one empty scope padded a query that matched strictly elsewhere. Run every
+    # scope strict first and loosen only when the query as a whole found nothing.
+    if multi_scope and getattr(search_backend, "query_mode", None) == "natural":
+        ids: list = []
+        blocks = run(False, ids)
+        if not any(blocks.values()):
+            ids = []
+            blocks = run(True, ids)
+        if ids_out is not None:
+            ids_out.extend(ids)
+        return blocks
+    return run(None, ids_out)
+
+
 def _search_all_scopes(
     search_backend: SearchBackend,
     storage: StorageBackend,
@@ -557,52 +638,12 @@ def _search_all_scopes(
     detail: DetailLevel = "summary",
     ids_out: list | None = None,
 ) -> str:
-    results: list[str] = []
-
-    # Apply gate only when min_rank > 0 (the explicit-search path passes 0
-    # to disable).
-    gate = min_rank if min_rank > 0 else 0.0
-
-    # Issue #171: NEGATIVE/ERROR inline their (capped) body even in summary, so
-    # bound how many surface in the multi-scope "all" summary path — the top few
-    # by rank are what a recurrence needs; a generic single-token match should
-    # not crowd out cheap KNOWLEDGE/RULE one-liners. Scoped queries
-    # (scope="negative") and detail="full" keep the caller's `limit`.
-    multi_scope = len(entity_types) > 1
-    neg_err_limit = limit
-    if detail == "summary" and multi_scope and _NEG_ERR_SUMMARY_CAP > 0:
-        neg_err_limit = min(limit, _NEG_ERR_SUMMARY_CAP)
-
-    if EntityType.KNOWLEDGE in entity_types:
-        results.extend(_scope_block(
-            EntityType.KNOWLEDGE, search_backend, storage, counters,
-            query=query, limit=limit, project=project,
-            min_rank=gate, bump_counters=True,
-            include_archived=include_archived, detail=detail, ids_out=ids_out,
-        ))
-
-    if EntityType.NEGATIVE in entity_types:
-        results.extend(_scope_block(
-            EntityType.NEGATIVE, search_backend, storage, counters,
-            query=query, limit=neg_err_limit, project=project,
-            min_rank=gate, bump_counters=False, detail=detail, ids_out=ids_out,
-        ))
-
-    if EntityType.ERROR in entity_types:
-        results.extend(_scope_block(
-            EntityType.ERROR, search_backend, storage, counters,
-            query=query, limit=neg_err_limit, project=project,
-            min_rank=gate, bump_counters=False, detail=detail, ids_out=ids_out,
-        ))
-
-    if EntityType.RULE in entity_types:
-        # Rules have no project column; pass "" so the project filter is a no-op.
-        results.extend(_scope_block(
-            EntityType.RULE, search_backend, storage, counters,
-            query=query, limit=limit, project="",
-            min_rank=gate, bump_counters=True,
-            include_archived=include_archived, detail=detail, ids_out=ids_out,
-        ))
+    blocks = _collect_scopes(
+        search_backend, storage, counters, query, limit,
+        min_rank=min_rank, project=project, entity_types=entity_types,
+        include_archived=include_archived, detail=detail, ids_out=ids_out,
+    )
+    results: list[str] = [hit for etype in _SCOPE_ORDER for hit in blocks.get(etype, [])]
 
     # Plugin search scopes route through the SearchBackend (MCM2-07).
     # Only included in the "all" scope, since `scope=` targets engine-managed
@@ -616,6 +657,52 @@ def _search_all_scopes(
                 pass
 
     return "\n\n".join(results) if results else ""
+
+
+# report_error (#202): the known error and its fix first and whole, then what
+# else matched as summaries, most actionable kind first.
+_ERROR_MATCH_ORDER = (EntityType.ERROR, EntityType.RULE, EntityType.NEGATIVE, EntityType.KNOWLEDGE)
+
+
+def error_matches(
+    search_backend: SearchBackend,
+    storage: StorageBackend,
+    counters: CounterStore,
+    query: str,
+    *,
+    project: str,
+    limit: int = 5,
+    min_rank: float | None = None,
+    ids_out: list | None = None,
+) -> str:
+    """The matches report_error hands back: error hits at full detail, every
+    other kind as a summary, cut to one byte budget. Error hits are never cut."""
+    blocks = _collect_scopes(
+        search_backend, storage, counters, query, limit,
+        min_rank=RANK_THRESHOLD if min_rank is None else min_rank, project=project,
+        detail="summary", detail_by_type={EntityType.ERROR: "full"}, ids_out=ids_out,
+    )
+    budget = _report_error_budget()
+    kept: list[str] = list(blocks.get(EntityType.ERROR, []))
+    used = sum(len(h.encode()) for h in kept)
+    dropped = 0
+    for etype in _ERROR_MATCH_ORDER[1:]:
+        for hit in blocks.get(etype, []):
+            size = len(hit.encode())
+            if budget and used + size > budget:
+                dropped += 1
+                continue
+            kept.append(hit)
+            used += size
+    if not kept:
+        return ""
+    text = "\n\n".join(kept)
+    if dropped:
+        text += f"\n\n({dropped} more match(es) left out to keep this short; search(\"{query}\") lists them.)"
+    return text + (
+        "\n\n(errors shown whole; other matches are summaries — fetch a body with "
+        "get_entry(\"<type>\", <id>).)"
+    )
 
 
 def register_search_tools(
@@ -637,26 +724,13 @@ def register_search_tools(
     counters = ctx.counters
     search_backend = ctx.search
 
-    def search_all(
-        query: str,
-        limit: int = 10,
-        detail: DetailLevel = "full",
-        ids_out: list | None = None,
-    ) -> str:
-        """Internal search function used by report_error. Applies quality
-        gate and project scope. Defaults to detail="full" (unlike the public
-        search tool, which defaults to summary): report_error fires once per
-        error, is quality-gated to strong matches only, and exists to hand the
-        caller the fix inline — a summary there would add a get_entry
-        round-trip at the worst moment. The #119 token win targets the
-        high-volume search tool, not this low-volume triage path."""
-        result = _search_all_scopes(
-            search_backend, storage, counters, query, limit,
-            plugin_search_scopes,
-            min_rank=RANK_THRESHOLD, project=project_name, detail=detail,
-            ids_out=ids_out,
+    def search_all(query: str, limit: int = 5, ids_out: list | None = None) -> str:
+        """report_error's auto-search: quality-gated, project-scoped, error
+        hits whole and the rest as summaries under one byte budget (#202)."""
+        return error_matches(
+            search_backend, storage, counters, query,
+            project=project_name, limit=limit, ids_out=ids_out,
         )
-        return _body_hint(result, detail)
 
     @mcp.tool()
     def search(

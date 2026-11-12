@@ -22,6 +22,7 @@ from .entries import from_entry
 from .eval.trace_transcript import _content_blocks
 from .hooks.mcp_enforcement import _CLAUDE_MCP_TOOL_RE
 from .tools import search as search_mod
+from .tools.knowledge import error_query
 from .wiring import Context
 
 REPLAYED = ("search", "report_error", "get_entry", "read_rule")
@@ -122,7 +123,7 @@ def extract_queries(paths: Iterable[str | Path]) -> list[ReplayQuery]:
 
 def _ranked_ids(ctx: Context, q: ReplayQuery, project_name: str, *, gate: bool = True) -> tuple[list, str]:
     """(ranked ids, rendered text) for a search-shaped query, the way the tool
-    computes them (search: no quality gate; report_error: gated, full detail)."""
+    computes them (search: no quality gate; report_error: gated, keyword query)."""
     a = q.args
     ids: list = []
     if q.tool == "search":
@@ -136,11 +137,12 @@ def _ranked_ids(ctx: Context, q: ReplayQuery, project_name: str, *, gate: bool =
             detail=a.get("detail") or "summary", ids_out=ids,
         )
     else:
-        text = search_mod._search_all_scopes(
-            ctx.search, ctx.storage, ctx.counters, str(a.get("error_text") or ""),
-            5, [], min_rank=(search_mod.RANK_THRESHOLD if gate else 0.0),
-            project=str(a.get("project") or project_name), detail="full", ids_out=ids,
-        )
+        query = error_query(str(a.get("error_text") or ""))
+        text = search_mod.error_matches(
+            ctx.search, ctx.storage, ctx.counters, query,
+            project=str(a.get("project") or project_name),
+            min_rank=(None if gate else 0.0), ids_out=ids,
+        ) if query else ""
     return [list(i) for i in ids], text
 
 

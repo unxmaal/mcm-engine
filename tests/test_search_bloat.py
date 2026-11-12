@@ -145,9 +145,10 @@ def test_rule_description_is_capped_and_drops_the_repeated_heading(wired):
     tools, _ = wired
     tools["add_rule"](title="Caprule title", keywords="caprule", content="# Caprule title\n\nHEADSTART " + _LONG)
     block = _hit_block(tools["search"]("caprule", scope="rules"), "[RULE #")
-    assert block.count("Caprule title") == 1
-    assert "HEADSTART" in block
-    assert len(block.encode()) < 450
+    head = block.split("\n  Match:")[0]
+    assert head.count("Caprule title") == 1
+    assert "HEADSTART" in head
+    assert len(head.encode()) < 400
 
 
 def test_short_headlines_are_untouched(wired):
