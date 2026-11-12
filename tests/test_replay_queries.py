@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from mcm_engine.backends import ErrorRow, KnowledgeRow, NegativeRow, RuleRow
 from mcm_engine.cli import main as cli_main
 from mcm_engine.replay_queries import (
@@ -157,3 +159,54 @@ def test_verify_entries_cli_reports_counts_and_exit_code(tmp_path, capsys, monke
     data = json.loads(capsys.readouterr().out)
     assert data["counts"]["rule"] == {"legacy": 2, "entries": 1}
     assert "rule #1: missing from entries" in data["divergence"]
+
+
+# ---- before/after comparison of two reports (#199) -------------------------------
+
+def _ranked(tool, seq, ids):
+    return {"tool": tool, "source": "t.jsonl", "seq": seq, "ids": ids}
+
+
+def test_report_carries_the_ranked_ids_of_every_search_shaped_query(tmp_path, monkeypatch):
+    ctx = open_context(str(tmp_path / "r.db"))
+    _seed(ctx.storage)
+    report = replay(ctx, extract_queries([FIXTURE]), store="r.db").as_dict()
+    shaped = report["counts"]["search"] + report["counts"]["report_error"]
+    assert len(report["ranked"]) == shaped
+    assert {"tool", "source", "seq", "ids"} <= set(report["ranked"][0])
+
+
+def test_compare_reports_says_what_survived():
+    from mcm_engine.replay_queries import compare_reports
+    K, E = "KNOWLEDGE", "ERROR"
+    before = {"ranked": [
+        _ranked("search", 1, [[K, 1], [K, 2], [E, 9]]),      # junk error dropped after
+        _ranked("search", 2, [[K, 1], [K, 2]]),              # untouched
+        _ranked("search", 3, [[K, 1]]),                      # a new id appears after
+        _ranked("report_error", 4, [[E, 5], [K, 3]]),        # emptied after
+    ]}
+    after = {"ranked": [
+        _ranked("search", 1, [[K, 1], [K, 2]]),
+        _ranked("search", 2, [[K, 1], [K, 2]]),
+        _ranked("search", 3, [[K, 7]]),
+        _ranked("report_error", 4, []),
+    ]}
+    out = compare_reports(before, after)
+    s = out["search"]
+    assert s["n"] == 3
+    assert s["identical"] == pytest.approx(1 / 3)
+    assert s["no_new_ids"] == pytest.approx(2 / 3)
+    assert s["kept_kinds_top5_unchanged"] == pytest.approx(2 / 3)
+    assert s["emptied"] == 0
+    r = out["report_error"]
+    assert r["n"] == 1 and r["emptied"] == 1 and r["error_ids_unchanged"] == 0
+
+
+def test_replay_compare_cli_prints_one_line_per_tool(tmp_path, capsys, monkeypatch):
+    b, a = tmp_path / "b.json", tmp_path / "a.json"
+    b.write_text(json.dumps({"ranked": [_ranked("search", 1, [["KNOWLEDGE", 1]])]}))
+    a.write_text(json.dumps({"ranked": [_ranked("search", 1, [["KNOWLEDGE", 1]])]}))
+    monkeypatch.setattr(sys, "argv", ["mcm-engine", "replay-compare", str(b), str(a)])
+    cli_main()
+    out = capsys.readouterr().out
+    assert "search" in out and "identical=1.000" in out

@@ -108,6 +108,10 @@ class PostgresSearch:
         # An unknown value coerces to 'strict' — a config typo fails safe.
         self._query_mode = query_mode if query_mode in _QUERY_MODES else "strict"
 
+    @property
+    def query_mode(self) -> str:
+        return self._query_mode
+
     def search(
         self,
         query: str,
@@ -116,11 +120,14 @@ class PostgresSearch:
         limit: int = 10,
         project: Optional[str] = None,
         caller: Optional[str] = None,
+        fallback: bool = True,
     ) -> list[SearchHit]:
+        """``fallback=False`` holds natural mode's OR retry back, so a caller
+        searching several scopes can loosen once for the whole query (#201)."""
         targets = entity_types if entity_types is not None else set(EntityType)
         hits: list[SearchHit] = []
         for etype in targets:
-            hits.extend(self._search_one(etype, query, limit=limit, project=project))
+            hits.extend(self._search_one(etype, query, limit=limit, project=project, fallback=fallback))
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
@@ -132,6 +139,7 @@ class PostgresSearch:
         limit: int = 10,
         project: Optional[str] = None,
         caller: Optional[str] = None,
+        fallback: bool = True,
     ) -> list[SearchHit]:
         """Issue #181: one tsvector query over entries, kind-filtered. Same
         strict -> natural -> ILIKE ladder as the per-table path."""
@@ -156,7 +164,7 @@ class PostgresSearch:
                 (query, query, hl_opts, query, targets, *proj_params, limit),
             )
             rows = cur.fetchall()
-        if not rows and self._query_mode == "natural":
+        if not rows and fallback and self._query_mode == "natural":
             or_text = _or_tsquery_text(query)
             if or_text:
                 with self._conn.cursor() as cur:
@@ -263,6 +271,7 @@ class PostgresSearch:
         *,
         limit: int,
         project: Optional[str],
+        fallback: bool = True,
     ) -> list[SearchHit]:
         table = _TABLES[etype]["table"]
 
@@ -298,7 +307,7 @@ class PostgresSearch:
         # Natural mode (#107): strict AND found nothing, so retry OR-ranked so a
         # phrase where not every term hits still returns its best rows. Only
         # reached when strict is empty, so precise queries are never loosened.
-        if not rows and self._query_mode == "natural":
+        if not rows and fallback and self._query_mode == "natural":
             or_text = _or_tsquery_text(query)
             if or_text:
                 with self._conn.cursor() as cur:

@@ -47,6 +47,11 @@ def _extract_keywords(error_text: str) -> list[str]:
     return keywords
 
 
+def error_query(error_text: str) -> str:
+    """The search query report_error derives from an error's text."""
+    return " ".join(_extract_keywords(error_text)[:5])
+
+
 def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) -> str:
     nudge = tracker.get_nudge(topic)
     if nudge:
@@ -239,9 +244,8 @@ def register_knowledge_tools(
 
         parts = [f"Error logged: {error_text[:100]}"]
 
-        keywords = _extract_keywords(error_text)
-        if keywords:
-            query = " ".join(keywords[:5])
+        query = error_query(error_text)
+        if query:
             ids: list = []
             search_results = search_all_fn(query, limit=5, ids_out=ids)
             # issue #156: the auto-search establishes coverage for this error's

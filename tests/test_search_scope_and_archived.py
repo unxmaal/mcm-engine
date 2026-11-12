@@ -119,6 +119,7 @@ def test_scope_rules_returns_only_rules(wired):
     assert "[ERROR #" not in result
 
 
+@pytest.mark.gauntlet("a-closed-table-fronting-an-open-set", site="src/mcm_engine/tools/search.py:_SCOPE_MAP")
 def test_scope_unknown_value_falls_back_to_all(wired):
     """An unknown scope string shouldn't silently drop everything; it
     should behave like the default (all). The cutover test surfaces

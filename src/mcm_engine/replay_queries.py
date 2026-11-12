@@ -22,6 +22,7 @@ from .entries import from_entry
 from .eval.trace_transcript import _content_blocks
 from .hooks.mcp_enforcement import _CLAUDE_MCP_TOOL_RE
 from .tools import search as search_mod
+from .tools.knowledge import error_query
 from .wiring import Context
 
 REPLAYED = ("search", "report_error", "get_entry", "read_rule")
@@ -122,7 +123,7 @@ def extract_queries(paths: Iterable[str | Path]) -> list[ReplayQuery]:
 
 def _ranked_ids(ctx: Context, q: ReplayQuery, project_name: str, *, gate: bool = True) -> tuple[list, str]:
     """(ranked ids, rendered text) for a search-shaped query, the way the tool
-    computes them (search: no quality gate; report_error: gated, full detail)."""
+    computes them (search: no quality gate; report_error: gated, keyword query)."""
     a = q.args
     ids: list = []
     if q.tool == "search":
@@ -136,11 +137,12 @@ def _ranked_ids(ctx: Context, q: ReplayQuery, project_name: str, *, gate: bool =
             detail=a.get("detail") or "summary", ids_out=ids,
         )
     else:
-        text = search_mod._search_all_scopes(
-            ctx.search, ctx.storage, ctx.counters, str(a.get("error_text") or ""),
-            5, [], min_rank=(search_mod.RANK_THRESHOLD if gate else 0.0),
-            project=str(a.get("project") or project_name), detail="full", ids_out=ids,
-        )
+        query = error_query(str(a.get("error_text") or ""))
+        text = search_mod.error_matches(
+            ctx.search, ctx.storage, ctx.counters, query,
+            project=str(a.get("project") or project_name),
+            min_rank=(None if gate else 0.0), ids_out=ids,
+        ) if query else ""
     return [list(i) for i in ids], text
 
 
@@ -222,6 +224,7 @@ class ReplayReport:
     agreement: dict = field(default_factory=dict)
     sizes: dict = field(default_factory=dict)
     disagreements: list = field(default_factory=list)
+    ranked: list = field(default_factory=list)   # unified ids per search-shaped query, for compare_reports
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -312,7 +315,49 @@ def replay(ctx: Context, queries: list[ReplayQuery], *, store: str = "",
         if tool in ("search", "report_error"):
             report.sizes[tool] = size_stats(rs)
     report.disagreements = [asdict(r) for r in results if not r.agree]
+    report.ranked = [{"tool": r.tool, "source": r.source, "seq": r.seq, "ids": r.unified_ids}
+                     for r in results if r.tool in ("search", "report_error")]
     return report
+
+
+def _top5_by_kind(ids: list) -> dict:
+    out: dict = {}
+    for kind, eid in ids:
+        out.setdefault(kind, []).append(eid)
+    return {k: v[:5] for k, v in out.items()}
+
+
+def compare_reports(before: dict, after: dict) -> dict:
+    """Two replays of the same queries (two builds, one store), query by
+    query: did the returned ids change, and how."""
+    def rows(report):
+        return {(r["tool"], r["source"], r["seq"]): [tuple(i) for i in r["ids"]]
+                for r in report.get("ranked", [])}
+    b, a = rows(before), rows(after)
+    out: dict = {}
+    for tool in ("search", "report_error"):
+        keys = [k for k in b if k[0] == tool and k in a]
+        n = len(keys)
+        if not n:
+            continue
+        stat = dict.fromkeys(
+            ("identical", "no_new_ids", "kept_kinds_top5_unchanged", "error_ids_unchanged", "emptied"), 0)
+        for k in keys:
+            bi, ai = b[k], a[k]
+            stat["identical"] += bi == ai
+            stat["no_new_ids"] += set(ai) <= set(bi)
+            tb, ta = _top5_by_kind(bi), _top5_by_kind(ai)
+            stat["kept_kinds_top5_unchanged"] += all(ta[kind] == tb.get(kind) for kind in ta)
+            stat["error_ids_unchanged"] += [i for i in bi if i[0] == "ERROR"] == [i for i in ai if i[0] == "ERROR"]
+            stat["emptied"] += bool(bi) and not ai
+        out[tool] = {"n": n, **{name: v / n for name, v in stat.items()}}
+    return out
+
+
+def format_comparison(cmp: dict) -> str:
+    return "\n".join(
+        f"{tool:<13} n={s['n']:<5} " + "  ".join(f"{k}={v:.3f}" for k, v in s.items() if k != "n")
+        for tool, s in cmp.items())
 
 
 def _quantiles(values: list[int]) -> dict[str, float]:
