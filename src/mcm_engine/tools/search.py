@@ -89,7 +89,7 @@ def _neg_err_summary_cap() -> int:
 
 # Issue #202: report_error's matches share one byte budget. 0 disables it.
 def _report_error_budget() -> int:
-    return max(0, env_int("MCM_REPORT_ERROR_BUDGET", 6000))
+    return max(0, env_int("MCM_REPORT_ERROR_BUDGET", 3500))
 
 
 def _cap_inline_field(text: str, detail: DetailLevel, entity: str, eid: int) -> str:

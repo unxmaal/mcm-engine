@@ -404,6 +404,15 @@ def cmd_replay_queries(args):
     print(format_report(report))
 
 
+def cmd_replay_compare(args):
+    """Two replay-queries reports of the same queries: what changed in the returned ids."""
+    import json as _json
+    from .replay_queries import compare_reports, format_comparison
+
+    with open(args.before, encoding="utf-8") as fb, open(args.after, encoding="utf-8") as fa:
+        print(format_comparison(compare_reports(_json.load(fb), _json.load(fa))))
+
+
 def cmd_replay_eval(args):
     """Replay Claude Code transcripts through candidate retrieval-trigger
     policies and print a weighted FN/FP report (issue #160)."""
@@ -1351,6 +1360,16 @@ def main():
     rq_parser.add_argument("--jaccard", type=float, default=0.9,
                            help="Agreement threshold on returned-id Jaccard (default 0.9).")
     rq_parser.set_defaults(func=cmd_replay_queries)
+
+    rc_parser = subparsers.add_parser(
+        "replay-compare",
+        help="Compare two replay-queries --out reports of the same transcripts (two builds, "
+             "one store): share of queries whose returned ids are identical, gained none, "
+             "kept each kind's top 5, kept their error hits, or went empty.",
+    )
+    rc_parser.add_argument("before", help="replay-queries --out report of the old build.")
+    rc_parser.add_argument("after", help="replay-queries --out report of the new build.")
+    rc_parser.set_defaults(func=cmd_replay_compare)
 
     cv_parser = subparsers.add_parser(
         "corpus-verify-entries",
