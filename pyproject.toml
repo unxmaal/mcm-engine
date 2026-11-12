@@ -57,7 +57,7 @@ opensearch = [
 
 [dependency-groups]
 dev = [
-    "gauntlet[hcl] @ git+https://github.com/unxmaal/gauntlet@v0.3.1 ; python_version >= '3.12'",
+    "gauntlet[hcl] @ git+https://github.com/unxmaal/gauntlet@v0.3.3 ; python_version >= '3.12'",
 ]
 
 [project.scripts]

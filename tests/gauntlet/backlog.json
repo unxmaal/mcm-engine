@@ -36,19 +36,6 @@
   "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.iter_sessions:sessions",
   "src/mcm_engine/tokens.py:revoke_token:tokens"
  ],
- "an-effect-reachable-from-a-run-that-is-not-the-live-deploy": [
-  "src/mcm_engine/cli.py:_export_remote_call:mcp_http_call_tool",
-  "src/mcm_engine/cli.py:_sift_remote_call:mcp_http_call_tool",
-  "src/mcm_engine/cli.py:cmd_corpus_snapshot.call:mcp_http_call_tool",
-  "src/mcm_engine/cli.py:cmd_export_mirror:git_commit_tree",
-  "src/mcm_engine/hooks/mcp_enforcement.py:_gate_http_search:mcp_http_call_tool",
-  "src/mcm_engine/hooks/post_tool_use_failure.py:_http_search:mcp_http_call_tool",
-  "src/mcm_engine/hooks/pre_compact.py:main:mcp_http_call_tool",
-  "src/mcm_engine/hooks/session_end.py:main:mcp_http_call_tool",
-  "src/mcm_engine/hooks/user_prompt_submit.py:_http_search:mcp_http_call_tool",
-  "src/mcm_engine/ingest/adjudicate.py:OpenAICompatibleAdjudicator.__init__:_http_chat",
-  "src/mcm_engine/mirror.py:export_mirror:git_commit_tree"
- ],
  "an-order-the-code-needs-but-does-not-check": [
   "scripts/audit_rules.py:<module>:import:MCM_MCP_URL",
   "scripts/import_rules.py:<module>:import:MCM_MCP_URL",
