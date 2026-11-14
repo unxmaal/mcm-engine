@@ -74,6 +74,12 @@ variable "rds_multi_az" {
   default = false
 }
 
+variable "rds_protect" {
+  description = "Guard the database: deletion protection on and a final snapshot kept on destroy. Leave false for a throwaway conformance stack."
+  type        = bool
+  default     = false
+}
+
 # --- ElastiCache Redis ---
 
 variable "redis_node_type" {

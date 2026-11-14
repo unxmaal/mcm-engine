@@ -41,17 +41,20 @@ def compute_content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _parse_rule_file(path: Path) -> Optional[dict[str, Any]]:
-    """Pull title/keywords/category/description out of a markdown rule
-    file. Returns None if there's no title (we won't track an
-    unidentifiable file).
-    """
+class RuleFileError(Exception):
+    """A rule file that cannot be read or decoded."""
+
+
+def parse_rule_file(path: Path) -> dict[str, Any]:
+    """Title, keywords, category, description, content and content_hash of a
+    markdown rule file; a key is absent when the file has no such line. Raises
+    RuleFileError when the file cannot be read."""
     try:
         content = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+    except (OSError, UnicodeDecodeError) as e:
+        raise RuleFileError(f"{path}: {e}") from e
 
-    result: dict[str, Any] = {"content_hash": compute_content_hash(content)}
+    result: dict[str, Any] = {"content_hash": compute_content_hash(content), "content": content}
     lines = content.split("\n")
 
     for line in lines:
@@ -92,8 +95,6 @@ def _parse_rule_file(path: Path) -> Optional[dict[str, Any]]:
     if desc_lines:
         result["description"] = " ".join(desc_lines)
 
-    if "title" not in result:
-        return None
     return result
 
 
@@ -343,8 +344,12 @@ class RulesWatcher:
             # gone. Nothing to do.
             return "unchanged"
 
-        parsed = _parse_rule_file(abs_path)
-        if parsed is None:
+        try:
+            parsed = parse_rule_file(abs_path)
+        except RuleFileError as e:
+            log(f"watcher: unreadable rule file, row left as it is: {e}")
+            return "unchanged"
+        if "title" not in parsed:
             return "unchanged"
 
         rel = self._rel_path(abs_path)

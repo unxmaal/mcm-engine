@@ -931,6 +931,9 @@ def migrate_core(db: KnowledgeDB) -> None:
         )
         db.commit()
         log(f"Core schema migrated to version {CORE_VERSION}")
+    elif existing["version"] > CORE_VERSION:
+        log(f"Core schema is v{existing['version']}, newer than this build "
+            f"(v{CORE_VERSION}); running without migrating")
     else:
         log(f"Core schema at version {CORE_VERSION}")
 

@@ -15,7 +15,7 @@ import pytest
 from mcm_engine.hooks import coverage
 from mcm_engine.hooks.mcp_enforcement import _read_state, _state_path
 from mcm_engine.hooks.user_prompt_submit import (
-    INJECT_MAX_BYTES,
+    inject_max_bytes,
     _pick_keyword,
     _truncate_injection,
     classify,
@@ -158,7 +158,7 @@ def test_bad_stdin_is_fail_open(monkeypatch, capsys):
 def test_truncate_injection_bounds_bytes_at_hit_boundary():
     hits = "\n\n".join(f"[NEGATIVE #{i}] " + "X" * 500 for i in range(10))
     out = _truncate_injection(hits, "deploy")
-    assert len(out.encode("utf-8")) <= INJECT_MAX_BYTES
+    assert len(out.encode("utf-8")) <= inject_max_bytes()
     assert "truncated — run search('deploy')" in out
     # cut on a boundary: no hit is shown half (every kept [NEGATIVE #n] line is
     # followed by its full 500-X body up to the pointer)
@@ -181,7 +181,7 @@ def test_huge_injection_is_capped_in_main(monkeypatch, capsys, tmp_path):
     assert rc == 0
     hso = json.loads(out)["hookSpecificOutput"]
     # the injected result body is bounded (prefix adds a little, allow slack)
-    assert len(hso["additionalContext"].encode("utf-8")) <= INJECT_MAX_BYTES + 200
+    assert len(hso["additionalContext"].encode("utf-8")) <= inject_max_bytes() + 200
     assert "truncated" in hso["additionalContext"]
 
 

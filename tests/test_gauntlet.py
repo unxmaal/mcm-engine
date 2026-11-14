@@ -9,7 +9,9 @@ pytest.importorskip("gauntlet.ratchet", reason="gauntlet needs Python 3.12")
 
 from gauntlet import ratchet, skill
 
-_spec = importlib.util.spec_from_file_location("gauntlet_registry", Path(__file__).resolve().parent / "gauntlet" / "registry.py")
+_spec = importlib.util.spec_from_file_location(
+    "gauntlet_registry", Path(__file__).resolve().parent / "gauntlet" / "registry.py"
+)
 _registry = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_registry)
 

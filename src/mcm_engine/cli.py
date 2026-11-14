@@ -404,6 +404,15 @@ def cmd_replay_queries(args):
     print(format_report(report))
 
 
+def cmd_replay_compare(args):
+    """Two replay-queries reports of the same queries: what changed in the returned ids."""
+    import json as _json
+    from .replay_queries import compare_reports, format_comparison
+
+    with open(args.before, encoding="utf-8") as fb, open(args.after, encoding="utf-8") as fa:
+        print(format_comparison(compare_reports(_json.load(fb), _json.load(fa))))
+
+
 def cmd_replay_eval(args):
     """Replay Claude Code transcripts through candidate retrieval-trigger
     policies and print a weighted FN/FP report (issue #160)."""
@@ -413,7 +422,11 @@ def cmd_replay_eval(args):
 
     trace = []
     for path in args.transcript:
-        trace.extend(load_transcript(path))
+        try:
+            trace.extend(load_transcript(path))
+        except OSError as e:
+            print(f"error: cannot read transcript {path}: {e}", file=sys.stderr)
+            sys.exit(2)
     if not trace:
         print(_json.dumps({"error": "no tool-call events parsed", "events": 0}))
         return
@@ -576,10 +589,18 @@ def _ingest_state_path(project_root) -> Path:
     return root / ".mcm-engine" / "ingest-state.json"
 
 
+_INGEST_STATE_TTL_S = 7 * 86400
+
+
+def _ingest_key(source: str, url: str, strict: bool) -> str:
+    return f"{source}|{url}|{'strict' if strict else 'loose'}"
+
+
 def _load_ingest_state(path: Path, source_key: str) -> set:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("source") == source_key:
+        expired = time.time() - float(data.get("saved_at", 0)) > _INGEST_STATE_TTL_S
+        if isinstance(data, dict) and data.get("source") == source_key and not expired:
             return set(data.get("done", []))
     except Exception:
         pass
@@ -590,7 +611,8 @@ def _save_ingest_state(path: Path, source_key: str, done: set) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"source": source_key, "done": sorted(done)}), encoding="utf-8")
+            json.dumps({"source": source_key, "saved_at": time.time(), "done": sorted(done)}),
+            encoding="utf-8")
     except Exception:
         pass
 
@@ -621,6 +643,7 @@ def _ingest_remote(groups, project_root, raw_total: int, *, source_key: str,
         sys.exit(2)
     print(f"# server:   {url}", file=sys.stderr)
 
+    source_key = _ingest_key(source_key, url, strict)
     state_path = _ingest_state_path(project_root)
     done = _load_ingest_state(state_path, source_key)
     pending = [s for s in spans if _span_hash(s) not in done]
@@ -1351,6 +1374,16 @@ def main():
     rq_parser.add_argument("--jaccard", type=float, default=0.9,
                            help="Agreement threshold on returned-id Jaccard (default 0.9).")
     rq_parser.set_defaults(func=cmd_replay_queries)
+
+    rc_parser = subparsers.add_parser(
+        "replay-compare",
+        help="Compare two replay-queries --out reports of the same transcripts (two builds, "
+             "one store): share of queries whose returned ids are identical, gained none, "
+             "kept each kind's top 5, kept their error hits, or went empty.",
+    )
+    rc_parser.add_argument("before", help="replay-queries --out report of the old build.")
+    rc_parser.add_argument("after", help="replay-queries --out report of the new build.")
+    rc_parser.set_defaults(func=cmd_replay_compare)
 
     cv_parser = subparsers.add_parser(
         "corpus-verify-entries",

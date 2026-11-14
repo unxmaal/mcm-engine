@@ -21,24 +21,26 @@ resource "aws_db_parameter_group" "pg16" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier             = "${var.name_prefix}-postgres"
-  engine                 = "postgres"
-  engine_version         = var.rds_engine_version
-  instance_class         = var.rds_instance_class
-  allocated_storage      = var.rds_allocated_storage_gb
-  storage_type           = "gp3"
-  db_name                = var.rds_db_name
-  username               = var.rds_master_username
-  password               = var.rds_master_password
-  multi_az               = var.rds_multi_az
-  db_subnet_group_name   = aws_db_subnet_group.rds.name
-  vpc_security_group_ids = [aws_security_group.managed_services.id]
-  parameter_group_name   = aws_db_parameter_group.pg16.name
-  publicly_accessible    = false
-  skip_final_snapshot    = true
-  apply_immediately      = true
-  storage_encrypted      = true
-  tags                   = { Name = "${var.name_prefix}-postgres" }
+  identifier                = "${var.name_prefix}-postgres"
+  engine                    = "postgres"
+  engine_version            = var.rds_engine_version
+  instance_class            = var.rds_instance_class
+  allocated_storage         = var.rds_allocated_storage_gb
+  storage_type              = "gp3"
+  db_name                   = var.rds_db_name
+  username                  = var.rds_master_username
+  password                  = var.rds_master_password
+  multi_az                  = var.rds_multi_az
+  db_subnet_group_name      = aws_db_subnet_group.rds.name
+  vpc_security_group_ids    = [aws_security_group.managed_services.id]
+  parameter_group_name      = aws_db_parameter_group.pg16.name
+  publicly_accessible       = false
+  deletion_protection       = var.rds_protect
+  skip_final_snapshot       = !var.rds_protect
+  final_snapshot_identifier = var.rds_protect ? "${var.name_prefix}-postgres-final" : null
+  apply_immediately         = true
+  storage_encrypted         = true
+  tags                      = { Name = "${var.name_prefix}-postgres" }
 }
 
 # Engine consumes this DSN via MCM_TEST_POSTGRES_DSN (conformance run)

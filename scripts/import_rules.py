@@ -31,8 +31,12 @@ import re
 import sys
 import urllib.request
 
-DEFAULT_URL = os.environ.get("MCM_MCP_URL", "http://192.168.8.88:8080/mcp")
-DEFAULT_RULES_DIR = os.environ.get("MCM_RULES_DIR", os.path.expanduser("~/projects/rules"))
+def default_url() -> str:
+    return os.environ.get("MCM_MCP_URL", "http://192.168.8.88:8080/mcp")
+
+
+def default_rules_dir() -> str:
+    return os.environ.get("MCM_RULES_DIR", os.path.expanduser("~/projects/rules"))
 
 _STOP = {"the", "a", "an", "and", "or", "is", "are", "to", "of", "in", "on",
          "for", "with", "not", "never", "must", "rules", "rule", "issues"}
@@ -103,9 +107,9 @@ def import_over_mcp(url: str, rules: list[dict], *, actor: str, source_repo: str
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=DEFAULT_URL, help=f"MCP endpoint (default {DEFAULT_URL})")
-    ap.add_argument("--rules-dir", default=DEFAULT_RULES_DIR,
-                    help=f"on-disk rules tree (default {DEFAULT_RULES_DIR})")
+    ap.add_argument("--url", default=default_url(), help=f"MCP endpoint (default {default_url()})")
+    ap.add_argument("--rules-dir", default=default_rules_dir(),
+                    help=f"on-disk rules tree (default {default_rules_dir()})")
     ap.add_argument("--actor", default=os.environ.get("MCM_ACTOR", "importer"))
     ap.add_argument("--source-repo", default="local:~/projects/rules")
     ap.add_argument("--on-duplicate", default="update", choices=["update", "skip", "error"])

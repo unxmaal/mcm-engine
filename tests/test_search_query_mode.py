@@ -105,3 +105,27 @@ def test_unknown_mode_coerces_to_strict():
     hits = coerced.search("token portal authenticate entra saml",
                           entity_types={EntityType.KNOWLEDGE})
     assert all(h.entity_id != kid for h in hits)
+
+
+# ---- #201: the caller can hold the OR fallback back ---------------------------
+
+_PHRASE = "how does the token portal authenticate to entra saml"
+
+
+def test_natural_search_without_fallback_stays_strict():
+    kid = _seed()
+    natural = PostgresSearch(DSN, query_mode="natural")
+    assert natural.query_mode == "natural"
+    held = natural.search(_PHRASE, entity_types={EntityType.KNOWLEDGE}, fallback=False)
+    assert all(h.entity_id != kid for h in held)
+    loose = natural.search(_PHRASE, entity_types={EntityType.KNOWLEDGE}, fallback=True)
+    assert any(h.entity_id == kid for h in loose)
+
+
+def test_natural_search_entries_without_fallback_stays_strict():
+    kid = _seed()
+    natural = PostgresSearch(DSN, query_mode="natural")
+    held = natural.search_entries(_PHRASE, kinds={"knowledge"}, fallback=False)
+    assert all(h.entity_id != kid for h in held)
+    loose = natural.search_entries(_PHRASE, kinds={"knowledge"})
+    assert any(h.entity_id == kid for h in loose)

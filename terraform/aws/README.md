@@ -129,6 +129,8 @@ unless it's actually serving traffic.
 
 - **Secrets Manager** for `MCM_POSTGRES_DSN` instead of plaintext env vars.
 - **Multi-AZ RDS** (`rds_multi_az=true`).
+- **A guarded database** (`rds_protect=true`): deletion protection on and a final snapshot kept. With it,
+  `tofu destroy` stops at the database until you set it back to `false` and apply.
 - **Auto-scaling** App Runner config.
 - **CloudFront** in front of App Runner if latency matters.
 - **PrivateLink** for OpenSearch instead of VPC-embedded domain.

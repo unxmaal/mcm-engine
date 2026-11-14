@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mcm_engine.eval.trace_transcript import load_transcript
 
 
@@ -83,5 +85,6 @@ def test_tolerates_malformed_lines(tmp_path):
     assert len(trace) == 1 and trace[0].topic == "a"
 
 
-def test_missing_file_returns_empty(tmp_path):
-    assert load_transcript(tmp_path / "nope.jsonl") == []
+def test_missing_file_raises(tmp_path):
+    with pytest.raises(OSError):
+        load_transcript(tmp_path / "nope.jsonl")

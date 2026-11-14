@@ -109,6 +109,21 @@ def test_recall_rule_is_terminal_status_not_delete():
         assert cur.fetchone() is not None
 
 
+def test_recalling_a_recalled_rule_writes_nothing():
+    tools, s = _pg_tools()
+    rid = s.insert_rule(RuleRow(id=0, title="recalled twice", keywords="x"))
+    tools["recall_entry"]("rule", rid, reason="first")
+    out = tools["recall_entry"]("rule", rid, reason="second")
+    assert "already recalled" in out
+    with psycopg.connect(DSN) as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM rule_events WHERE rule_id = %s AND "
+                    "event_type = 'recalled'", (rid,))
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM recall_log WHERE claim_id = %s AND "
+                    "entity_type = 'rule'", (rid,))
+        assert cur.fetchone()[0] == 1
+
+
 def test_recall_not_found_is_explicit_no_audit():
     tools, _ = _pg_tools()
     assert "NOT_FOUND" in tools["recall_entry"]("knowledge", 987654321)

@@ -46,8 +46,7 @@ RUN apt-get update \
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}" \
-    PYTHONUNBUFFERED=1 \
-    MCM_DATA_DIR=/data
+    PYTHONUNBUFFERED=1
 
 WORKDIR /home/mcm
 USER mcm
