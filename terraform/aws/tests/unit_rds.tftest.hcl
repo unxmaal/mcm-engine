@@ -88,3 +88,40 @@ run "rds_subnet_group_references_all_private_subnets" {
     error_message = "RDS subnet group references aws_subnet.private[*].id — that splat must yield two subnets"
   }
 }
+
+run "rds_is_destroyable_by_default_for_the_conformance_stack" {
+  command = plan
+
+  assert {
+    condition     = aws_db_instance.main.deletion_protection == false
+    error_message = "the default stack is torn down with `tofu destroy` after a conformance run"
+  }
+
+  assert {
+    condition     = aws_db_instance.main.skip_final_snapshot == true
+    error_message = "the default stack holds only conformance fixtures; no final snapshot"
+  }
+}
+
+run "rds_protect_guards_the_database_and_keeps_a_final_snapshot" {
+  command = plan
+
+  variables {
+    rds_protect = true
+  }
+
+  assert {
+    condition     = aws_db_instance.main.deletion_protection == true
+    error_message = "rds_protect must turn deletion protection on"
+  }
+
+  assert {
+    condition     = aws_db_instance.main.skip_final_snapshot == false
+    error_message = "rds_protect must keep a final snapshot on destroy"
+  }
+
+  assert {
+    condition     = aws_db_instance.main.final_snapshot_identifier == "mcm-engine-postgres-final"
+    error_message = "skip_final_snapshot = false needs a final_snapshot_identifier or the destroy fails"
+  }
+}
