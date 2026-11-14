@@ -12,6 +12,7 @@ from mcm_engine.schema import migrate_core
 from mcm_engine.tools.session import register_session_tools
 from mcm_engine.tracker import NudgeConfig, SessionTracker
 
+SCOPE = "a-shared-store-query-with-no-scope-or-a-scope-with-its-own-idea-of-null"
 PG_DSN = os.environ.get("MCM_TEST_POSTGRES_DSN", "postgresql://mcm:mcm@127.0.0.1:55432/mcm_test")
 
 
@@ -62,6 +63,8 @@ def test_scoped_last_snapshot_is_the_callers_own(storage):
     assert _goal(storage.get_last_snapshot()) == "bob"
 
 
+@pytest.mark.gauntlet(SCOPE, site="src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_snapshot:sessions")
+@pytest.mark.gauntlet(SCOPE, site="src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_snapshot:sessions")
 def test_scoped_last_snapshot_never_returns_another_principals(storage):
     _snap(storage, "bob", principal="bob")
     assert storage.get_last_snapshot(principal="carol") is None

@@ -617,8 +617,12 @@ class StorageBackend(Protocol):
     def next_snapshot_seq(self, session_id: Optional[int]) -> int: ...
     def insert_snapshot(self, row: SnapshotRow) -> int: ...
     def get_last_snapshot(
-        self, *, caller: Optional[str] = None
-    ) -> Optional[SnapshotRow]: ...
+        self, *, caller: Optional[str] = None,
+        principal: Optional[str] = None, workspace: Optional[str] = None,
+    ) -> Optional[SnapshotRow]:
+        """Newest snapshot. With a scope key, the newest whose session matches
+        it, falling back to one with no session or a NULL-scope session (#222)."""
+        ...
 
     # ---- Session metrics (v15) ----
     def upsert_session_metrics(self, row: SessionMetricsRow) -> None:

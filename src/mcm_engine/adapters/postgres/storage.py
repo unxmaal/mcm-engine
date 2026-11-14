@@ -1849,9 +1849,27 @@ class PostgresStorage:
 
     def get_last_snapshot(
         self, *, caller: Optional[str] = None,
+        principal: Optional[str] = None, workspace: Optional[str] = None,
     ) -> Optional[SnapshotRow]:
+        if principal is None and workspace is None:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT * FROM snapshots ORDER BY id DESC LIMIT 1")
+                r = cur.fetchone()
+            return _snapshot_from_row(r) if r else None
+        # Same ranking as get_last_session: exact scope first, NULL scope as fallback.
+        conds, where_params, order, order_params = [], [], [], []
+        for col, value in (("principal", principal), ("workspace", workspace)):
+            if value is not None:
+                conds.append(f"(s.{col} = %s OR s.{col} IS NULL)")
+                where_params.append(value)
+                order.append(f"COALESCE(s.{col} = %s, FALSE) DESC")
+                order_params.append(value)
         with self._conn.cursor() as cur:
-            cur.execute("SELECT * FROM snapshots ORDER BY id DESC LIMIT 1")
+            cur.execute(
+                "SELECT sn.* FROM snapshots sn LEFT JOIN sessions s ON s.id = sn.session_id "
+                f"WHERE {' AND '.join(conds)} ORDER BY {', '.join(order + ['sn.id DESC'])} LIMIT 1",
+                (*where_params, *order_params),
+            )
             r = cur.fetchone()
         return _snapshot_from_row(r) if r else None
 

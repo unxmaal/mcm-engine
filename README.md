@@ -289,6 +289,10 @@ tools: `recall_entry`, `recall_events`.
 efficiency retro) · `session_handoff` (snapshot for next session) · `session_summary` ·
 `save_snapshot` (mid-session checkpoint) · `get_resume_context` · `consolidation_report`
 
+Several agents on one store: pass the same `workspace` label to `session_handoff`,
+`save_snapshot`, `session_start` and `get_resume_context`, and each agent resumes from
+its own handoff and checkpoint. Without it they see the newest for their principal.
+
 **Session efficiency (diagnostic, not a target).** `record_session_metrics` (written by the
 SessionEnd hook — real transcript token totals + hook-measured LOC/churn/comment-ratio/
 fixations, keyed on the Claude Code session id) · `session_metrics_report` (read-only retro:
