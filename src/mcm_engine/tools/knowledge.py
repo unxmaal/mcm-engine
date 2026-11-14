@@ -47,6 +47,11 @@ def _extract_keywords(error_text: str) -> list[str]:
     return keywords
 
 
+def error_query(error_text: str) -> str:
+    """The search query report_error derives from an error's text."""
+    return " ".join(_extract_keywords(error_text)[:5])
+
+
 def _with_nudge(result: str, tracker: SessionTracker, topic: str | None = None) -> str:
     nudge = tracker.get_nudge(topic)
     if nudge:
@@ -239,9 +244,8 @@ def register_knowledge_tools(
 
         parts = [f"Error logged: {error_text[:100]}"]
 
-        keywords = _extract_keywords(error_text)
-        if keywords:
-            query = " ".join(keywords[:5])
+        query = error_query(error_text)
+        if query:
             ids: list = []
             search_results = search_all_fn(query, limit=5, ids_out=ids)
             # issue #156: the auto-search establishes coverage for this error's
@@ -301,6 +305,13 @@ def register_knowledge_tools(
             return _with_nudge(
                 f"NOT_FOUND: no knowledge with id={old_id}.", tracker,
             )
+        if getattr(old, "status", "active") == "superseded":
+            return _with_nudge(
+                f"Knowledge #{old_id} is already superseded by "
+                f"#{old.superseded_by}; nothing changed. Revive it with "
+                f"unsupersede_knowledge first to point it at another finding.",
+                tracker,
+            )
         new = storage.find_by_id(EntityType.KNOWLEDGE, new_id)
         if new is None:
             return _with_nudge(
@@ -313,18 +324,20 @@ def register_knowledge_tools(
                 f"#{new_id} with unsupersede_knowledge first.", tracker,
             )
 
-        # Record the audit relation first (idempotent — None if it already
-        # exists), then flip status. If the relation write fails, status is
-        # left untouched (safe); a stray relation without the flip is
-        # removable via unlink_knowledge.
-        storage.insert_relation(RelationRow(
-            id=0,
-            source_type=EntityType.KNOWLEDGE, source_id=new_id,
-            target_type=EntityType.KNOWLEDGE, target_id=old_id,
-            relation="supersedes",
-            note=(f"by {actor}" if actor else None),
-        ))
-        storage.supersede_knowledge(old_id, new_id)
+        with storage.transaction():
+            moved = storage.supersede_knowledge(old_id, new_id)
+            if moved:
+                storage.insert_relation(RelationRow(
+                    id=0,
+                    source_type=EntityType.KNOWLEDGE, source_id=new_id,
+                    target_type=EntityType.KNOWLEDGE, target_id=old_id,
+                    relation="supersedes",
+                    note=(f"by {actor}" if actor else None),
+                ))
+        if not moved:
+            return _with_nudge(
+                f"Knowledge #{old_id} is not active; nothing changed.", tracker,
+            )
         return _with_nudge(
             f"Superseded knowledge #{old_id} ('{old.topic}') "
             f"by #{new_id} ('{new.topic}').", tracker,
@@ -350,11 +363,17 @@ def register_knowledge_tools(
                 f"nothing to do.", tracker,
             )
         new_id = getattr(row, "superseded_by", None)
-        storage.unsupersede_knowledge(knowledge_id)
-        if new_id:
-            storage.delete_relation(
-                EntityType.KNOWLEDGE, new_id,
-                EntityType.KNOWLEDGE, knowledge_id, "supersedes",
+        with storage.transaction():
+            moved = storage.unsupersede_knowledge(knowledge_id)
+            if moved and new_id:
+                storage.delete_relation(
+                    EntityType.KNOWLEDGE, new_id,
+                    EntityType.KNOWLEDGE, knowledge_id, "supersedes",
+                )
+        if not moved:
+            return _with_nudge(
+                f"Knowledge #{knowledge_id} is not superseded; nothing to do.",
+                tracker,
             )
         return _with_nudge(
             f"Unsuperseded knowledge #{knowledge_id} ('{row.topic}') "
