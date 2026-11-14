@@ -402,19 +402,26 @@ def register_corpus_tools(
                         )
                     label = row["label"] if hasattr(row, "keys") else row[1]
 
+                    if etype == "rule":
+                        # Terminal recall: keep the row (audit) but make it
+                        # invisible and sync-proof. Never a hard delete.
+                        cur.execute(
+                            "UPDATE rules SET status = 'recalled', "
+                            "updated_at = now() WHERE id = %s "
+                            "AND COALESCE(status, 'active') <> 'recalled'",
+                            (entry_id,),
+                        )
+                        if cur.rowcount == 0:
+                            return _with_nudge(
+                                f"Rule #{entry_id} ('{label}') is already "
+                                f"recalled; nothing changed.", tracker,
+                            )
                     cur.execute(
                         "INSERT INTO recall_log (claim_id, entity_type, principal, reason) "
                         "VALUES (%s, %s, %s, %s)",
                         (entry_id, etype, principal or "governance", reason or None),
                     )
                     if etype == "rule":
-                        # Terminal recall: keep the row (audit) but make it
-                        # invisible and sync-proof. Never a hard delete.
-                        cur.execute(
-                            "UPDATE rules SET status = 'recalled', "
-                            "updated_at = now() WHERE id = %s",
-                            (entry_id,),
-                        )
                         cur.execute(
                             "INSERT INTO rule_events (rule_id, event_type, actor, note) "
                             "VALUES (%s, %s, %s, %s)",

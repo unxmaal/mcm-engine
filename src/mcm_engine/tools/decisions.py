@@ -125,51 +125,52 @@ def register_decisions_tools(
             f"Confidence: {confidence:.2f}",
         ) if p)
 
-        new_id = storage.insert_knowledge(KnowledgeRow(
-            id=0,  # adapter assigns
-            topic=topic,
-            kind="decision",
-            summary=outcome,
-            detail=detail,
-            tags=tags or None,
-            project=project or project_name,
-            rationale=reasoning or None,
-            valid_until=valid_until_dt,
-        ))
-
-        # depends_on edges to the evidence.
-        links_made: list[str] = []
-        skipped: list[str] = []
-        for ref in (based_on or []):
-            parsed = _parse_ref(ref)
-            if parsed is None:
-                skipped.append(f"{ref} (malformed; use 'type#id')")
-                continue
-            etype, tid = parsed
-            if not storage.entry_exists(etype, tid):
-                skipped.append(f"{ref} (not found)")
-                continue
-            rel_id = storage.insert_relation(RelationRow(
-                id=0,
-                source_type=EntityType.KNOWLEDGE, source_id=new_id,
-                target_type=etype, target_id=tid,
-                relation="depends_on",
+        with storage.transaction():
+            new_id = storage.insert_knowledge(KnowledgeRow(
+                id=0,  # adapter assigns
+                topic=topic,
+                kind="decision",
+                summary=outcome,
+                detail=detail,
+                tags=tags or None,
+                project=project or project_name,
+                rationale=reasoning or None,
+                valid_until=valid_until_dt,
             ))
-            if rel_id is None:
-                skipped.append(f"{ref} (link already exists)")
-            else:
-                links_made.append(f"{etype.value}#{tid}")
 
-        # Supersede a prior decision — audit relation first, then flip status
-        # (mirrors the supersede_knowledge tool: new --[supersedes]--> old).
-        if old is not None:
-            storage.insert_relation(RelationRow(
-                id=0,
-                source_type=EntityType.KNOWLEDGE, source_id=new_id,
-                target_type=EntityType.KNOWLEDGE, target_id=supersedes_decision,
-                relation="supersedes",
-            ))
-            storage.supersede_knowledge(supersedes_decision, new_id)
+            # depends_on edges to the evidence.
+            links_made: list[str] = []
+            skipped: list[str] = []
+            for ref in (based_on or []):
+                parsed = _parse_ref(ref)
+                if parsed is None:
+                    skipped.append(f"{ref} (malformed; use 'type#id')")
+                    continue
+                etype, tid = parsed
+                if not storage.entry_exists(etype, tid):
+                    skipped.append(f"{ref} (not found)")
+                    continue
+                rel_id = storage.insert_relation(RelationRow(
+                    id=0,
+                    source_type=EntityType.KNOWLEDGE, source_id=new_id,
+                    target_type=etype, target_id=tid,
+                    relation="depends_on",
+                ))
+                if rel_id is None:
+                    skipped.append(f"{ref} (link already exists)")
+                else:
+                    links_made.append(f"{etype.value}#{tid}")
+
+            # Supersede a prior decision — audit relation first, then flip status
+            # (mirrors the supersede_knowledge tool: new --[supersedes]--> old).
+            if old is not None:
+                storage.insert_relation(RelationRow(
+                    id=0,
+                    source_type=EntityType.KNOWLEDGE, source_id=new_id,
+                    target_type=EntityType.KNOWLEDGE, target_id=supersedes_decision,
+                    relation="supersedes",
+                ))
+                storage.supersede_knowledge(supersedes_decision, new_id)
 
         parts = [f"Recorded decision #{new_id}: {topic} — {outcome}"]
         if links_made:

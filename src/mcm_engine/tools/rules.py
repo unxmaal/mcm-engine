@@ -386,15 +386,16 @@ def register_rules_tools(
             if content:
                 fields["content"] = content
                 fields["content_hash"] = compute_content_hash(content)
-            storage.update_rule(existing.id, **fields)
-            if material:
-                storage.insert_rule_event(
-                    existing.id, "updated", who,
-                    content_hash=fields.get("content_hash"),
-                    source_repo=source_repo or None,
-                    source_ref=source_ref or None,
-                    source_commit=source_commit or None,
-                )
+            with storage.transaction():
+                storage.update_rule(existing.id, **fields)
+                if material:
+                    storage.insert_rule_event(
+                        existing.id, "updated", who,
+                        content_hash=fields.get("content_hash"),
+                        source_repo=source_repo or None,
+                        source_ref=source_ref or None,
+                        source_commit=source_commit or None,
+                    )
             return _with_nudge(
                 f"Updated existing rule: {title} (id={existing.id})",
                 tracker, title,
@@ -441,26 +442,27 @@ def register_rules_tools(
             content_hash = compute_content_hash(content) if content else None
 
         description = content[:500] if content else ""
-        rule_id = storage.insert_rule(RuleRow(
-            id=0,
-            title=title,
-            keywords=keywords,
-            file_path=actual_path or None,
-            description=description or None,
-            category=category or None,
-            content_hash=content_hash,
-            content=content or None,
-            created_by=who,
-            updated_by=who,
-            source_classification=source_classification or None,
-        ))
-        storage.insert_rule_event(
-            rule_id, "created", who,
-            content_hash=content_hash,
-            source_repo=source_repo or None,
-            source_ref=source_ref or None,
-            source_commit=source_commit or None,
-        )
+        with storage.transaction():
+            rule_id = storage.insert_rule(RuleRow(
+                id=0,
+                title=title,
+                keywords=keywords,
+                file_path=actual_path or None,
+                description=description or None,
+                category=category or None,
+                content_hash=content_hash,
+                content=content or None,
+                created_by=who,
+                updated_by=who,
+                source_classification=source_classification or None,
+            ))
+            storage.insert_rule_event(
+                rule_id, "created", who,
+                content_hash=content_hash,
+                source_repo=source_repo or None,
+                source_ref=source_ref or None,
+                source_commit=source_commit or None,
+            )
 
         conflict_note = _conflict_note_for(storage, rule_id)
 
@@ -828,55 +830,56 @@ def register_rules_tools(
             content = parsed.get("content")
             content_hash = parsed.get("content_hash")
 
-            existing = storage.find_rule_by_file_path(rel_path)
-            if existing is not None:
-                storage.update_rule(
-                    existing.id,
-                    title=title,
-                    keywords=keywords,
-                    description=description,
-                    category=category,
-                    content_hash=content_hash,
-                    content=content,
-                    updated_by=who,
-                )
-                # Files-win: a reappeared file un-archives its row.
-                if existing.archived:
-                    storage.restore_rule(existing.id)
+            with storage.transaction():
+                existing = storage.find_rule_by_file_path(rel_path)
+                if existing is not None:
+                    storage.update_rule(
+                        existing.id,
+                        title=title,
+                        keywords=keywords,
+                        description=description,
+                        category=category,
+                        content_hash=content_hash,
+                        content=content,
+                        updated_by=who,
+                    )
+                    # Files-win: a reappeared file un-archives its row.
+                    if existing.archived:
+                        storage.restore_rule(existing.id)
+                        storage.insert_rule_event(
+                            existing.id, "restored", who,
+                            content_hash=content_hash, source_repo=src_repo,
+                            source_ref=src_ref, source_commit=src_commit,
+                        )
+                    # A changed body (content_hash differs from the stored one)
+                    # is a material update worth an event; an unchanged re-sync
+                    # is not.
+                    if content_hash and content_hash != existing.content_hash:
+                        storage.insert_rule_event(
+                            existing.id, "updated", who,
+                            content_hash=content_hash, source_repo=src_repo,
+                            source_ref=src_ref, source_commit=src_commit,
+                        )
+                    updated += 1
+                else:
+                    rid = storage.insert_rule(RuleRow(
+                        id=0,
+                        title=title,
+                        keywords=keywords,
+                        file_path=rel_path,
+                        description=description or None,
+                        category=category or None,
+                        content_hash=content_hash,
+                        content=content,
+                        created_by=who,
+                        updated_by=who,
+                    ))
                     storage.insert_rule_event(
-                        existing.id, "restored", who,
+                        rid, "created", who,
                         content_hash=content_hash, source_repo=src_repo,
                         source_ref=src_ref, source_commit=src_commit,
                     )
-                # A changed body (content_hash differs from the stored one)
-                # is a material update worth an event; an unchanged re-sync
-                # is not.
-                if content_hash and content_hash != existing.content_hash:
-                    storage.insert_rule_event(
-                        existing.id, "updated", who,
-                        content_hash=content_hash, source_repo=src_repo,
-                        source_ref=src_ref, source_commit=src_commit,
-                    )
-                updated += 1
-            else:
-                rid = storage.insert_rule(RuleRow(
-                    id=0,
-                    title=title,
-                    keywords=keywords,
-                    file_path=rel_path,
-                    description=description or None,
-                    category=category or None,
-                    content_hash=content_hash,
-                    content=content,
-                    created_by=who,
-                    updated_by=who,
-                ))
-                storage.insert_rule_event(
-                    rid, "created", who,
-                    content_hash=content_hash, source_repo=src_repo,
-                    source_ref=src_ref, source_commit=src_commit,
-                )
-                indexed += 1
+                    indexed += 1
 
         # Soft-delete orphans (rules whose backing files are gone). Skip
         # rows already archived — re-archiving inflates the count and loses the
@@ -900,12 +903,13 @@ def register_rules_tools(
             archive_blocked = len(orphans)
         else:
             for r in orphans:
-                storage.soft_delete_rule(r.id)
-                storage.insert_rule_event(
-                    r.id, "archived", who,
-                    source_repo=src_repo, source_ref=src_ref,
-                    source_commit=src_commit,
-                )
+                with storage.transaction():
+                    storage.soft_delete_rule(r.id)
+                    storage.insert_rule_event(
+                        r.id, "archived", who,
+                        source_repo=src_repo, source_ref=src_ref,
+                        source_commit=src_commit,
+                    )
                 archived += 1
 
         # Turn [[slug]] wikilinks into rule->rule relations. Shared with the
@@ -1183,6 +1187,12 @@ def register_rules_tools(
         old = storage.find_by_id(EntityType.RULE, old_id)
         if old is None:
             return _with_nudge(f"Rule {old_id} not found.", tracker)
+        if getattr(old, "status", "active") == "superseded":
+            return _with_nudge(
+                f"Rule {old_id} is already superseded by {old.superseded_by}; "
+                f"nothing changed. Revive it with unsupersede_rule first to "
+                f"point it at another rule.", tracker,
+            )
         new = storage.find_by_id(EntityType.RULE, new_id)
         if new is None:
             return _with_nudge(f"Superseding rule {new_id} not found.", tracker)
@@ -1193,7 +1203,12 @@ def register_rules_tools(
                 f"Revive {new_id} with unsupersede_rule first, or supersede by a "
                 f"live rule.", tracker,
             )
-        storage.supersede_rule(old_id, new_id, who)
+        if not storage.supersede_rule(old_id, new_id, who):
+            return _with_nudge(
+                f"Rule {old_id} is not active "
+                f"(status={getattr(old, 'status', 'active')}); nothing changed.",
+                tracker,
+            )
         return _with_nudge(
             f"Superseded: {old.title} (now superseded_by={new_id})", tracker,
         )
@@ -1216,7 +1231,10 @@ def register_rules_tools(
                 f"Rule {rule_id} is not superseded (status={status}); nothing to do.",
                 tracker,
             )
-        storage.unsupersede_rule(rule_id, who)
+        if not storage.unsupersede_rule(rule_id, who):
+            return _with_nudge(
+                f"Rule {rule_id} is not superseded; nothing to do.", tracker,
+            )
         return _with_nudge(
             f"Unsuperseded: {row.title} (rule #{rule_id} back to active).", tracker,
         )
