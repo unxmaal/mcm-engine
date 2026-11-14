@@ -23,6 +23,20 @@ _DEBOUNCE_MS = 50
 # write-then-read can drift a few hundred ms.
 _SETTLE_S = 0.6
 
+# FSEvents delivery under load: 0.1 s to 14 s measured (#224).
+_EVENT_DEADLINE_S = 30.0
+
+
+def _until(cond, timeout: float = _EVENT_DEADLINE_S) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if cond():
+                return
+        except Exception:
+            pass
+        time.sleep(0.02)
+
 
 @pytest.fixture
 def storage(tmp_path):
@@ -103,7 +117,7 @@ def test_external_edit_cascades_within_debounce(watcher, rules_dir, storage):
 
     watcher.start()
     _write_rule(rule_path, "Updated title", body="new body content")
-    time.sleep(_SETTLE_S)
+    _until(lambda: storage.find_rule_by_file_path("rules/x.md").title == "Updated title")
 
     row = storage.find_rule_by_file_path("rules/x.md")
     assert row is not None
@@ -138,7 +152,7 @@ def test_deletion_soft_deletes_row(watcher, rules_dir, storage):
 
     watcher.start()
     rule_path.unlink()
-    time.sleep(_SETTLE_S)
+    _until(lambda: storage.find_by_id(EntityType.RULE, rid).archived)
 
     row = storage.find_by_id(EntityType.RULE, rid)
     assert row is not None  # not hard-deleted
@@ -153,11 +167,11 @@ def test_recreate_after_delete_restores_row(watcher, rules_dir, storage):
 
     watcher.start()
     rule_path.unlink()
-    time.sleep(_SETTLE_S)
+    _until(lambda: storage.find_by_id(EntityType.RULE, rid).archived)
     assert storage.find_by_id(EntityType.RULE, rid).archived is True
 
     _write_rule(rule_path, "R rule recreated", body="post-restore body")
-    time.sleep(_SETTLE_S)
+    _until(lambda: storage.find_by_id(EntityType.RULE, rid).title == "R rule recreated")
 
     row = storage.find_by_id(EntityType.RULE, rid)
     assert row.archived is False
@@ -174,7 +188,8 @@ def test_rename_archives_old_creates_new(watcher, rules_dir, storage):
     new_path = rules_dir / "new" / "foo.md"
     new_path.parent.mkdir(parents=True, exist_ok=True)
     old_path.rename(new_path)
-    time.sleep(_SETTLE_S)
+    _until(lambda: storage.find_by_id(EntityType.RULE, old_rid).archived
+           and storage.find_rule_by_file_path("rules/new/foo.md") is not None)
 
     old_row = storage.find_by_id(EntityType.RULE, old_rid)
     assert old_row.archived is True
