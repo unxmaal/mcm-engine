@@ -13,6 +13,7 @@ from datetime import timezone as _timezone
 
 from ...backends import Entry
 from ...entries import (
+    ENTRY_UPDATABLE as _ENTRY_UPDATABLE,
     arg_ids as _arg_ids,
     facets_text as _facets_text,
     backfill as _backfill_entries,
@@ -708,16 +709,6 @@ def _as_dt(v: Any) -> Optional[datetime]:
     return v if isinstance(v, datetime) else None
 
 
-# Columns update_entry may touch (issue #179). `facets` is accepted and stored
-# as facets_json.
-_ENTRY_UPDATABLE = frozenset({
-    "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
-    "superseded_by", "valid_until", "hit_count", "last_hit_at",
-    "reinforcement_count", "source_classification", "facets", "facets_json",
-    "created_at", "updated_at", "facets_text",
-})
-
-
 def _dump_facets(facets: Any) -> str:
     return _json.dumps(facets or {}, sort_keys=True, default=str)
 
@@ -1107,28 +1098,32 @@ class PostgresStorage:
         self._commit()
 
     @_mirrored(EntityType.KNOWLEDGE, _arg_ids("old_id", "new_id"))
-    def supersede_knowledge(self, old_id: int, new_id: int) -> None:
+    def supersede_knowledge(self, old_id: int, new_id: int) -> bool:
         """Soft-expire a knowledge finding (issue #111): status 'superseded' +
         superseded_by set. Drops out of default search, stays inspectable."""
         with self._conn.cursor() as cur:
             cur.execute(
                 "UPDATE knowledge SET status = 'superseded', superseded_by = %s, "
-                "updated_at = now() WHERE id = %s",
+                "updated_at = now() WHERE id = %s AND COALESCE(status, 'active') = 'active'",
                 (new_id, old_id),
             )
+            moved = cur.rowcount > 0
         self._commit()
+        return moved
 
     @_mirrored(EntityType.KNOWLEDGE, _arg_ids("knowledge_id"))
-    def unsupersede_knowledge(self, knowledge_id: int) -> None:
+    def unsupersede_knowledge(self, knowledge_id: int) -> bool:
         """Clear a knowledge finding's superseded state (issue #111): status
         back to active, superseded_by cleared."""
         with self._conn.cursor() as cur:
             cur.execute(
                 "UPDATE knowledge SET status = 'active', superseded_by = NULL, "
-                "updated_at = now() WHERE id = %s",
+                "updated_at = now() WHERE id = %s AND status = 'superseded'",
                 (knowledge_id,),
             )
+            moved = cur.rowcount > 0
         self._commit()
+        return moved
 
     # ---- Negative ----
 
@@ -1591,39 +1586,47 @@ class PostgresStorage:
             return [(r["actor"], bool(r["passed"])) for r in cur.fetchall()]
 
     @_mirrored(EntityType.RULE, _arg_ids("old_id", "new_id"))
-    def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
+    def supersede_rule(self, old_id: int, new_id: int, actor: str) -> bool:
         """Issue #21 — soft-supersede (never delete). Atomic via transaction()."""
         with self.transaction():
             with self._conn.cursor() as cur:
                 cur.execute(
                     "UPDATE rules SET valid_until = now(), superseded_by = %s, "
-                    "status = 'superseded', updated_at = now() WHERE id = %s",
+                    "status = 'superseded', updated_at = now() "
+                    "WHERE id = %s AND COALESCE(status, 'active') = 'active'",
                     (new_id, old_id),
                 )
+                if cur.rowcount == 0:
+                    return False
                 cur.execute(
                     "INSERT INTO rule_events (rule_id, event_type, actor, note) "
                     "VALUES (%s, %s, %s, %s)",
                     (old_id, "superseded", actor or "nobody", f"superseded_by:{new_id}"),
                 )
             self._commit()
+        return True
 
     @_mirrored(EntityType.RULE, _arg_ids("rule_id"))
-    def unsupersede_rule(self, rule_id: int, actor: str) -> None:
+    def unsupersede_rule(self, rule_id: int, actor: str) -> bool:
         """Issue #100 — clear a rule's superseded state (inverse of
         supersede_rule). Atomic via transaction()."""
         with self.transaction():
             with self._conn.cursor() as cur:
                 cur.execute(
                     "UPDATE rules SET status = 'active', superseded_by = NULL, "
-                    "valid_until = NULL, updated_at = now() WHERE id = %s",
+                    "valid_until = NULL, updated_at = now() "
+                    "WHERE id = %s AND status = 'superseded'",
                     (rule_id,),
                 )
+                if cur.rowcount == 0:
+                    return False
                 cur.execute(
                     "INSERT INTO rule_events (rule_id, event_type, actor, note) "
                     "VALUES (%s, %s, %s, %s)",
                     (rule_id, "unsuperseded", actor or "nobody", "supersede cleared"),
                 )
             self._commit()
+        return True
 
     def insert_rule_event(
         self,

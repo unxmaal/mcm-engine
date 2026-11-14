@@ -285,6 +285,15 @@ def entry_fields(e: Entry) -> dict[str, Any]:
     return {k: getattr(e, k) for k in _ENTRY_COLUMNS}
 
 
+# Columns update_entry may touch (#179); `facets` is stored as facets_json.
+ENTRY_UPDATABLE = frozenset({
+    "subkind", "title", "summary", "body", "tags", "project", "pinned", "status",
+    "superseded_by", "valid_until", "hit_count", "last_hit_at",
+    "reinforcement_count", "source_classification", "facets", "facets_json",
+    "created_at", "updated_at", "facets_text",
+})
+
+
 def mirror_entry(storage, etype: EntityType, entry_id: int) -> str:
     """Re-project one legacy row into ``entries`` (legacy is authoritative in
     4.x). Idempotent. Call inside ``storage.transaction()`` so the legacy write

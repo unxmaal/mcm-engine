@@ -24,9 +24,6 @@ from mcm_engine.tools.session import register_session_tools
 from mcm_engine.tracker import NudgeConfig, SessionTracker
 
 PG_DSN = os.environ.get("MCM_TEST_POSTGRES_DSN", "postgresql://mcm:mcm@127.0.0.1:55432/mcm_test")
-SQ = "src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage."
-PG = "src/mcm_engine/adapters/postgres/storage.py:PostgresStorage."
-LIFE = "a-lifecycle-with-no-declared-state"
 LAST = "state-is-whichever-row-came-last"
 SCOPE = "a-shared-store-query-with-no-scope-or-a-scope-with-its-own-idea-of-null"
 PAIR = "two-durable-writes-with-no-repair-for-the-gap"
@@ -65,9 +62,9 @@ def _force_rule_status(storage, rule_id, status):
         storage._db.execute_write("UPDATE rules SET status = ? WHERE id = ?", (status, rule_id))
         storage._db.commit()
     else:
-        with storage._conn.cursor() as cur:
-            cur.execute("UPDATE rules SET status = %s WHERE id = %s", (status, rule_id))
-        storage._commit()
+        with storage.transaction():
+            with storage._conn.cursor() as cur:
+                cur.execute("UPDATE rules SET status = %s WHERE id = %s", (status, rule_id))
 
 
 def _rules(storage, n=3):
@@ -89,8 +86,6 @@ def _events(storage, rid, kind):
 
 # ---- supersede / unsupersede --------------------------------------------------
 
-@pytest.mark.gauntlet(LIFE, site=SQ + "supersede_rule")
-@pytest.mark.gauntlet(LIFE, site=PG + "supersede_rule")
 def test_supersede_rule_moves_only_an_active_rule(storage):
     a, b, c = _rules(storage)
     assert storage.supersede_rule(a, b, "t") is True
@@ -102,8 +97,6 @@ def test_supersede_rule_moves_only_an_active_rule(storage):
     assert _rule(storage, c).status == "recalled"
 
 
-@pytest.mark.gauntlet(LIFE, site=SQ + "unsupersede_rule")
-@pytest.mark.gauntlet(LIFE, site=PG + "unsupersede_rule")
 def test_unsupersede_rule_moves_only_a_superseded_rule(storage):
     a, b, c = _rules(storage)
     assert storage.unsupersede_rule(a, "t") is False
@@ -117,8 +110,6 @@ def test_unsupersede_rule_moves_only_a_superseded_rule(storage):
     assert row.status == "active" and row.superseded_by is None
 
 
-@pytest.mark.gauntlet(LIFE, site=SQ + "supersede_knowledge")
-@pytest.mark.gauntlet(LIFE, site=PG + "supersede_knowledge")
 def test_supersede_knowledge_moves_only_an_active_finding(storage):
     a, b, c = _findings(storage)
     assert storage.supersede_knowledge(a, b) is True
@@ -126,8 +117,6 @@ def test_supersede_knowledge_moves_only_an_active_finding(storage):
     assert storage.find_by_id(EntityType.KNOWLEDGE, a).superseded_by == b
 
 
-@pytest.mark.gauntlet(LIFE, site=SQ + "unsupersede_knowledge")
-@pytest.mark.gauntlet(LIFE, site=PG + "unsupersede_knowledge")
 def test_unsupersede_knowledge_moves_only_a_superseded_finding(storage):
     a, b, _ = _findings(storage)
     assert storage.unsupersede_knowledge(a) is False
@@ -145,18 +134,24 @@ def test_a_noop_supersede_leaves_the_entries_row_matching(storage):
 
 # ---- newest-row readers -------------------------------------------------------
 
-@pytest.mark.gauntlet(LAST, site=SQ + "get_last_session")
-@pytest.mark.gauntlet(LAST, site=PG + "get_last_session")
-@pytest.mark.gauntlet(SCOPE, site=SQ + "get_last_session:sessions")
-@pytest.mark.gauntlet(SCOPE, site=PG + "get_last_session:sessions")
+@pytest.mark.gauntlet(LAST,
+                     site="src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_session")
+@pytest.mark.gauntlet(LAST,
+                     site="src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_session")
+@pytest.mark.gauntlet(SCOPE,
+                     site="src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_session:sessions")
+@pytest.mark.gauntlet(SCOPE,
+                     site="src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_session:sessions")
 def test_unscoped_last_session_is_the_newest_row(storage):
     for status in ("first", "second", "third"):
         storage.insert_session(SessionRow(id=0, status=status, principal="p"))
     assert storage.get_last_session().status == "third"
 
 
-@pytest.mark.gauntlet(SCOPE, site=SQ + "get_last_session:null-scope")
-@pytest.mark.gauntlet(SCOPE, site=PG + "get_last_session:null-scope")
+@pytest.mark.gauntlet(SCOPE,
+                     site="src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_session:null-scope")
+@pytest.mark.gauntlet(SCOPE,
+                     site="src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_session:null-scope")
 def test_scoped_last_session_prefers_its_own_row_over_the_null_scope_fallback(storage):
     storage.insert_session(SessionRow(id=0, status="alice-1", principal="alice"))
     storage.insert_session(SessionRow(id=0, status="alice-2", principal="alice"))
@@ -169,8 +164,10 @@ def test_scoped_last_session_prefers_its_own_row_over_the_null_scope_fallback(st
     assert storage.get_last_session(principal="dave", workspace="A").status == "wA"
 
 
-@pytest.mark.gauntlet(LAST, site=SQ + "get_last_snapshot")
-@pytest.mark.gauntlet(LAST, site=PG + "get_last_snapshot")
+@pytest.mark.gauntlet(LAST,
+                     site="src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.get_last_snapshot")
+@pytest.mark.gauntlet(LAST,
+                     site="src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.get_last_snapshot")
 def test_last_snapshot_is_the_newest_row(storage):
     sid = storage.insert_session(SessionRow(id=0, status="s"))
     for n, goal in enumerate(("first", "second", "third"), 1):

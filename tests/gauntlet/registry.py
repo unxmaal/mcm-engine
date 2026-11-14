@@ -160,7 +160,19 @@ INDEX = {
 _CONFORMANCE = "test method in the shipped conformance suite, not a production write path"
 _FAIL_OPEN = "hook fails open by design: a hook error must never break the tool call (RULE #61)"
 
+_ONE_WRITER = "one writer per adapter (sqlite, postgres) plus recall_entry; each UPDATE is guarded by the status it leaves (#221)"
+_ALL_ROWS = "migrate/export iterator: reads every session on purpose, no caller-facing scope"
+
 WAIVERS = {
+    'a-lifecycle-with-no-declared-state': {
+        'table:knowledge.status': _ONE_WRITER,
+        'table:rules.status': _ONE_WRITER,
+    },
+    'a-shared-store-query-with-no-scope-or-a-scope-with-its-own-idea-of-null': {
+        'src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.iter_sessions:sessions': _ALL_ROWS,
+        'src/mcm_engine/adapters/sqlite/storage.py:SqliteStorage.iter_sessions:sessions': _ALL_ROWS,
+        'src/mcm_engine/tokens.py:revoke_token:tokens': 'keyed by the hash of the token secret, which identifies one row; the holder of the plaintext is the scope',
+    },
     'a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates': {
         'src/mcm_engine/hooks/mcp_enforcement.py:_append_event': 'append-only diagnostic log, one write per line, never read back for a decision',
     },
@@ -178,6 +190,7 @@ WAIVERS = {
         'src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.find_similar_knowledge': 'rank-ordered FTS match, not a latest-row read',
     },
     'two-durable-writes-with-no-repair-for-the-gap': {
+        'src/mcm_engine/tools/session.py:register_session_tools.session_handoff': 'the snapshot is best-effort by design: a snapshot failure must not lose the handoff (tests/test_storage_lifecycle.py::test_session_handoff_is_kept_when_its_snapshot_fails)',
         'src/mcm_engine/testing/conformance.py:CounterConformance.test_increment_last_hit_at_sets_timestamp': _CONFORMANCE,
         'src/mcm_engine/testing/conformance.py:CounterConformance.test_increment_then_get_returns_value': _CONFORMANCE,
         'src/mcm_engine/testing/conformance.py:CounterConformance.test_last_flushed_snapshot_equals_live': _CONFORMANCE,
@@ -206,7 +219,7 @@ for _cid, _sites in WAIVERS.items():
     INDEX[_cid]["waivers"] = _sites
 
 # Unbound hits seeded by init; lower it as the backlog is bound, never raise it.
-BACKLOG_PIN = 85
+BACKLOG_PIN = 54
 
 WAIVED = "not yet registered: gauntlet init found it"
 

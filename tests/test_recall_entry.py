@@ -109,8 +109,6 @@ def test_recall_rule_is_terminal_status_not_delete():
         assert cur.fetchone() is not None
 
 
-@pytest.mark.gauntlet("a-lifecycle-with-no-declared-state",
-                     site="src/mcm_engine/tools/corpus.py:register_corpus_tools.recall_entry")
 def test_recalling_a_recalled_rule_writes_nothing():
     tools, s = _pg_tools()
     rid = s.insert_rule(RuleRow(id=0, title="recalled twice", keywords="x"))
