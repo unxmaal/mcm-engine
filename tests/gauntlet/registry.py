@@ -167,7 +167,25 @@ _ONE_CHOOSER = ("calls the one chooser with the caller's own config or a DSN the
                 "wiring.build_verified_context carries the authoritative-store guard, migrate.open_storage "
                 "takes an explicit DSN; no copy of the choosing logic (#226)")
 
+_TORN_DOWN = ("conformance stack torn down with `tofu destroy` after each run (terraform/aws/README.md); "
+              "rds_protect=true turns on deletion protection and the final snapshot, and "
+              "lifecycle.prevent_destroy cannot depend on a variable (#228)")
+_RUNBOOK_ORDER = "operator runbook order (create the repo, push the image, apply); terraform cannot check that an image was pushed"
+_SUBNET_COUNT = "moving to for_each re-addresses every subnet in an existing state; the stack is rebuilt per run"
+
 WAIVERS = {
+    'an-order-the-code-needs-but-does-not-check': {
+        'terraform/aws/ecr.tf:comment.L1': _RUNBOOK_ORDER,
+        'terraform/aws/variables.tf:variable.image_uri.description': _RUNBOOK_ORDER,
+    },
+    'identity-by-name-not-by-content': {
+        'terraform/aws/network.tf:aws_subnet.private': _SUBNET_COUNT,
+        'terraform/aws/network.tf:aws_subnet.public': _SUBNET_COUNT,
+    },
+    'irreplaceable-state-with-no-guard-on-its-destruction': {
+        'terraform/aws/rds.tf:aws_db_instance.main': _TORN_DOWN,
+        'terraform/aws/rds.tf:aws_db_instance.main.skip_final_snapshot': _TORN_DOWN,
+    },
     'a-closed-table-fronting-an-open-set': {
         'src/mcm_engine/hooks/mcp_enforcement.py:_COMMENT_PREFIX': 'advisory comment/code split for session metrics; an unlisted extension counts every line as code, on purpose',
         'src/mcm_engine/ingest/text_dir.py:_AST_UPGRADE_HINTS': 'suggestion table; an unlisted extension gets no upgrade suggestion, which is the intended answer',
@@ -240,7 +258,7 @@ for _cid, _sites in WAIVERS.items():
     INDEX[_cid]["waivers"] = _sites
 
 # Unbound hits seeded by init; lower it as the backlog is bound, never raise it.
-BACKLOG_PIN = 6
+BACKLOG_PIN = 0
 
 WAIVED = "not yet registered: gauntlet init found it"
 

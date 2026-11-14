@@ -1,14 +1,1 @@
-{
- "an-order-the-code-needs-but-does-not-check": [
-  "terraform/aws/ecr.tf:comment.L1",
-  "terraform/aws/variables.tf:variable.image_uri.description"
- ],
- "identity-by-name-not-by-content": [
-  "terraform/aws/network.tf:aws_subnet.private",
-  "terraform/aws/network.tf:aws_subnet.public"
- ],
- "irreplaceable-state-with-no-guard-on-its-destruction": [
-  "terraform/aws/rds.tf:aws_db_instance.main",
-  "terraform/aws/rds.tf:aws_db_instance.main.skip_final_snapshot"
- ]
-}
+{}
