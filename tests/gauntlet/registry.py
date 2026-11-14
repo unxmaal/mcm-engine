@@ -163,7 +163,15 @@ _FAIL_OPEN = "hook fails open by design: a hook error must never break the tool 
 _ONE_WRITER = "one writer per adapter (sqlite, postgres) plus recall_entry; each UPDATE is guarded by the status it leaves (#221)"
 _ALL_ROWS = "migrate/export iterator: reads every session on purpose, no caller-facing scope"
 
+_ONE_CHOOSER = ("calls the one chooser with the caller's own config or a DSN the user typed: "
+                "wiring.build_verified_context carries the authoritative-store guard, migrate.open_storage "
+                "takes an explicit DSN; no copy of the choosing logic (#226)")
+
 WAIVERS = {
+    'a-closed-table-fronting-an-open-set': {
+        'src/mcm_engine/hooks/mcp_enforcement.py:_COMMENT_PREFIX': 'advisory comment/code split for session metrics; an unlisted extension counts every line as code, on purpose',
+        'src/mcm_engine/ingest/text_dir.py:_AST_UPGRADE_HINTS': 'suggestion table; an unlisted extension gets no upgrade suggestion, which is the intended answer',
+    },
     'a-lifecycle-with-no-declared-state': {
         'table:knowledge.status': _ONE_WRITER,
         'table:rules.status': _ONE_WRITER,
@@ -174,9 +182,22 @@ WAIVERS = {
         'src/mcm_engine/tokens.py:revoke_token:tokens': 'keyed by the hash of the token secret, which identifies one row; the holder of the plaintext is the scope',
     },
     'a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates': {
+        'src/mcm_engine/cli.py:_save_ingest_state': 'one CLI process writes its own resume file; a lost entry re-sifts a span, and sifting is read-only',
         'src/mcm_engine/hooks/mcp_enforcement.py:_append_event': 'append-only diagnostic log, one write per line, never read back for a decision',
     },
     'nothing-and-failed-return-the-same-value': {
+        'src/mcm_engine/admin/app.py:make_handler.Handler.do_POST:except': 'answers 400 "invalid JSON body"; the bare return ends the handler',
+        'src/mcm_engine/admin/app.py:serve:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/cli.py:_ingest_bulk:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/cli.py:cmd_apply_rules:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/cli.py:cmd_consolidate:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/cli.py:cmd_export_mirror:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/cli.py:cmd_ingest:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/cli.py:cmd_migrate:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/hooks/mcp_enforcement.py:_local_recall:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/hooks/pre_compact.py:_write_local:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/hooks/session_end.py:_write_local:chooser': _ONE_CHOOSER,
+        'src/mcm_engine/server.py:MCMServer.__init__:chooser': _ONE_CHOOSER,
         'src/mcm_engine/adapters/postgres/storage.py:PostgresStorage.insert_relation:except': "None is the documented 'link already exists' answer on UniqueViolation",
         'src/mcm_engine/hooks/deny_table.py:_dirty_files:except': _FAIL_OPEN,
         'src/mcm_engine/hooks/mcp_enforcement.py:_read_state:except': _FAIL_OPEN,
@@ -219,7 +240,7 @@ for _cid, _sites in WAIVERS.items():
     INDEX[_cid]["waivers"] = _sites
 
 # Unbound hits seeded by init; lower it as the backlog is bound, never raise it.
-BACKLOG_PIN = 54
+BACKLOG_PIN = 6
 
 WAIVED = "not yet registered: gauntlet init found it"
 

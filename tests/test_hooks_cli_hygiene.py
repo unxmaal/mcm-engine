@@ -26,7 +26,6 @@ from mcm_engine.tools.rules import register_rules_tools
 from mcm_engine.tracker import NudgeConfig, SessionTracker
 
 REPO = Path(__file__).resolve().parent.parent
-COPY = "a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates"
 
 
 # ---- hook state file ----------------------------------------------------------
@@ -42,7 +41,6 @@ def _state(cwd):
     return json.loads(hook._state_path(cwd).read_text(encoding="utf-8"))
 
 
-@pytest.mark.gauntlet(COPY, site="src/mcm_engine/hooks/mcp_enforcement.py:_write_state")
 def test_a_hook_that_runs_between_anothers_read_and_write_keeps_its_entry(tmp_path, monkeypatch):
     real, ran = hook._decide, []
 
@@ -244,6 +242,7 @@ def test_import_script_reads_its_rules_dir_when_run(monkeypatch):
 
 # ---- schema skew --------------------------------------------------------------
 
+@pytest.mark.gauntlet("a-deploy-runs-two-releases-at-once", site="src/mcm_engine/schema.py:migrate_core:one-sided")
 def test_an_older_build_on_a_newer_schema_says_so(tmp_path, monkeypatch):
     db = KnowledgeDB(str(tmp_path / "k.db"))
     migrate_core(db)

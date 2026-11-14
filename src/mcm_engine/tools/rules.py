@@ -22,7 +22,7 @@ from ..backends import EntityType, RuleRow, parse_valid_until
 from ..hierarchy import KindLiteral, ScopeLiteral
 from ..db import log
 from ..destructive import archive_would_storm
-from ..files.watcher import compute_content_hash
+from ..files.watcher import RuleFileError, compute_content_hash, parse_rule_file as _parse_rule_file
 from ..policies import promote_body, read_entry
 from ..principal import resolve_actor
 from ..rules_links import build_wikilink_relations, extract_wikilinks
@@ -40,67 +40,6 @@ def _slugify(text: str) -> str:
     text = re.sub(r"[\s_-]+", "-", text)
     text = text.strip("-")
     return text or "untitled"
-
-
-def _parse_rule_file(path: Path) -> dict:
-    """Extract metadata from a rule markdown file.
-
-    Always populates ``content_hash`` so callers (notably sync_rules) can
-    seed it on the row without re-reading the file.
-    """
-    try:
-        content = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}
-
-    # `content` holds the full markdown body (issue #10) — distinct from
-    # `description`, which stays the leading-paragraph FTS signal below.
-    result: dict[str, str] = {
-        "content_hash": compute_content_hash(content),
-        "content": content,
-    }
-    lines = content.split("\n")
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("# ") and not stripped.startswith("## "):
-            result["title"] = stripped[2:].strip()
-            break
-
-    for line in lines:
-        stripped = line.strip()
-        kw_match = re.match(r"\*\*Keywords?:\*\*\s*(.+)", stripped, re.IGNORECASE)
-        if kw_match:
-            result["keywords"] = kw_match.group(1).strip()
-            continue
-        cat_match = re.match(r"\*\*Category:\*\*\s*(.+)", stripped, re.IGNORECASE)
-        if cat_match:
-            result["category"] = cat_match.group(1).strip()
-            continue
-
-    in_body = False
-    desc_lines: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not in_body:
-            if stripped.startswith("# ") and not stripped.startswith("## "):
-                continue
-            if re.match(r"\*\*(Keywords?|Category):\*\*", stripped, re.IGNORECASE):
-                continue
-            if stripped == "":
-                continue
-            in_body = True
-        if in_body:
-            if stripped == "" and desc_lines:
-                break
-            if stripped.startswith("## "):
-                break
-            desc_lines.append(stripped)
-
-    if desc_lines:
-        result["description"] = " ".join(desc_lines)
-
-    return result
 
 
 def _generate_rule_content(title: str, keywords: str, category: str, content: str) -> str:
@@ -411,12 +350,13 @@ def register_rules_tools(
         if file_path:
             full = project_root / file_path
             if full.exists():
-                parsed = _parse_rule_file(full)
+                try:
+                    parsed = _parse_rule_file(full)
+                except RuleFileError as e:
+                    return _with_nudge(f"Rule not added: cannot read {file_path} ({e}).", tracker)
                 if not content and parsed.get("description"):
                     content = parsed["description"]
-                content_hash = compute_content_hash(
-                    full.read_text(encoding="utf-8")
-                )
+                content_hash = parsed["content_hash"]
             else:
                 warning = f"\nWarning: file '{file_path}' does not exist. Rule indexed without file backing."
         elif files_authoritative:
@@ -813,13 +753,18 @@ def register_rules_tools(
         indexed = 0
         updated = 0
         archived = 0
+        unreadable: list[str] = []
 
         for md_file in md_files:
             try:
                 rel_path = str(md_file.relative_to(project_root))
             except ValueError:
                 rel_path = str(md_file)
-            parsed = _parse_rule_file(md_file)
+            try:
+                parsed = _parse_rule_file(md_file)
+            except RuleFileError:
+                unreadable.append(rel_path)
+                continue
             if not parsed.get("title"):
                 continue
 
@@ -926,10 +871,15 @@ def register_rules_tools(
                 f"if this is intentional."
             )
 
+        unreadable_note = (
+            f" {len(unreadable)} unreadable (skipped): {', '.join(unreadable)}."
+            if unreadable else ""
+        )
+
         return _with_nudge(
             f"Sync complete: {indexed} new, {updated} updated, "
             f"{archived} orphans archived, {links_created} links created."
-            f"{guard_note}",
+            f"{guard_note}{unreadable_note}",
             tracker,
         )
 

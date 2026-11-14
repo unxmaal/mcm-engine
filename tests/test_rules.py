@@ -5,6 +5,7 @@ from mcm_engine.config import NudgeConfig
 from mcm_engine.schema import migrate_core
 from mcm_engine.tracker import SessionTracker
 from mcm_engine.tools.knowledge import register_knowledge_tools
+from mcm_engine.files.watcher import RuleFileError
 from mcm_engine.tools.rules import (
     _generate_rule_content,
     _parse_rule_file,
@@ -104,8 +105,8 @@ class TestParseRuleFile:
 
     def test_nonexistent_file(self, tmp_path):
         f = tmp_path / "nope.md"
-        parsed = _parse_rule_file(f)
-        assert parsed == {}
+        with pytest.raises(RuleFileError):
+            _parse_rule_file(f)
 
 
 # --- add_rule tests ---

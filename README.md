@@ -547,6 +547,23 @@ re-indexes on every query (O(N)), so it is not suitable for production query loa
 | `MCM_AMBIENT_RECALL` | enable opt-in ambient recall in the hook |
 | `MCM_LESSONS` / `MCM_LESSONS_BUDGET_S` | `0` turns off hook lesson injection / its retrieval budget (default 0.6 s) |
 | `MCM_SERVER_NAME` / `MCM_SERVER_INSTRUCTIONS` / `MCM_CONFIG` / `MCM_LOG_PATH` | server identity / config path / log |
+| `MCM_HOST` / `MCM_PORT` / `MCM_TRANSPORT` | container bind address, port and transport (read by the image's start command) |
+| `MCM_METRICS_ENABLED` | `1` turns the metrics endpoint on (YAML `metrics.enabled` wins) |
+| `MCM_ADMIN_HOST` / `MCM_ADMIN_PORT` | bind of `mcm-engine admin` (default `127.0.0.1:8090`) |
+| `MCM_ENTRY_MODEL` | `legacy` or `unified`, see the 4.0 runbook below |
+| `MCM_MCP_URL` / `MCM_MCP_TOKEN` | MCP endpoint and bearer token the hooks, `ingest --remote` and the scripts call |
+| `MCM_RULES_DIR` | rules tree `scripts/import_rules.py` reads (default `~/projects/rules`) |
+| `MCM_COVERAGE_GATE` | `0` turns off the hook's look-first gate on consequential operations |
+| `MCM_FIXATION_THRESHOLD` | same-file edits before the hook's fixation advisory |
+| `MCM_INJECT_MAX_BYTES` | cap on what the prompt hook injects (default 2048, `0` = no cap) |
+| `MCM_SNIPPET_MAX` / `MCM_INLINE_FIELD_MAX` / `MCM_HEADLINE_MAX` | search output caps in characters: match snippet (160), inline Why/Fix field (320), summary headline (300); `0` = no cap |
+| `MCM_NEG_ERR_SUMMARY_CAP` | negative and error hits shown per all-scope summary search (default 3) |
+| `MCM_REPORT_ERROR_BUDGET` | byte budget for the matches `report_error` returns (default 3500, `0` = no budget) |
+| `MCM_SIFT_MAX_SPANS` / `MCM_EXPORT_PAGE_MAX` / `MCM_SCROLL_PAGE_MAX` | per-call caps for `sift_candidates` (25), `export_rules` (200), `scroll_entries` (100) |
+| `MCM_SEARCH_RANK_THRESHOLD` / `MCM_SEARCH_STALE_DAYS` / `MCM_SEARCH_EXPIRED_PENALTY` | search cut-off score (1.0), days until a hit is tagged stale (90), rank factor for expired entries (0.1) |
+| `MCM_SCORE_*` | ranking weights and saturations, unvalidated guesses kept sweepable: `W_RELEVANCE` 2.0, `W_HIT` 0.1, `W_REINFORCEMENT` 0.3, `W_CORRECTNESS` 0.5, `W_RECENCY` 0.3, `W_IMPORTANCE` 0.5, `W_SCOPE` 0.1, `PINNED_WEIGHT` 2.0, `HIT_SATURATION` 10, `REINFORCEMENT_SATURATION` 3, `CORRECTNESS_SCALE` 2, `RECENCY_WINDOW_DAYS` 30, `RECENCY_MAX_BONUS` 1 |
+| `MCM_DEDUP_*` | duplicate detection: `TOPIC_THRESHOLD` 0.5, `BODY_THRESHOLD` 0.4, `SUBSUME_THRESHOLD` 0.8, `MIN_ENTROPY` 1.5 |
+| `MCM_RULESIFT_*` | ingest sifting: `KNOWN_THRESHOLD` 0.9, `NOVEL_THRESHOLD` 0.5, `MIN_TOKENS` 3, `MIN_SUBSTANCE_TOKENS` 6 |
 
 **Shared rules across projects.** `rules_path` accepts a list. The first is where new rules
 are written; all are scanned and indexed:

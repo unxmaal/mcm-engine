@@ -422,7 +422,11 @@ def cmd_replay_eval(args):
 
     trace = []
     for path in args.transcript:
-        trace.extend(load_transcript(path))
+        try:
+            trace.extend(load_transcript(path))
+        except OSError as e:
+            print(f"error: cannot read transcript {path}: {e}", file=sys.stderr)
+            sys.exit(2)
     if not trace:
         print(_json.dumps({"error": "no tool-call events parsed", "events": 0}))
         return
@@ -585,10 +589,18 @@ def _ingest_state_path(project_root) -> Path:
     return root / ".mcm-engine" / "ingest-state.json"
 
 
+_INGEST_STATE_TTL_S = 7 * 86400
+
+
+def _ingest_key(source: str, url: str, strict: bool) -> str:
+    return f"{source}|{url}|{'strict' if strict else 'loose'}"
+
+
 def _load_ingest_state(path: Path, source_key: str) -> set:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("source") == source_key:
+        expired = time.time() - float(data.get("saved_at", 0)) > _INGEST_STATE_TTL_S
+        if isinstance(data, dict) and data.get("source") == source_key and not expired:
             return set(data.get("done", []))
     except Exception:
         pass
@@ -599,7 +611,8 @@ def _save_ingest_state(path: Path, source_key: str, done: set) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"source": source_key, "done": sorted(done)}), encoding="utf-8")
+            json.dumps({"source": source_key, "saved_at": time.time(), "done": sorted(done)}),
+            encoding="utf-8")
     except Exception:
         pass
 
@@ -630,6 +643,7 @@ def _ingest_remote(groups, project_root, raw_total: int, *, source_key: str,
         sys.exit(2)
     print(f"# server:   {url}", file=sys.stderr)
 
+    source_key = _ingest_key(source_key, url, strict)
     state_path = _ingest_state_path(project_root)
     done = _load_ingest_state(state_path, source_key)
     pending = [s for s in spans if _span_hash(s) not in done]

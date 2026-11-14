@@ -1,50 +1,7 @@
 {
- "a-child-that-outlives-its-owner": [
-  "src/mcm_engine/cli.py:path"
- ],
- "a-closed-table-fronting-an-open-set": [
-  "src/mcm_engine/hooks/mcp_enforcement.py:_COMMENT_PREFIX",
-  "src/mcm_engine/ingest/text_dir.py:_AST_UPGRADE_HINTS"
- ],
- "a-copy-whose-key-leaves-out-an-input-or-that-nothing-invalidates": [
-  "src/mcm_engine/cli.py:_save_ingest_state",
-  "src/mcm_engine/hooks/mcp_enforcement.py:_write_state"
- ],
- "a-deploy-runs-two-releases-at-once": [
-  "src/mcm_engine/schema.py:migrate_core:one-sided"
- ],
  "an-order-the-code-needs-but-does-not-check": [
-  "scripts/audit_rules.py:<module>:import:MCM_MCP_URL",
-  "scripts/import_rules.py:<module>:import:MCM_MCP_URL",
-  "scripts/import_rules.py:<module>:import:MCM_RULES_DIR",
-  "src/mcm_engine/hooks/lessons.py:<module>:import:home()",
-  "src/mcm_engine/hooks/user_prompt_submit.py:<module>:import:MCM_INJECT_MAX_BYTES",
   "terraform/aws/ecr.tf:comment.L1",
   "terraform/aws/variables.tf:variable.image_uri.description"
- ],
- "each-half-verified-against-its-own-spec-the-seam-against-nothing": [
-  "env:MCM_ACTOR",
-  "env:MCM_ADMIN_HOST",
-  "env:MCM_ADMIN_PORT",
-  "env:MCM_ALLOWED_HOSTS",
-  "env:MCM_AUTH_REQUIRED",
-  "env:MCM_CONFIG",
-  "env:MCM_COVERAGE_GATE",
-  "env:MCM_DNS_REBINDING_PROTECTION",
-  "env:MCM_ENTRY_MODEL",
-  "env:MCM_EXPORT_PAGE_MAX",
-  "env:MCM_FIXATION_THRESHOLD",
-  "env:MCM_INJECT_MAX_BYTES",
-  "env:MCM_MCP_TOKEN",
-  "env:MCM_MCP_URL",
-  "env:MCM_METRICS_ENABLED",
-  "env:MCM_OPENSEARCH_URL",
-  "env:MCM_POSTGRES_DSN",
-  "env:MCM_REDIS_URL",
-  "env:MCM_RULES_DIR",
-  "env:MCM_SCROLL_PAGE_MAX",
-  "env:MCM_SEARCH_QUERY_MODE",
-  "env:MCM_SIFT_MAX_SPANS"
  ],
  "identity-by-name-not-by-content": [
   "terraform/aws/network.tf:aws_subnet.private",
@@ -53,22 +10,5 @@
  "irreplaceable-state-with-no-guard-on-its-destruction": [
   "terraform/aws/rds.tf:aws_db_instance.main",
   "terraform/aws/rds.tf:aws_db_instance.main.skip_final_snapshot"
- ],
- "nothing-and-failed-return-the-same-value": [
-  "src/mcm_engine/admin/app.py:make_handler.Handler.do_POST:except",
-  "src/mcm_engine/admin/app.py:serve:chooser",
-  "src/mcm_engine/cli.py:_ingest_bulk:chooser",
-  "src/mcm_engine/cli.py:cmd_apply_rules:chooser",
-  "src/mcm_engine/cli.py:cmd_consolidate:chooser",
-  "src/mcm_engine/cli.py:cmd_export_mirror:chooser",
-  "src/mcm_engine/cli.py:cmd_ingest:chooser",
-  "src/mcm_engine/cli.py:cmd_migrate:chooser",
-  "src/mcm_engine/eval/trace_transcript.py:load_transcript:except",
-  "src/mcm_engine/files/watcher.py:_parse_rule_file:except",
-  "src/mcm_engine/hooks/mcp_enforcement.py:_local_recall:chooser",
-  "src/mcm_engine/hooks/pre_compact.py:_write_local:chooser",
-  "src/mcm_engine/hooks/session_end.py:_write_local:chooser",
-  "src/mcm_engine/server.py:MCMServer.__init__:chooser",
-  "src/mcm_engine/tools/rules.py:_parse_rule_file:except"
  ]
 }
