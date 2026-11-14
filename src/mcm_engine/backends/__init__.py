@@ -455,13 +455,13 @@ class StorageBackend(Protocol):
     def insert_knowledge(self, row: KnowledgeRow) -> int: ...
     def update_knowledge(self, knowledge_id: int, **fields: Any) -> None: ...
 
-    def supersede_knowledge(self, old_id: int, new_id: int) -> None:
+    def supersede_knowledge(self, old_id: int, new_id: int) -> bool:
         """Soft-expire a knowledge finding in favor of another (issue #111):
         status 'superseded', superseded_by set. Drops out of default search but
-        stays inspectable."""
+        stays inspectable. Moves only an active row; returns whether it moved."""
         ...
 
-    def unsupersede_knowledge(self, knowledge_id: int) -> None:
+    def unsupersede_knowledge(self, knowledge_id: int) -> bool:
         """Revive a superseded knowledge finding (issue #111): status back to
         'active', superseded_by cleared. Inverse of supersede_knowledge."""
         ...
@@ -529,11 +529,12 @@ class StorageBackend(Protocol):
         counters only when ``count`` (author!=judge self-reports pass False)."""
         ...
 
-    def supersede_rule(self, old_id: int, new_id: int, actor: str) -> None:
-        """Soft-supersede a rule (issue #21): mark superseded, never delete."""
+    def supersede_rule(self, old_id: int, new_id: int, actor: str) -> bool:
+        """Soft-supersede a rule (issue #21): mark superseded, never delete.
+        Moves only an active row; returns whether it moved."""
         ...
 
-    def unsupersede_rule(self, rule_id: int, actor: str) -> None:
+    def unsupersede_rule(self, rule_id: int, actor: str) -> bool:
         """Clear a rule's superseded state (issue #100): status back to active,
         superseded_by/valid_until cleared. The inverse of supersede_rule."""
         ...
@@ -616,8 +617,12 @@ class StorageBackend(Protocol):
     def next_snapshot_seq(self, session_id: Optional[int]) -> int: ...
     def insert_snapshot(self, row: SnapshotRow) -> int: ...
     def get_last_snapshot(
-        self, *, caller: Optional[str] = None
-    ) -> Optional[SnapshotRow]: ...
+        self, *, caller: Optional[str] = None,
+        principal: Optional[str] = None, workspace: Optional[str] = None,
+    ) -> Optional[SnapshotRow]:
+        """Newest snapshot. With a scope key, the newest whose session matches
+        it, falling back to one with no session or a NULL-scope session (#222)."""
+        ...
 
     # ---- Session metrics (v15) ----
     def upsert_session_metrics(self, row: SessionMetricsRow) -> None:

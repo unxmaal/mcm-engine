@@ -80,8 +80,10 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -242,11 +244,49 @@ def _read_state(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _write_state(path: Path, state: dict[str, Any]) -> None:
+@contextmanager
+def _state_lock(path: Path):
+    """Exclusive lock on a sidecar file for one state write. Yields unlocked
+    when locking is unavailable or fails: the hook never blocks a tool call."""
+    fh = None
+    try:
+        import fcntl
+        fh = open(path.with_suffix(path.suffix + ".lock"), "a", encoding="utf-8")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fh.close()
+            except OSError:
+                pass
+
+
+def _write_state(path: Path, state: dict[str, Any], key: Optional[str] = None) -> None:
+    """Write the state file. With ``key``, replace only that agent's entry in
+    the file as it is now, so entries other hooks wrote since this one read it
+    are kept."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    with _state_lock(path):
+        if key is not None and key in state:
+            fresh = _read_state(path)
+            fresh[key] = state[key]
+            _prune_stale(fresh, now=time.time())
+            state = fresh
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(state, indent=2))
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def _prune_stale(state: dict[str, Any], *, now: float, ttl: float = STATE_TTL_SECONDS) -> None:
@@ -482,9 +522,10 @@ def stamp_compaction_boundary(event: dict[str, Any]) -> None:
         cwd_raw = event.get("cwd") or os.getcwd()
         sp = _state_path(Path(cwd_raw))
         state = _read_state(sp)
-        entry = state.setdefault(_agent_key(event), {"last_reset_at": time.time()})
+        key = _agent_key(event)
+        entry = state.setdefault(key, {"last_reset_at": time.time()})
         coverage.note_compaction(entry)
-        _write_state(sp, state)
+        _write_state(sp, state, key)
     except Exception:
         pass
 
@@ -1113,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
         lesson = None
 
     try:
-        _write_state(sp, state)
+        _write_state(sp, state, state_key)
     except OSError:
         # State write failures shouldn't block the user's tool call.
         pass

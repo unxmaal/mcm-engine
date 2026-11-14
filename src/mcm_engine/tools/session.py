@@ -88,10 +88,10 @@ def _clip(text: str | None, limit: int) -> str | None:
     return text[:limit].rstrip() + " …[clipped]"
 
 
-def _resume_claims(storage, session) -> str:
+def _resume_claims(storage, session, **scope) -> str:
     """Render the newest claims for this session: its last snapshot's, else the handoff's."""
     try:
-        snap = storage.get_last_snapshot()
+        snap = storage.get_last_snapshot(**scope)
     except Exception:
         snap = None
     if snap is not None and snap.claims and (
@@ -132,10 +132,14 @@ def register_session_tools(
     storage = ctx.storage
 
     @mcp.tool()
-    def session_start() -> str:
+    def session_start(workspace: str = "") -> str:
         """Initialize a session. Returns recent knowledge count, last handoff,
-        pinned items, and plugin context."""
+        pinned items, and plugin context.
+
+        workspace: the label you pass to session_handoff; with it the last
+        handoff shown is this workspace's, not another agent's on the same store."""
         tracker.record_call("session_start")
+        scope = {"principal": get_transport_principal(), "workspace": workspace or None}
         # issue #156: a session_start after a compaction rebuilds context from a
         # summary, so prior retrieved bodies are no longer resident. Mark all
         # coverage non-resident; a fresh session has none, so this is a no-op.
@@ -252,7 +256,7 @@ def register_session_tools(
             pass
 
         # Last handoff (most recent session row).
-        handoff = storage.get_last_session(principal=get_transport_principal())
+        handoff = storage.get_last_session(**scope)
         if handoff is not None:
             parts.append(f"\n--- Last handoff ({handoff.created_at}) ---")
             parts.append(f"Status: {handoff.status}")
@@ -285,7 +289,7 @@ def register_session_tools(
         # session orients itself, so a stale rules index is not silent.
         if ctx.stale_index_warning:
             parts.insert(0, f"[STALE INDEX] {ctx.stale_index_warning}")
-        block = _resume_claims(storage, handoff)
+        block = _resume_claims(storage, handoff, **scope)
         if block:
             parts.insert(0, block + "\n")
         return "\n".join(parts)
@@ -396,8 +400,12 @@ def register_session_tools(
         compaction: bool = False,
         verified: list[dict[str, Any]] | str | None = None,
         unverified: list[dict[str, Any]] | str | None = None,
+        workspace: str = "",
     ) -> str:
         """Save a numbered mid-session checkpoint.
+
+        workspace: the label you pass to session_handoff; the checkpoint is
+        attached to this workspace's last session.
 
         verified / unverified: as for session_handoff; a verified claim with no evidence is stored unverified.
 
@@ -409,7 +417,8 @@ def register_session_tools(
         if compaction:
             tracker.reconcile_coverage(resident=False)
 
-        last_session = storage.get_last_session(principal=get_transport_principal())
+        last_session = storage.get_last_session(
+            principal=get_transport_principal(), workspace=workspace or None)
         session_id = last_session.id if last_session else None
         seq = storage.next_snapshot_seq(session_id)
 
@@ -431,9 +440,13 @@ def register_session_tools(
         )
 
     @mcp.tool()
-    def get_resume_context() -> str:
-        """Get structured context for resuming work."""
+    def get_resume_context(workspace: str = "") -> str:
+        """Get structured context for resuming work.
+
+        workspace: the label you pass to session_handoff; with it the session
+        and snapshot shown are this workspace's."""
         tracker.record_call("get_resume_context")
+        scope = {"principal": get_transport_principal(), "workspace": workspace or None}
         parts: list[str] = []
 
         def _capped(rows: list) -> tuple[list, int]:
@@ -443,7 +456,7 @@ def register_session_tools(
             return rows, 0
 
         # Last session.
-        session = storage.get_last_session(principal=get_transport_principal())
+        session = storage.get_last_session(**scope)
         if session is not None:
             parts.append("--- Last Session ---")
             parts.append(f"Status: {session.status}")
@@ -457,7 +470,7 @@ def register_session_tools(
 
         # Last snapshot.
         try:
-            snap = storage.get_last_snapshot()
+            snap = storage.get_last_snapshot(**scope)
             if snap is not None:
                 parts.append(f"\n--- Last Snapshot (#{snap.sequence_num}) ---")
                 if snap.goal:
@@ -530,7 +543,7 @@ def register_session_tools(
 
         parts.append(f"\nProject: {project_name}")
 
-        block = _resume_claims(storage, session)
+        block = _resume_claims(storage, session, **scope)
         if block:
             parts.insert(0, block + "\n")
 

@@ -126,17 +126,12 @@ def test_summary_is_materially_smaller_than_full(tools):
 
 
 def test_entry_point_defaults_are_the_intended_split(tmp_path):
-    # Gauntlet class 1 (one value, many places): the detail default lives in
-    # ~8 signatures. The two load-bearing ones are the entry points, and they
-    # are DELIBERATELY different: the public `search` tool defaults to summary
-    # (the #119 token win, high volume), while `search_all` (report_error's
-    # path) defaults to full — it fires once per error and exists to hand back
-    # the fix inline. Pin each so neither silently drifts.
+    # The public `search` tool defaults to summary (#119). report_error's path
+    # takes no detail at all since #202: errors whole, the rest summaries.
     db = KnowledgeDB(str(tmp_path / "e.db"))
     migrate_core(db)
     mcp = _FakeMCP()
     search_all = register_search_tools(mcp, db, SessionTracker(NudgeConfig()), [], "proj")
     search_default = inspect.signature(mcp.tools["search"]).parameters["detail"].default
-    search_all_default = inspect.signature(search_all).parameters["detail"].default
     assert search_default == "summary"
-    assert search_all_default == "full"
+    assert "detail" not in inspect.signature(search_all).parameters

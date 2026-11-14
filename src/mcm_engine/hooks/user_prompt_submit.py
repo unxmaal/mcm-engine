@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..tunables import env_int
 from . import coverage
 from .mcp_enforcement import (
     _agent_key,
@@ -48,17 +49,19 @@ SEARCH_LIMIT = 3
 # bloat the turn (observed 11-12 KB injections, larger than CLAUDE.md, which
 # Claude Code persisted as "Output too large"). Truncate at a hit boundary and
 # point at the live tool. 0 disables.
-INJECT_MAX_BYTES = max(0, int(os.environ.get("MCM_INJECT_MAX_BYTES", "2048")))
+def inject_max_bytes() -> int:
+    return max(0, env_int("MCM_INJECT_MAX_BYTES", 2048))
 
 
 def _truncate_injection(result: str, query: str) -> str:
-    """Bound the injected search result to INJECT_MAX_BYTES, cutting at a hit
+    """Bound the injected search result to inject_max_bytes(), cutting at a hit
     boundary (hits are joined by a blank line) so a hit is never shown half,
     and appending a pointer to the live tool."""
-    if INJECT_MAX_BYTES <= 0 or len(result.encode("utf-8")) <= INJECT_MAX_BYTES:
+    cap = inject_max_bytes()
+    if cap <= 0 or len(result.encode("utf-8")) <= cap:
         return result
     pointer = f"\n\n(truncated — run search('{query}') for the rest)"
-    budget = max(0, INJECT_MAX_BYTES - len(pointer.encode("utf-8")))
+    budget = max(0, cap - len(pointer.encode("utf-8")))
     hits = result.split("\n\n")
     kept: list[str] = []
     used = 0

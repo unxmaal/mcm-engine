@@ -880,3 +880,9 @@ reads `entries` and consults it for visibility, rank terms and the hit text.
   (one `execute_write` site looped over both tables). Postgres adds the
   columns in `_DDL_STATEMENTS` (DDL literals, no new site); the session and
   snapshot inserts carry the column through existing sites.
+
+## Addendum: scoped get_last_snapshot (issue #222)
+
+- `adapters/sqlite/storage.py`: 87 → 88. `get_last_snapshot` gains one scoped
+  SELECT branch (snapshots LEFT JOIN sessions), ranked like `get_last_session`.
+- `adapters/postgres/storage.py`: 88 → 89. Same, as `cur.execute`.

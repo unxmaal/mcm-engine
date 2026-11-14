@@ -41,7 +41,8 @@ import re
 import sys
 import urllib.request
 
-DEFAULT_URL = os.environ.get("MCM_MCP_URL", "http://192.168.8.88:8080/mcp")
+def default_url() -> str:
+    return os.environ.get("MCM_MCP_URL", "http://192.168.8.88:8080/mcp")
 
 # Title-heuristic markers. Imperative/behavioral phrasing suggests a directive;
 # gotcha/observation phrasing suggests a recall-only fact.
@@ -198,7 +199,7 @@ def fetch_list_rules(url: str, *, include_archived: bool) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=DEFAULT_URL, help=f"MCP endpoint (default {DEFAULT_URL})")
+    ap.add_argument("--url", default=default_url(), help=f"MCP endpoint (default {default_url()})")
     ap.add_argument("--out", default="audit/rules_audit.md", help="report path")
     ap.add_argument("--include-archived", action="store_true")
     args = ap.parse_args()

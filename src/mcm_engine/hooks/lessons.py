@@ -105,20 +105,22 @@ def budget_s() -> float:
         return DEFAULT_BUDGET_S
 
 
-_HOME_PARTS = frozenset(p.lower() for p in Path.home().parts if p not in ("/", ""))
+def _home_parts() -> frozenset:
+    return frozenset(p.lower() for p in Path.home().parts if p not in ("/", ""))
 
 
 def _add_path(at: ActionTerms, raw: str) -> None:
     p = Path(raw.strip("'\""))
     stem = p.stem if p.suffix else p.name
-    if not stem or stem.startswith("-") or stem.lower() in _HOME_PARTS:
+    home = _home_parts()
+    if not stem or stem.startswith("-") or stem.lower() in home:
         return
     if len(stem) >= 6 and re.search(r"[_-]", stem):
         at.strong.add(stem.lower())
     at.add(stem)
     parent = p.parent.name
     if (parent and parent not in (".", "..") and parent.lower() not in GENERIC_TERMS
-            and parent.lower() not in _HOME_PARTS):
+            and parent.lower() not in home):
         at.add(parent)
 
 

@@ -39,12 +39,10 @@ def _content_blocks(record: dict) -> list:
 
 
 def load_transcript(path: str | Path) -> list[TraceEvent]:
-    """Parse a transcript JSONL file into an ordered trace."""
+    """Parse a transcript JSONL file into an ordered trace. Raises OSError when
+    the file cannot be read."""
     records: list[dict] = []
-    try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
     for line in text.splitlines():
         line = line.strip()
         if not line:
