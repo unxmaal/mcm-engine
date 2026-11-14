@@ -35,6 +35,20 @@ from mcm_engine.db import KnowledgeDB
 _DEBOUNCE_MS = 50
 _SETTLE_S = 0.6
 
+# FSEvents delivery under load: 0.1 s to 14 s measured (#224).
+_EVENT_DEADLINE_S = 30.0
+
+
+def _until(cond, timeout: float = _EVENT_DEADLINE_S) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if cond():
+                return
+        except Exception:
+            pass
+        time.sleep(0.02)
+
 
 def _atomic_rename_replace(path: Path, new_content: str) -> None:
     """The portable equivalent of what every atomic-save editor does
@@ -88,7 +102,8 @@ def test_atomic_rename_edit_does_not_archive_row(wired):
         rule_path,
         "# Atomic-rename target\n\n**Keywords:** atomic,test\n\nupdated body line\n",
     )
-    time.sleep(_SETTLE_S)
+    _until(lambda: "updated body line" in (wired["storage"].find_by_id(EntityType.RULE, rid).description or ""))
+    time.sleep(_SETTLE_S)  # room for the trailing delete event of the rename
 
     row = wired["storage"].find_by_id(EntityType.RULE, rid)
     assert row is not None
